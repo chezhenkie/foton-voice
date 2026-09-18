@@ -109,6 +109,7 @@
   let nemotronDownloadedMap = $state<Record<string, boolean>>({});
   let nemotronChecking = $state(false);
   let nemotronDownloading = $state(false);
+  let nemotronDownloadError = $state<string | null>(null);
 
   async function checkNemotronDownloaded() {
     nemotronChecking = true;
@@ -130,28 +131,26 @@
   async function triggerNemotronDownload(model: string) {
     if (nemotronDownloading) return;
     nemotronDownloading = true;
+    nemotronDownloadError = null;
     try {
       await invoke("download_nemotron_streaming_model", { modelSize: model });
       nemotronDownloadedMap[model] = true;
     } catch (e) {
-      alert(`Failed to download Nemotron streaming model: ${e}`);
+      nemotronDownloadError = `${e}`;
     } finally {
       nemotronDownloading = false;
     }
   }
 
   async function onNemotronModelChanged() {
-    if (!nemotronAvailable) return;
-    const selected = cfg.engine.nemotron_streaming?.model_size ?? "fp16";
-    if (nemotronAvailable && !nemotronDownloadedMap[selected]) {
-      await triggerNemotronDownload(selected);
-    }
+    markDirty();
   }
 
   let downloadedMap = $state<Record<string, boolean>>({});
   let checking = $state(false);
   let downloading = $state(false);
   let modelDirError = $state<string | null>(null);
+  let downloadError = $state<string | null>(null);
 
   // -- Moonshine ------------------------------------------------------------
   // Whether the app was built with the Moonshine backend. When false, choosing
@@ -160,6 +159,7 @@
   let moonshineDownloadedMap = $state<Record<string, boolean>>({});
   let moonshineChecking = $state(false);
   let moonshineDownloading = $state(false);
+  let moonshineDownloadError = $state<string | null>(null);
 
   // -- Parakeet -------------------------------------------------------------
   let parakeetAvailable = $state(true);
@@ -167,6 +167,7 @@
   let parakeetDownloadedMap = $state<Record<string, boolean>>({});
   let parakeetChecking = $state(false);
   let parakeetDownloading = $state(false);
+  let parakeetDownloadError = $state<string | null>(null);
 
   async function checkParakeetDownloaded() {
     parakeetChecking = true;
@@ -188,11 +189,12 @@
   async function triggerParakeetDownload(model: string) {
     if (parakeetDownloading) return;
     parakeetDownloading = true;
+    parakeetDownloadError = null;
     try {
       await invoke("download_parakeet_model", { modelSize: model });
       parakeetDownloadedMap[model] = true;
     } catch (e) {
-      alert(`Failed to download Parakeet model: ${e}`);
+      parakeetDownloadError = `${e}`;
     } finally {
       parakeetDownloading = false;
     }
@@ -200,10 +202,6 @@
 
   async function onParakeetModelChanged() {
     markDirty();
-    const selected = cfg.engine.parakeet?.model_size ?? "tdt-0.6b-v3";
-    if (parakeetAvailable && !parakeetDownloadedMap[selected]) {
-      await triggerParakeetDownload(selected);
-    }
   }
 
   // -- Remote Speech Engine (OpenAI API) ------------------------------------
@@ -276,11 +274,12 @@
   async function triggerMoonshineDownload(model: string) {
     if (moonshineDownloading) return;
     moonshineDownloading = true;
+    moonshineDownloadError = null;
     try {
       await invoke("download_moonshine_model", { modelSize: model });
       moonshineDownloadedMap[model] = true;
     } catch (e) {
-      alert(`Failed to download Moonshine model: ${e}`);
+      moonshineDownloadError = `${e}`;
     } finally {
       moonshineDownloading = false;
     }
@@ -288,10 +287,6 @@
 
   async function onMoonshineModelChanged() {
     markDirty();
-    const selected = cfg.engine.moonshine.model_size;
-    if (moonshineAvailable && !moonshineDownloadedMap[selected]) {
-      await triggerMoonshineDownload(selected);
-    }
   }
 
   async function checkAllModelsDownloaded() {
@@ -315,6 +310,7 @@
   async function triggerDownload(model: string) {
     if (downloading) return;
     downloading = true;
+    downloadError = null;
     try {
       await invoke("download_model", {
         modelSize: model,
@@ -322,7 +318,7 @@
       });
       downloadedMap[model] = true;
     } catch (e) {
-      alert(`Failed to download model: ${e}`);
+      downloadError = `${e}`;
     } finally {
       downloading = false;
     }
@@ -330,10 +326,6 @@
 
   async function onModelChanged() {
     markDirty();
-    const selected = cfg.engine.whisper_cpp.model_size;
-    if (!downloadedMap[selected]) {
-      await triggerDownload(selected);
-    }
   }
 
   async function validateModelDir() {
@@ -480,6 +472,9 @@
                Download Model
             </button>
           </div>
+          {#if downloadError}
+            <span class="status-error">{downloadError}</span>
+          {/if}
         {/if}
       </div>
 
@@ -599,6 +594,9 @@
                 Download {cfg.engine.moonshine.model_size}
               </button>
             </div>
+            {#if moonshineDownloadError}
+              <span class="status-error">{moonshineDownloadError}</span>
+            {/if}
           {/if}
         </div>
       {/if}
@@ -658,6 +656,9 @@
                 Download {cfg.engine.parakeet.model_size}
               </button>
             </div>
+            {#if parakeetDownloadError}
+              <span class="status-error">{parakeetDownloadError}</span>
+            {/if}
             <p class="hint" style="margin-top: 6px;">
               Model source: <a class="credit-name-link" href="https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx" target="_blank" rel="noreferrer">istupakov/parakeet-tdt-0.6b-v3-onnx</a>
             </p>
@@ -747,6 +748,9 @@
                 Download {cfg.engine.nemotron_streaming.model_size}
               </button>
             </div>
+            {#if nemotronDownloadError}
+              <span class="status-error">{nemotronDownloadError}</span>
+            {/if}
             <p class="hint" style="margin-top: 6px;">
               Model source: <a class="credit-name-link" href="https://huggingface.co/danielbodart/nemotron-speech-600m-onnx" target="_blank" rel="noreferrer">danielbodart/nemotron-speech-600m-onnx</a>
             </p>
@@ -923,6 +927,9 @@
   }
   .status-missing {
     @apply text-red-400;
+  }
+  .status-error {
+    @apply mt-1 text-xs leading-5 text-red-400 w-full;
   }
   .btn-download {
     @apply bg-[var(--accent)] border-none text-white rounded-[var(--radius)] p-1.5 px-3 text-xs cursor-pointer font-semibold transition-colors duration-200;

@@ -106,9 +106,9 @@ parakeet-webgpu = ["fotonvoice-inference/parakeet-webgpu"]
 # cache-aware chunks) into the app. OFF by default until Phase 2 ships stable;
 # without it a "nemotron-streaming" selection falls back to whisper-cpp.
 nemotron-streaming = ["fotonvoice-inference/nemotron-streaming"]
-nemotron-streaming-cuda = ["fotonvoice-inference/nemotron-streaming-cuda"]
-nemotron-streaming-coreml = ["fotonvoice-inference/nemotron-streaming-coreml"]
-nemotron-streaming-webgpu = ["fotonvoice-inference/nemotron-streaming-webgpu"]
+nemotron-streaming-cuda = ["nemotron-streaming", "fotonvoice-inference/nemotron-streaming-cuda"]
+nemotron-streaming-coreml = ["nemotron-streaming", "fotonvoice-inference/nemotron-streaming-coreml"]
+nemotron-streaming-webgpu = ["nemotron-streaming", "fotonvoice-inference/nemotron-streaming-webgpu"]
 # Compiles the Inflect-Micro-v2 ONNX text-to-speech engine into the app. On by
 # default; without it, selecting the engine reports that the build lacks it
 # instead of failing obscurely. Needs `espeak-ng` installed at runtime for
