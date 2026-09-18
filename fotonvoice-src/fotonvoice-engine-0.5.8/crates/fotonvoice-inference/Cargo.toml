@@ -1,0 +1,124 @@
+[package]
+name = "fotonvoice-inference"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fotonvoice-config  = { workspace = true }
+fotonvoice-routing = { workspace = true }
+fotonvoice-llm    = { workspace = true }
+fotonvoice-text   = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+crossbeam-channel = { workspace = true }
+regex = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }
+whisper-rs = { version = "0.16" }
+ndarray = { workspace = true }
+# Physical-core count for the backend thread pools (already in the graph).
+num_cpus = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+hound = "3"
+
+# Used by build.rs to compile the glibc __isoc23_* shim for the Moonshine
+# backend on Linux. `cc` is already in the build graph (whisper-rs-sys), so this
+# adds nothing to compile.
+[build-dependencies]
+cc = "1"
+
+[features]
+default = []
+cuda = ["whisper-rs/cuda"]
+# Portable GPU acceleration via the ggml Vulkan backend. Works on NVIDIA/AMD/
+# Intel with just the host Vulkan driver and bundles into an AppImage without
+# CUDA's heavy runtime. Falls back to CPU when no Vulkan device is present.
+vulkan = ["whisper-rs/vulkan"]
+
+# Moonshine ONNX backend via onnxruntime. `ort` keeps its default features,
+# which include `download-binaries`: ONNX Runtime is fetched at build time and
+# linked into the binary, so the shipped app is self-contained and needs no
+# system `libonnxruntime` at runtime (nothing else in the workspace provides
+# one). Decoding uses the `tokenizers` crate with a tokenizer embedded in the
+# binary (see `assets/moonshine_tokenizer.json`).
+moonshine = ["dep:ort"]
+
+# GPU offload for the Moonshine backend. Opt-in for the same reason as
+# fotonvoice-tts's `breeze-cuda`: the CUDA execution provider needs the CUDA
+# runtime at build *and* run time, which is exactly what the Vulkan AppImage
+# exists to avoid shipping.
+#
+# There is still no `moonshine-vulkan`: ONNX Runtime has no Vulkan execution
+# provider, so a `vulkan` build accelerates whisper.cpp and nothing else. What
+# closes that gap is `moonshine-webgpu` below, which reaches the same
+# vendor-neutral GPUs by a different road. `moonshine_gpu_backend()` reports
+# which of these a build actually has, so the UI can say so instead of leaving
+# the user to measure it.
+moonshine-cuda = ["moonshine", "ort/cuda"]
+moonshine-coreml = ["moonshine", "ort/coreml"]
+
+# Cross-vendor GPU offload for Moonshine, via ONNX Runtime's WebGPU execution
+# provider. This is the Windows counterpart to what `vulkan` does for
+# whisper.cpp: any modern GPU, no vendor SDK at build time, no runtime to ship.
+# On Windows ORT's WebGPU EP runs on Dawn over D3D12, so it covers NVIDIA, AMD
+# and Intel alike.
+#
+# Chosen over DirectML, which is the obvious-looking answer and does not work
+# here. `ort` exposes an `ort::ep::DirectML` and a `directml` feature, but
+# `ort-sys`'s prebuilt table (build/download/dist.txt) ships no DirectML binary
+# for any target, and its `resolve_dist()` never consults the `directml` feature
+# when choosing which prebuilt to fetch. Enabling it therefore downloads the
+# plain CPU runtime, compiles fine, and then fails to register the provider at
+# run time - forever. Reaching real DirectML means switching to `load-dynamic`
+# and shipping Microsoft's own onnxruntime.dll and DirectML.dll, which gives up
+# the self-contained binary the rest of this file is arranged around.
+#
+# `wgpu` is a tag `resolve_dist()` does understand, and
+# `x86_64-pc-windows-msvc+wgpu` is a prebuilt that exists.
+moonshine-webgpu = ["moonshine", "ort/webgpu"]
+
+# Parakeet ONNX backend via onnxruntime.
+parakeet = ["dep:ort"]
+parakeet-cuda = ["parakeet", "ort/cuda"]
+parakeet-coreml = ["parakeet", "ort/coreml"]
+parakeet-webgpu = ["parakeet", "ort/webgpu"]
+
+# Nemotron streaming STT backend (cache-aware FastConformer-RNNT, English).
+# Same onnxruntime pairing as parakeet; mel preprocessing is pure Rust
+# (realfft), the graphs are the danielbodart 560ms-chunk exports.
+nemotron-streaming = ["dep:ort", "dep:realfft"]
+nemotron-streaming-cuda = ["nemotron-streaming", "ort/cuda"]
+nemotron-streaming-coreml = ["nemotron-streaming", "ort/coreml"]
+nemotron-streaming-webgpu = ["nemotron-streaming", "ort/webgpu"]
+
+# Mel spectrogram for the Nemotron streaming backend: STFT + Slaney
+# filterbank, pure Rust (MIT, ported from parakeet-rs audio.rs).
+[dependencies.realfft]
+version = "3"
+optional = true
+
+[dependencies.ort]
+version = "2.0.0-rc.12"
+optional = true
+default-features = false
+features = ["load-dynamic", "std", "api-24"]
+
+[dependencies.tokenizers]
+version = "0.21"
+default-features = false
+features = ["onig"]
+
+[dependencies.candle-core]
+version = "0.9"
+
+[dependencies.candle-transformers]
+version = "0.9"
+

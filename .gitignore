@@ -1,0 +1,12 @@
+/target/
+*.log
+
+fotonvoice-src/target/
+fotonvoice-src/*/target/
+fotonvoice-src/*/node_modules/
+fotonvoice-src/pristine-*/
+fotonvoice-src/zipcheck/
+fotonvoice-src/*.tar.gz
+fotonvoice-src/*.zip
+fotonvoice-src/*.txt
+fotonvoice-src/ort-probe/target/

@@ -1,0 +1,267 @@
+@import "tailwindcss";
+@import "./lib/Settings/tab.css";
+
+@keyframes border-pulse {
+  0%, 100% { border-color: rgba(244, 63, 94, 0.4); }
+  50% { border-color: rgba(244, 63, 94, 1); }
+}
+
+@keyframes flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@theme {
+  /* Premium Obsidian dark mode color scheme */
+  --color-obsidian-950: #08090b; /* Pitch deep bg */
+  --color-obsidian-900: #0d0e12; /* Deep surface */
+  --color-obsidian-800: #14171f; /* Surface card */
+  --color-obsidian-700: #1e222d; /* Inputs / Hover states */
+  --color-obsidian-600: #292f3f; /* Borders default */
+  --color-obsidian-500: #384055; /* Borders hover */
+  --color-obsidian-300: #9ca3af; /* Muted text */
+  --color-obsidian-100: #e5e7eb; /* Main body text */
+
+  /* Vibrant signal accents (Purple ban compliant) */
+  --color-accent-tangerine: #ff6b35; /* Electric Tangerine for recording */
+  --color-accent-blue: #38bdf8; /* Crisp Sky Blue for selection */
+  --color-accent-green: #10b981; /* Speaking indicator */
+
+  /* Custom geometry (Sharp Technical Style - Slightly Rounded) */
+  --radius-desktop: 6px;
+
+  /* Keybind recorder animations */
+  --animate-border-pulse: border-pulse 1.5s infinite;
+  --animate-flash: flash 1s infinite;
+  
+  /* Snappy micro-animation transitions (Spring physics) */
+  --transition-snappy: all 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.2); 
+  --transition-snappy-fast: all 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  --ease-spring-out: cubic-bezier(0.175, 0.885, 0.32, 1.2);
+}
+
+:root {
+  /* Theme bridge for backwards compatibility */
+  --bg: var(--color-obsidian-950);
+  --surface: var(--color-obsidian-900);
+  --surface2: var(--color-obsidian-800);
+  --accent: var(--color-accent-blue); /* Replaced tangerine with blue globally */
+  --accent2: var(--color-accent-blue);
+  --text: var(--color-obsidian-100);
+  --text-muted: var(--color-obsidian-300);
+  --border: rgba(255, 255, 255, 0.05);
+  --radius: var(--radius-desktop);
+  
+  --recording-color: var(--color-accent-tangerine);
+  --idle-color: var(--color-accent-blue);
+  --speaking-color: var(--color-accent-green);
+  
+  --transition-spring: var(--transition-snappy);
+  --transition-spring-fast: var(--transition-snappy-fast);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #app {
+  height: 100%;
+  width: 100%;
+  font-family: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* Bulletproof Transparency & Scrollbar Eradication for Transparent Overlay Window */
+html.overlay-window,
+body.overlay-window,
+body.overlay-window #app {
+  background: transparent !important;
+  background-color: transparent !important;
+  overflow: hidden !important;
+  box-shadow: none !important;
+  border: none !important;
+  outline: none !important;
+}
+
+body.overlay-window * {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+body.overlay-window ::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Premium micro-scrollbar styling */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 99px;
+  transition: background 0.2s;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* Common utilities & buttons */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  background: transparent;
+  outline: none;
+}
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+}
+
+/* Global select dropdown overrides to match obsidian theme */
+select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background: var(--surface2) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m3 5 3 3 3-3'/></svg>") no-repeat right 12px center;
+  background-size: 10px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 36px 8px 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: var(--transition-snappy-fast);
+}
+
+select:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background-color: var(--color-obsidian-700);
+  transform: translateY(-1px);
+}
+
+select:focus {
+  border-color: var(--accent2);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+}
+
+select option {
+  background-color: var(--color-obsidian-900);
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+/* WebKitGTK specific autofill fixes */
+select:-webkit-autofill,
+select:-webkit-autofill:hover,
+select:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text) !important;
+  -webkit-box-shadow: 0 0 0px 1000px var(--color-obsidian-900) inset !important;
+}
+
+/* Snappy spring scale animations utility */
+.interactive-spring {
+  transition: var(--transition-snappy);
+}
+.interactive-spring:hover {
+  transform: scale(1.02) translateY(-1px);
+}
+.interactive-spring:active {
+  transform: scale(0.97) translateY(0px);
+}
+
+/* Global Redesigned Premium Custom Toggle / Checkbox */
+input[type="checkbox"] {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--color-obsidian-700);
+  outline: none;
+  border-radius: 99px; /* Toggles stay pill-shaped as is standard */
+  cursor: pointer;
+  transition: var(--transition-spring-fast);
+  border: 1px solid var(--border);
+}
+
+input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  top: 2px;
+  left: 2px;
+  background: var(--color-obsidian-300);
+  transition: var(--transition-spring-fast);
+}
+
+input[type="checkbox"]:checked {
+  background: var(--color-accent-blue);
+  border-color: var(--color-accent-blue);
+}
+
+input[type="checkbox"]:checked::before {
+  left: 18px;
+  background: #fff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+input[type="checkbox"]:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Global Beautiful Obsidian inputs */
+input[type="number"],
+input[type="text"],
+input[type="password"] {
+  background: var(--color-obsidian-950);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 13px;
+  min-width: 170px;
+  outline: none;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+  transition: var(--transition-spring-fast);
+}
+
+input[type="number"]:hover,
+input[type="text"]:hover,
+input[type="password"]:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  background-color: var(--color-obsidian-900);
+}
+
+input[type="number"]:focus,
+input[type="text"]:focus,
+input[type="password"]:focus {
+  border-color: var(--accent2);
+  background-color: var(--color-obsidian-950);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15), inset 0 2px 4px rgba(0, 0, 0, 0.2);
+}

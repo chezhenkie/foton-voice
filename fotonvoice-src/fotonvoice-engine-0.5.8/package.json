@@ -1,0 +1,37 @@
+{
+  "name": "fotonvoice-engine",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "predev": "pkill -x fotonvoice-engine 2>/dev/null || true; fuser -k 5173/tcp 2>/dev/null || true",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "dev:gpu": "tauri dev -- --features vulkan",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "python3 scripts/run_tests.py",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-fs": "^2",
+    "@tauri-apps/plugin-notification": "^2",
+    "@tauri-apps/plugin-shell": "^2"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^4",
+    "@tailwindcss/vite": "^4.3.0",
+    "@tauri-apps/cli": "^2",
+    "@testing-library/svelte": "^5.2.4",
+    "jsdom": "^26.0.0",
+    "svelte": "^5",
+    "svelte-check": "^4.6.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5",
+    "vite": "^5",
+    "vitest": "^3.0.0"
+  }
+}

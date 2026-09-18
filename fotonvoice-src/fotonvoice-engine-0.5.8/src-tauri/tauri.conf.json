@@ -1,0 +1,92 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FotonVoice Engine",
+  "version": "0.2.0",
+  "identifier": "ai.fotonvoice.engine",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "cargo build --bin fotonvoice-llm-sidecar && node scripts/prepare-sidecar.mjs && npm run dev",
+    "beforeBuildCommand": "echo skip"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost; connect-src ipc: http://ipc.localhost"
+    },
+    "windows": [
+      {
+        "label": "settings",
+        "title": "FotonVoice Engine Settings",
+        "width": 880,
+        "height": 1000,
+        "minWidth": 720,
+        "minHeight": 640,
+        "center": true,
+        "visible": false,
+        "resizable": true,
+        "decorations": true,
+        "closable": true,
+        "acceptFirstMouse": true,
+        "url": "/settings"
+      },
+      {
+        "label": "wizard",
+        "title": "FotonVoice Engine - First-Run Setup",
+        "width": 1280,
+        "height": 1057,
+        "minWidth": 1140,
+        "minHeight": 900,
+        "center": true,
+        "visible": false,
+        "resizable": true,
+        "decorations": true,
+        "acceptFirstMouse": true,
+        "url": "/wizard"
+      },
+      {
+        "label": "udev-warning",
+        "title": "FotonVoice Engine Setup",
+        "width": 580,
+        "height": 600,
+        "minWidth": 480,
+        "minHeight": 420,
+        "center": true,
+        "visible": false,
+        "alwaysOnTop": true,
+        "resizable": true,
+        "url": "/udev-warning"
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/fotonvoice-llm-sidecar"
+    ],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libvulkan1",
+          "libssl3",
+          "libayatana-appindicator3-1",
+          "wtype | xdotool",
+          "wl-clipboard | xclip"
+        ]
+      }
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
+    }
+  }
+}

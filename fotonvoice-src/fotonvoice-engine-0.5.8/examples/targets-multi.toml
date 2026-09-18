@@ -1,0 +1,122 @@
+## targets-multi.toml - Multiple targets with per-target processing overrides
+##
+## Demonstrates all delivery types and the per-target processing config.
+## Each target can independently override preprocessing and postprocessing.
+##
+## Copy to ~/.config/voxctl/targets.toml
+
+format_version = "1.1"
+
+# -- 1. Standard inject (inherits all global settings) -------------------------
+[[target]]
+id = "default"
+label = "Focused Window"
+delivery = "inject"
+file_timestamp = true
+
+# -- 2. Raw inject - no processing at all (e.g. for a form that wants verbatim) -
+[[target]]
+id = "verbatim"
+label = "Verbatim Inject"
+delivery = "inject"
+file_timestamp = true
+processing = {remove_fillers = false, spoken_punctuation = false, auto_format_lists = false, openai_enabled = false}
+
+# -- 3. Code mode - forces code-dictation mode regardless of focused app --------
+[[target]]
+id = "code"
+label = "Code Editor"
+delivery = "inject"
+file_timestamp = true
+processing = {code_mode = true, remove_fillers = false, spoken_punctuation = false, auto_format_lists = false, openai_enabled = false}
+
+# -- 4. Clipboard with LLM grammar fix --------------------------------------
+[[target]]
+id = "clipboard_clean"
+label = "Clipboard (AI Cleaned)"
+delivery = "clipboard"
+file_timestamp = true
+processing = {remove_fillers = true, spoken_punctuation = true, openai_enabled = true, openai_mode = "clean"}
+
+# -- 5. Formal email - LLM rewrites in professional tone --------------------
+[[target]]
+id = "formal_email"
+label = "Formal Email"
+delivery = "clipboard"
+file_timestamp = true
+processing = {remove_fillers = true, spoken_punctuation = true, auto_format_lists = false, openai_enabled = true, openai_model = "llama3.2:1b", openai_mode = "formal"}
+
+# -- 6. Bullet-point meeting notes ---------------------------------------------
+[[target]]
+id = "meeting_notes"
+label = "Meeting Notes (Bullets)"
+delivery = "clipboard"
+file_timestamp = true
+processing = {remove_fillers = true, spoken_punctuation = true, auto_format_lists = true, openai_enabled = true, openai_mode = "bullet"}
+
+# -- 7. Custom LLM prompt - domain-specific rewrites -----------------------
+[[target]]
+id = "medical_notes"
+label = "Medical Notes"
+delivery = "file"
+file_path = "~/notes/medical.md"
+file_prefix = "- "
+file_timestamp = true
+processing = {remove_fillers = true, spoken_punctuation = true, openai_enabled = true, openai_model = "llama3.2:1b", openai_prompt = "Rewrite the following as concise clinical notes using standard medical abbreviations. Output ONLY the rewritten text:\n\n{text}"}
+
+# -- 8. FIFO pipe to an AI agent (e.g. Hermes or Claude Code) -----------------
+[[target]]
+id = "agent_pipe"
+label = "AI Agent (Pipe)"
+delivery = "pipe"
+pipe_path = "/tmp/agent.in"
+file_timestamp = false
+# No LLM post-processing (the agent handles it)
+processing = {remove_fillers = true, spoken_punctuation = false, openai_enabled = false}
+
+# -- 9. TCP socket to remote service ------------------------------------------
+[[target]]
+id = "remote_agent"
+label = "Remote Service"
+delivery = "socket"
+socket_host = "192.168.1.50"
+socket_port = 9000
+file_timestamp = false
+processing = {remove_fillers = true, spoken_punctuation = true, openai_enabled = false}
+
+# -- 10. Daily journal - file append with timestamps ---------------------------
+[[target]]
+id = "journal"
+label = "Daily Journal"
+delivery = "file"
+file_path = "~/journal.md"
+file_prefix = "> "
+file_timestamp = true
+# Make concise before writing
+processing = {remove_fillers = true, spoken_punctuation = true, auto_format_lists = true, openai_enabled = true, openai_mode = "concise"}
+
+# -- 11. Run external command - e.g. send to clipboard manager -----------------
+[[target]]
+id = "cliphist"
+label = "Cliphist"
+delivery = "exec"
+command = "wl-copy {TEXT}"
+file_timestamp = false
+processing = {remove_fillers = true, spoken_punctuation = true}
+
+# -- 12. D-Bus signal - notify other apps on the desktop ----------------------
+[[target]]
+id = "dbus_notify"
+label = "D-Bus Notification"
+delivery = "dbus"
+dbus_signal = "com.example.Dictation.TextReady"
+file_timestamp = false
+processing = {remove_fillers = true, spoken_punctuation = true}
+
+# -- 13. Noise-suppressed quiet dictation (e.g. open-plan office) --------------
+[[target]]
+id = "office_quiet"
+label = "Office (Noise Suppressed)"
+delivery = "inject"
+file_timestamp = true
+processing = {remove_fillers = true, spoken_punctuation = true}

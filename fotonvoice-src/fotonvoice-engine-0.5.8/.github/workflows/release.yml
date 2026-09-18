@@ -1,0 +1,585 @@
+name: Release
+
+# Trigger: every push to master builds and (re)creates the release for the
+# current app version (read from src-tauri/tauri.conf.json). Bump the version
+# there to start a fresh release; pushes at the same version refresh it.
+# Can also be triggered manually with an explicit tag to (re-)build.
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re-)build (e.g. v0.1.4). Defaults to the app version in tauri.conf.json."
+        required: false
+        type: string
+
+# Only one release build per branch at a time; a newer push cancels an
+# in-progress one so the release reflects the latest commit.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # needed to create/update GitHub releases
+
+env:
+  CARGO_HTTP_MULTIPLEXING: false
+  CARGO_HTTP_HTTP2: false
+  # Where Settings -> Bug Report sends a report when the user presses Send.
+  #
+  # Baked in at build time rather than read from config, so nothing on a user's
+  # machine can redirect their reports somewhere else. Unset - which it is until
+  # the relay is deployed - the Send button does not appear and the page offers
+  # the routes that need no server (save, copy, GitHub, email).
+  #
+  # Set the FOTONVOICE_BUGREPORT_ENDPOINT repository secret to switch it on; see
+  # scripts/bug-report-relay/README.md.
+  FOTONVOICE_BUGREPORT_ENDPOINT: ${{ secrets.FOTONVOICE_BUGREPORT_ENDPOINT }}
+
+# -- Version consistency gate ---------------------------------------------------
+# There is no single source of truth for the app version: it's declared
+# separately in package.json, src-tauri/tauri.conf.json, and Cargo.toml's
+# [workspace.package]. They HAVE drifted before (v0.1.8 shipped with
+# package.json still at 0.1.7) and release tags have been cut that didn't
+# match tauri.conf.json at all (v0.2.7 was tagged via a manual dispatch
+# override while tauri.conf.json still said 0.2.6). Fail fast, before
+# spending build minutes, if they disagree. Always bump via
+# ./scripts/bump_version.sh so this can't happen.
+jobs:
+  check-version-sync:
+    name: Check version files are in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare package.json / tauri.conf.json / Cargo.toml
+        run: |
+          PKG_VERSION=$(jq -r '.version' package.json)
+          TAURI_VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+          CARGO_VERSION=$(awk '/^\[workspace\.package\]/{f=1; next} /^\[/{f=0} f && /^version *=/{gsub(/"/,"",$3); print $3; exit}' Cargo.toml)
+
+          echo "package.json:        $PKG_VERSION"
+          echo "tauri.conf.json:      $TAURI_VERSION"
+          echo "Cargo.toml (workspace): $CARGO_VERSION"
+
+          if [ "$PKG_VERSION" != "$TAURI_VERSION" ] || [ "$PKG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Version mismatch across package.json ($PKG_VERSION), src-tauri/tauri.conf.json ($TAURI_VERSION), and Cargo.toml ($CARGO_VERSION). Run ./scripts/bump_version.sh <version> to fix, then push again."
+            exit 1
+          fi
+
+          # A manually-dispatched tag must match the files' version - it
+          # exists to re-run/re-tag a build of the CURRENT version, not to
+          # publish a release under a version the app doesn't actually report.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            EXPECTED="v${PKG_VERSION}"
+            if [ "${{ inputs.tag }}" != "$EXPECTED" ]; then
+              echo "::error::Manual tag '${{ inputs.tag }}' does not match the version in the source files ($EXPECTED). Bump the version files to match the tag you want (./scripts/bump_version.sh), or dispatch with tag=$EXPECTED."
+              exit 1
+            fi
+          fi
+
+# -- Build matrix --------------------------------------------------------------
+  build:
+    needs: check-version-sync
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false   # let all variants finish even if one fails
+      matrix:
+        include:
+          # -- Linux Vulkan ---------------------------------------------------
+          # The only Linux build. It accelerates NVIDIA/AMD/Intel via the host
+          # Vulkan driver and runs on the CPU when there is no Vulkan device to
+          # find, so a separate CPU artifact bought nothing but a second
+          # download for users to choose wrong between. ggml enumerates Vulkan
+          # devices at init and registers none when the loader finds no ICD;
+          # whisper.cpp then runs on the CPU backend exactly as the CPU build
+          # did. Far lighter to bundle than CUDA.
+          #
+          # Two consequences of being the only build, both handled elsewhere:
+          # the `.deb` now depends on `libvulkan1` (src-tauri/tauri.conf.json),
+          # since the loader is linked, not dlopened; and the updater sends a
+          # non-Vulkan AppImage here when a release has no CPU asset
+          # (crates/fotonvoice-update/src/install.rs), so the people running the
+          # CPU AppImage this workflow used to publish keep getting updates.
+          - name: linux-vulkan
+            os: ubuntu-22.04
+            features: "vulkan"
+            artifact_label: linux-x86_64-vulkan
+            cuda: false
+            vulkan: true
+
+          # -- Windows CPU ----------------------------------------------------
+          # NSIS installer, CPU inference. No Vulkan counterpart on purpose:
+          # whisper.cpp's Vulkan backend fails to register on Windows MSVC
+          # static builds - which is what whisper-rs-sys produces - and falls
+          # back to the CPU while reporting that it is on the GPU
+          # (ggml-org/whisper.cpp#3750, open against the exact whisper-rs this
+          # workspace pins). A GPU build that is silently a CPU build is worse
+          # than no GPU build, so Windows GPU support waits for either that fix
+          # or the DirectML execution provider.
+          - name: windows-cpu
+            os: windows-2022
+            features: ""
+            artifact_label: windows-x86_64
+            cuda: false
+
+          # -- Windows GPU ----------------------------------------------------
+          # Moonshine on the GPU via ONNX Runtime's WebGPU execution provider -
+          # Dawn over D3D12 on Windows, so NVIDIA, AMD and Intel alike, with no
+          # vendor SDK at build time and nothing extra to ship.
+          #
+          # This accelerates Moonshine, not whisper.cpp: ggml's Vulkan backend
+          # is the only GPU path whisper.cpp has here and it does not register
+          # on Windows MSVC static builds (ggml-org/whisper.cpp#3750). Someone
+          # reading "Windows GPU" should know which engine gets the GPU, which
+          # is why the app reports the two separately.
+          - name: windows-webgpu
+            os: windows-2022
+            features: "moonshine-webgpu"
+            artifact_label: windows-x86_64-webgpu
+            cuda: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # -- System deps (Linux) -------------------------------------------------
+      # squashfs-tools (unsquashfs) is required for APPIMAGE_EXTRACT_AND_RUN=1
+      # which lets appimagetool/linuxdeploy run without FUSE on CI runners.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libasound2-dev \
+            libspeechd-dev \
+            libxdo-dev \
+            patchelf \
+            squashfs-tools \
+            pkg-config \
+            build-essential
+
+      # -- Vulkan SDK (Linux) --------------------------------------------------
+      # The ggml Vulkan backend compiles its compute shaders at build time with
+      # glslc, which ships in the LunarG Vulkan SDK. End-users only need their
+      # GPU's Vulkan driver at runtime (bundled loader finds the host ICD).
+      - name: Install Vulkan SDK (Linux)
+        if: runner.os == 'Linux' && matrix.vulkan
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update -q
+          sudo apt-get install -y vulkan-sdk
+          glslc --version
+
+      # -- Rust ----------------------------------------------------------------
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.name }}
+
+      # -- Node / frontend -----------------------------------------------------
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm install
+
+      # -- Tauri build (Linux) -------------------------------------------------
+      # APPIMAGE_EXTRACT_AND_RUN=1 tells linuxdeploy/appimagetool to extract
+      # and run without FUSE (uses unsquashfs from squashfs-tools instead).
+      # QT_QPA_PLATFORM=offscreen prevents Qt platform errors in headless CI.
+      # Portable GPU AppImage. whisper.cpp's Vulkan backend links only
+      # libvulkan (lightweight, unlike CUDA), so linuxdeploy bundles it fine.
+      #
+      # Moonshine (STT) and Inflect-Micro (TTS) are default features, so both
+      # ONNX engines are in every build without naming them here.
+      - name: Build LLM sidecar (Linux, Vulkan)
+        if: runner.os == 'Linux' && matrix.vulkan
+        run: cargo build --bin fotonvoice-llm-sidecar --release --features vulkan
+
+      - name: Build AppImage + deb (Linux, Vulkan)
+        if: runner.os == 'Linux' && matrix.vulkan
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          QT_QPA_PLATFORM: offscreen
+        run: npm run tauri build -- --features vulkan
+
+      # linuxdeploy bundles whatever graphics/Wayland/input libraries exist on
+      # the build host. On ubuntu-22.04 those are older than modern desktops, and
+      # loading them instead of the host's copies breaks Wayland frame callbacks
+      # (a window renders once, then the compositor never sends another frame)
+      # and trips "unrecognized keysym" xkbcommon errors. Strip
+      # them so the AppImage falls through to the host's libraries at runtime -
+      # this is what the AppImage excludelist exists for, and why a local
+      # build_appimage.sh (which bundles the user's own newer libs) works while
+      # the CI build did not. libvulkan is intentionally left bundled.
+      - name: Slim AppImage to host graphics/input libraries (Linux)
+        if: runner.os == 'Linux' && !matrix.cuda
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          set -euo pipefail
+          appimage=$(find . -path '*/bundle/appimage/*.AppImage' ! -name '*.zsync' | head -1)
+          if [ -z "${appimage:-}" ]; then echo "No AppImage found to slim"; exit 1; fi
+          echo "Slimming $appimage"
+          chmod +x ./appimagetool.bin
+
+          work=$(mktemp -d)
+          cp "$appimage" "$work/in.AppImage"
+          chmod +x "$work/in.AppImage"
+          ( cd "$work" && ./in.AppImage --appimage-extract >/dev/null )
+
+          root="$work/squashfs-root"
+          # Bundle WebKitGTK 4.1 helper processes (WebKitNetworkProcess, WebKitWebProcess)
+          helper_dir=""
+          for dir in "/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1" "/usr/lib/webkit2gtk-4.1" "/usr/lib64/webkit2gtk-4.1"; do
+            if [ -d "$dir" ]; then
+              helper_dir="$dir"
+              break
+            fi
+          done
+
+          # The bundled libwebkit2gtk has its helper-process directory compiled
+          # in as /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1, which the Tauri
+          # bundler rewrites to ././/lib/x86_64-linux-gnu/webkit2gtk-4.1 - a
+          # path relative to the working directory, which linuxdeploy's AppRun
+          # sets to $APPDIR/usr. Release builds of WebKitGTK honour no
+          # environment override for it (WEBKIT_EXEC_PATH exists only in
+          # developer-mode builds), so the helpers must sit at exactly that
+          # relative path. WEBKIT_INJECTED_BUNDLE_PATH is honoured, but as a
+          # single directory, not a colon-separated search path.
+          if [ -n "$helper_dir" ]; then
+            echo "Found WebKitGTK helper processes in $helper_dir, bundling into AppImage..."
+            mkdir -p "$root/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"
+            cp -r "$helper_dir"/* "$root/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/"
+          fi
+
+          for script in "$root/AppRun" "$root/apprun-hooks/linuxdeploy-plugin-gtk.sh"; do
+            [ -f "$script" ] || continue
+            sed -i '/^export WEBKIT_EXEC_PATH=/d; /^export WEBKIT_INJECTED_BUNDLE_PATH=/d' "$script"
+            sed -i '2i export WEBKIT_EXEC_PATH="${APPDIR}/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"' "$script"
+            sed -i '3i export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/injected-bundle"' "$script"
+          done
+
+          # Some libraries can be neither stripped nor left on the library path, so
+          # they are parked in usr/lib/fallback instead: the AppRun hook exposes each
+          # one only when the host has no library of that soname, so a host with its
+          # own copy always wins.
+          #
+          #   libsystemd / libudev - the host's own libmount (Arch) links libsystemd
+          #     and needs a newer LIBSYSTEMD_* version node than the build host's
+          #     copy, while non-systemd distributions may not ship them at all and the
+          #     bundled WebKitGTK needs them.
+          #   libgstgl-1.0 / libwayland-server - the bundled WebKitGTK links both
+          #     directly, and the strip patterns below would delete them.
+          #     libgstgl-1.0.so.0 ships in libgstreamer-gl1.0-0, which
+          #     gstreamer1.0-plugins-base does not depend on, so a desktop with no
+          #     WebKit of its own can be missing it entirely and the app then dies
+          #     with "error while loading shared libraries: libgstgl-1.0.so.0".
+          #
+          # This has to run before the strip loop below, which skips usr/lib/fallback.
+          # Keep this list in sync with build_appimage.sh.
+          mkdir -p "$root/usr/lib/fallback"
+          for pat in 'libsystemd.so*' 'libudev.so*' \
+                     'libgstgl-1.0.so*' 'libwayland-server.so*'; do
+            find "$root" -name "$pat" -not -path '*/fallback/*' -print \
+              -exec mv -t "$root/usr/lib/fallback/" {} + 2>/dev/null || true
+          done
+          echo "Host-first fallback libraries:"; ls -la "$root/usr/lib/fallback"
+
+          # Everything below is deleted so the AppImage falls through to the
+          # host's copy. The rule: once a library comes from the host, every
+          # library it links against must come from the host too, or the
+          # host's copy resolves its symbols against our stale bundled one and
+          # aborts at startup (seen in the wild: GStreamer needing
+          # g_once_init_leave_pointer from GLib 2.80; GLib needing MOUNT_2_40
+          # from libmount; GIO's TLS module needing GNUTLS_3_8_x). A library
+          # may only be stripped if its soname is stable across distros -
+          # libxml2 (.so.2 vs .so.16 on Arch) and libunistring (.so.2 vs
+          # .so.5) are deliberately kept bundled for that reason. Everything
+          # still bundled only needs the build host's (Ubuntu 22.04) versions
+          # of these, so any newer host satisfies them.
+          for pat in \
+            'libwayland-*.so*' 'libEGL.so*' 'libGL.so*' 'libGLX.so*' \
+            'libGLdispatch.so*' 'libOpenGL.so*' 'libglapi.so*' \
+            'libgbm.so*' 'libdrm.so*' \
+            'libxkbcommon.so*' 'libxkbcommon-x11.so*' \
+            `# GLib family, and what the host's GLib/GIO link against` \
+            'libglib-2.0.so*' 'libgobject-2.0.so*' 'libgio-2.0.so*' \
+            'libgmodule-2.0.so*' 'libgthread-2.0.so*' \
+            'libpcre2-8.so*' 'libpcre.so*' 'libffi.so*' \
+            'libmount.so*' 'libblkid.so*' 'libselinux.so*' \
+            `# GIO loads the host's TLS module, which needs the host's gnutls stack` \
+            'libgiognutls.so' 'libgnutls.so*' 'libhogweed.so*' 'libnettle.so*' \
+            'libtasn1.so*' 'libp11-kit.so*' 'libidn2.so*' \
+            `# GStreamer, and what the host's GStreamer links against` \
+            'libgstreamer-*.so*' 'libgst*.so*' 'liborc-0.4.so*' \
+            'libunwind.so*' 'libdw.so*' 'libelf.so*' \
+            'libbz2.so*' 'liblzma.so*' 'libzstd.so*'; do
+            find "$root" -name "$pat" -not -path '*/fallback/*' -print -delete 2>/dev/null || true
+          done
+
+          # Install the AppRun hook that exposes usr/lib/fallback host-first.
+          cp scripts/appimage-hooks/host-first-fallback.sh "$root/apprun-hooks/"
+          chmod +x "$root/apprun-hooks/host-first-fallback.sh"
+          if ! grep -q "host-first-fallback.sh" "$root/AppRun"; then
+            sed -i '/^exec /i source "$this_dir"/apprun-hooks/host-first-fallback.sh' "$root/AppRun"
+          fi
+
+          # Repackage. appimage-pack.sh embeds a runtime that also works on
+          # hosts without libfuse2 (Ubuntu 22.04 / Linux Mint 21 and newer ship
+          # fuse3 only), falling back to appimagetool's own runtime if it
+          # cannot fetch one, and verifies the result unpacks before returning.
+          ./scripts/appimage-pack.sh "$root" "$appimage" ./appimagetool.bin
+          echo "Repackaged $appimage ($(du -h "$appimage" | cut -f1))"
+
+      # CUDA build uses --bundles deb only: the CUDA toolkit populates system
+      # library paths with hundreds of CUDA .so files that linuxdeploy tries to
+      # bundle into the AppImage, causing it to OOM or fail. deb packaging does
+      # not use linuxdeploy and works reliably. CUDA users on Linux are almost
+      # always on Debian/Ubuntu and can install the .deb directly.
+      # -- Tauri build (Windows) -----------------------------------------------
+      # NSIS (setup.exe) only - the advertised Windows installer. The WiX/MSI
+      # bundler's `light.exe` fails to harvest sidecar binaries (see
+      # `externalBin` in tauri.conf.json), and the MSI is a secondary,
+      # unadvertised artifact. Call tauri directly so
+      # `--bundles nsis` reaches tauri instead of cargo.
+      - name: Build installer (Windows, CPU)
+        if: runner.os == 'Windows' && matrix.features == ''
+        run: npx tauri build --bundles nsis
+
+      # Split from the step above rather than interpolating a possibly-empty
+      # `--features`, which passes tauri a bare flag and fails the build.
+      - name: Build installer (Windows, GPU)
+        if: runner.os == 'Windows' && matrix.features != ''
+        run: npx tauri build --bundles nsis --features ${{ matrix.features }}
+
+      # -- Collect and rename Linux artifacts ----------------------------------
+      # Search the whole workspace so the path is correct regardless of whether
+      # cargo uses a workspace-level or package-level target directory.
+      - name: Collect Linux artifacts
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p upload
+          find . \( -name "*.AppImage" -o -name "*.deb" \) \
+              ! -name "*.AppImage.zsync" \
+              ! -path "*/.cargo/*" | \
+          while read -r f; do
+            base=$(basename "$f")
+            ext="${base##*.}"
+            dest="upload/FotonVoice Engine-${{ matrix.artifact_label }}.${ext}"
+            cp "$f" "$dest"
+            echo "Collected: $dest ($(du -sh "$f" | cut -f1))"
+          done
+          ls -lh upload/
+
+      # -- Collect and rename Windows artifacts --------------------------------
+      # Search the whole workspace so the path is correct regardless of where
+      # Tauri/cargo places the bundle directory.
+      - name: Collect Windows artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Get-ChildItem -Path . -Recurse -Include "*.exe","*.msi" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*\bundle\*" -and $_.Name -notlike "*-stub*" } |
+            ForEach-Object {
+              $dest = "upload\FotonVoice Engine-${{ matrix.artifact_label }}$($_.Extension)"
+              Copy-Item $_.FullName $dest
+              $size = "{0:N1} MB" -f ($_.Length / 1MB)
+              Write-Host "Collected: $dest ($size)"
+            }
+          if ((Get-ChildItem upload).Count -eq 0) {
+            Write-Host "ERROR: No bundle files found. Searching for any .exe/.msi to diagnose:"
+            Get-ChildItem -Path . -Recurse -Include "*.exe","*.msi" -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -notlike "*\.cargo*" } |
+              Select-Object -ExpandProperty FullName
+            exit 1
+          }
+
+      # -- Upload to Actions (picked up by publish job) -------------------------
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.name }}
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 1
+
+# -- Publish release -----------------------------------------------------------
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    # Run even if some build variants failed so partial releases still publish
+    if: always() && contains(needs.build.result, 'success')
+
+    steps:
+      # Needed to read the app version for the default tag name.
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag name
+        id: tag
+        run: |
+          # Manual dispatch may override the tag; otherwise derive it from the
+          # app version (e.g. 0.2.4 -> v0.2.4).
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+            echo "name=v${VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Download everything produced by the build matrix
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: List release artifacts
+        run: ls -lh release-artifacts/
+
+      - name: Create / update draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: "FotonVoice Engine ${{ steps.tag.outputs.name }}"
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-artifacts/*
+          # The "What's new" section below is version-specific: update it in the
+          # same commit that bumps the version (scripts/bump_version.sh), so a
+          # release never ships the previous version's notes. Everything under
+          # "## Downloads" is evergreen, and GitHub appends its own generated
+          # "What's Changed" list of merged PRs beneath all of this.
+          #
+          # The Downloads table has to match what the build matrix above
+          # actually produces: a row for a file this workflow does not build
+          # sends people looking for a download that is not there, and a build
+          # with no row is one nobody finds. Note this is a literal YAML block
+          # scalar - a `#` inside `body:` would be published as text, so a row
+          # is removed rather than commented out.
+          body: |
+            ## What's new in 0.5.1
+
+            **A Bug Report page, so testing the new Windows builds does not
+            require a GitHub account.**
+
+            0.5.0 shipped FotonVoice Engine's first Windows build, and this release adds
+            the Windows GPU build beside it. Both were built by one person on
+            one machine - so the thing they needed most was a way for anyone
+            else to say what broke.
+
+            ### Settings -> Bug Report
+
+            Describe the problem and press a button. FotonVoice Engine gathers the log,
+            your OS and hardware, which build you are running and what it can
+            offload to the GPU, and your settings - then sends it, files it on
+            GitHub, saves it to a file, or drafts an email, whichever you pick.
+            **The one-click route needs no GitHub account.**
+
+            It is opt-in in the strongest sense: nothing runs at startup, on a
+            timer, or in the background, and **the page shows you the entire
+            report before anything leaves your machine**. What is in the preview
+            is what gets filed; there is no fuller version behind it.
+
+            What never travels: anything you dictated, any audio, any API key or
+            access token, your username, hostname or IP address, any file path,
+            your custom vocabulary, snippets or prompts, and the labels,
+            commands and URLs of your output targets. Redaction works from an
+            allowlist rather than a blocklist, and a test walks the real config
+            and fails the build naming any setting nobody has classified - so a
+            setting added later cannot leak into a public issue by being
+            forgotten.
+
+            Full detail, including how to check all of it yourself:
+            [docs/bug_reports.md](https://github.com/chezhenkie/fotonvoice-engine/blob/master/docs/bug_reports.md).
+
+            ### Notes
+
+            Reports are rate-limited - five a day, twenty a month, duplicates
+            refused - and saving a report to a file is never limited, so a real
+            bug always has a way out.
+
+            The installers are not code-signed yet, so SmartScreen will warn
+            that the publisher is unknown.
+
+            ## Downloads
+
+            Pick the build for your platform and GPU:
+
+            | Platform | File suffix | GPU required |
+            |---|---|---|
+            | Linux | `-linux-x86_64-vulkan.AppImage` | None - GPU used if present |
+            | Windows | `-windows-x86_64.exe` | None |
+            | Windows (GPU) | `-windows-x86_64-webgpu.exe` | Any Direct3D 12 GPU |
+
+            **There is one Linux build now.** The Vulkan AppImage accelerates
+            any NVIDIA/AMD/Intel GPU through the host Vulkan driver and runs on
+            the CPU when there is no Vulkan device, so it replaces the separate
+            CPU AppImage rather than sitting beside it - the same file is right
+            whether or not you have a GPU. If you were running the CPU AppImage,
+            FotonVoice Engine's own updater will move you onto this one; nothing to do.
+
+            To keep it on the CPU regardless, set **Settings -> Engine -> Device**
+            to **CPU**. Worth doing if your only Vulkan device is a software
+            rasterizer such as Mesa's lavapipe, which is slower than the CPU
+            backend.
+
+            The Linux `.deb` now requires `libvulkan1`, which the package
+            manager pulls in for you.
+
+            **The Windows builds** are NSIS installers. Neither is code-signed
+            yet, so SmartScreen will warn that the publisher is unknown: choose
+            **More info -> Run anyway**.
+
+            **The Windows GPU build** accelerates the **Moonshine** speech
+            engine on any Direct3D 12 GPU - NVIDIA, AMD or Intel - through ONNX
+            Runtime's WebGPU provider. Select Moonshine in **Settings -> Engine**;
+            the tab says which backend the build actually has. Whisper.cpp still
+            runs on the CPU on Windows either way, because its only GPU path
+            here is ggml's Vulkan backend, which does not register on Windows
+            MSVC static builds. If your GPU is not usable the app says so in the
+            log and falls back to the CPU rather than pretending.
+
+            ### Windows - first run
+
+            Windows 10 21H2 or newer, or Windows 11. Everything FotonVoice Engine needs is
+            in the installer; WebView2 ships with Windows 11 and the installer
+            fetches it on older builds.
+
+            Two things are worth knowing before the first dictation:
+
+            - **Microphone access.** Windows denies it silently. If dictation
+              produces nothing, check **Settings -> Privacy & security ->
+              Microphone** and allow desktop apps.
+            - **Global shortcuts** arrive through a Windows keyboard hook, so
+              every gesture works - but Windows does not deliver keys to it
+              while an elevated application has focus, or on the UAC prompt and
+              lock screen. Shortcuts do not fire there, and dictated text cannot
+              be typed into an elevated window unless FotonVoice Engine is elevated too.
+
+            ### Linux - first run
+
+            Needs glibc 2.35 or newer (Ubuntu 22.04+, Linux Mint 21+, Debian
+            12+, Fedora 36+, Arch). Nothing has to be installed first - not
+            even `libfuse2`.
+
+            ```bash
+            chmod +x FotonVoice Engine_*-linux-x86_64*.AppImage
+            # Optional: installs the desktop entry and text-injection helpers.
+            # Global shortcuts need no permissions - your desktop handles them.
+            ./FotonVoice Engine_*-linux-x86_64*.AppImage --install
+            # Launch the application
+            ./FotonVoice Engine_*-linux-x86_64*.AppImage
+            ```

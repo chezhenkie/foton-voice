@@ -1,0 +1,52 @@
+[package]
+name = "fotonvoice-hotkeys"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fotonvoice-config  = { workspace = true }
+fotonvoice-routing = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+crossbeam-channel = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.12"
+# X11 raw key events (XInput2): global shortcuts on the X11 desktops that serve
+# no portal, with no permission setup. Pure Rust, so the AppImage needs no
+# libX11 from the host.
+x11rb = { version = "0.13", features = ["xinput"] }
+# The XDG GlobalShortcuts portal: the compositor owns the key grab, so FotonVoice Engine
+# receives its own shortcuts and never reads a keyboard device.
+ashpd = { workspace = true }
+futures-util = { workspace = true }
+zbus = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# The Win32 low-level keyboard hook, called directly.
+#
+# This replaced `rdev`, which could not serve the job on two counts. It names
+# keys with its own vocabulary (`MetaLeft`, `KeyA`), and translating those into
+# the evdev names every other part of FotonVoice Engine speaks is what the Windows backend
+# used to get wrong - `KEY_METALEFT` never matched the stored `KEY_LEFTMETA`, so
+# no default binding could fire. And it hides the two things this backend needs:
+# the scan code, which is the layout-independent identity the settings UI
+# records, and the hook's return value, which is the only way to stop a bound
+# key also reaching the focused application.
+#
+# windows-sys rather than the `windows` crate: this needs six functions and a
+# struct, the raw FFI signatures are unambiguous, and 0.61 is already in the
+# dependency graph via Tauri, so it adds nothing to compile.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# `INJECTED_TAG`: the marker on FotonVoice Engine's own synthesised keystrokes, so the
+# hook can ignore them instead of re-firing bindings from the app's output.
+fotonvoice-winput = { workspace = true }

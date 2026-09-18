@@ -1,0 +1,216 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  # Every pull request, whatever it targets - deliberately unfiltered.
+  #
+  # This used to be `branches: [master]`, which meant a pull request based on
+  # another branch got no checks at all: not a compile, not a test, nothing. A
+  # stacked change could then be merged down into its base and reach master
+  # having never been built on its own. That is the same shape of hole as
+  # excluding crates from the Windows check - work that looks reviewed because a
+  # PR exists, and was never compiled.
+  pull_request:
+
+env:
+  CARGO_HTTP_MULTIPLEXING: false
+  CARGO_HTTP_HTTP2: false
+
+jobs:
+  # -- Rust compile check --------------------------------------------------------
+  cargo-check:
+    name: cargo check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libasound2-dev \
+            libspeechd-dev \
+            libxdo-dev \
+            patchelf \
+            squashfs-tools \
+            pkg-config \
+            build-essential
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # whisper-rs builds whisper.cpp through the `cmake` crate, so the check
+      # now needs a C++ toolchain that the excluded-crates version did not. The
+      # Windows runners ship both MSVC and CMake; assert it rather than let a
+      # missing one surface as a confusing build-script panic.
+      - name: Verify Windows build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake --version
+          rustc -vV
+
+      # glslc, for the ggml Vulkan backend's compute shaders, which the
+      # `vulkan` check below compiles. Same source as the release workflow uses.
+      - name: Install Vulkan SDK (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update -q
+          sudo apt-get install -y vulkan-sdk
+          glslc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: check-${{ matrix.os }}
+
+      # The same full-workspace check on both platforms, deliberately with
+      # nothing excluded.
+      #
+      # This job used to skip fotonvoice-inference and fotonvoice-app on Windows,
+      # on the grounds that the Linux check covered their type-safety. It does
+      # not: everything under `src-tauri/src` that is `cfg(target_os =
+      # "windows")` is invisible to a Linux compiler, and that is most of the
+      # platform code there is. With those two excluded the excluded set was the
+      # speech engine and the entire application, so no Windows build was ever
+      # verified - which is how the Windows hotkey backend shipped naming keys
+      # in a vocabulary nothing else used.
+      #
+      # `--all-targets` so the test code is checked too, not just the libraries.
+      # Default features include the two ONNX-backed engines, so this fetches
+      # ONNX Runtime at build time and needs network access.
+      - name: cargo check (workspace, default features)
+        run: cargo check --workspace --all-targets
+
+      # The GPU features are off by default, so the workspace check above never
+      # compiles a line of their execution-provider code - and the first thing
+      # that would is a release build, where a mistake costs a whole run. That
+      # is the same shape of gap that let the Windows backend ship unbuildable,
+      # so each shipped GPU variant gets checked here.
+      #
+      # `moonshine-webgpu` is what the Windows GPU release artifact is built
+      # with; `vulkan` is what the Linux AppImage is built with. Both pull
+      # their own prebuilt ONNX Runtime / compile their own shaders, so this is
+      # not free, but it is far cheaper than finding out at release time.
+      - name: cargo check (moonshine-webgpu)
+        run: cargo check -p fotonvoice-app --features moonshine-webgpu
+
+      # Since the CPU AppImage was dropped, `vulkan` is not a variant of the
+      # Linux release - it *is* the Linux release. The default-features check
+      # above used to double as its coverage because the two were built the
+      # same way; now nothing else compiles a line of the ggml Vulkan backend
+      # before the release run does.
+      - name: cargo check (vulkan)
+        if: runner.os == 'Linux'
+        run: cargo check -p fotonvoice-app -p fotonvoice-llm-sidecar --features vulkan
+
+  # -- Unit tests ----------------------------------------------------------------
+  cargo-test:
+    name: cargo test
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libasound2-dev \
+            libspeechd-dev \
+            libxdo-dev \
+            patchelf \
+            squashfs-tools \
+            pkg-config \
+            build-essential \
+            espeak-ng \
+            xvfb
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-linux
+
+      # Run tests for crates that have unit tests and no heavy system deps.
+      # fotonvoice-tts's phoneme-frontend tests exercise the real `espeak-ng`
+      # binary when it is present, and skip cleanly when it isn't - it is
+      # installed above so they actually run here.
+      #
+      # Under xvfb-run for the same reason: the X11 hotkey backend's tests talk
+      # to a real X server when DISPLAY is set, and skip when it isn't. Only a
+      # real server rejects a malformed XISelectEvents request, and a version
+      # of that backend shipped selecting raw and hierarchy events in one mask
+      # - which every server refuses, so no key ever arrived - with the whole
+      # suite passing. Without a display here those tests silently skip and the
+      # gap reopens.
+      - name: cargo test
+        run: xvfb-run -a cargo test -p fotonvoice-config -p fotonvoice-routing -p fotonvoice-hotkeys -p fotonvoice-winput -p fotonvoice-tts -p fotonvoice-update -p fotonvoice-bugreport -p fotonvoice-app
+
+  # -- Unit tests (Windows) ------------------------------------------------------
+  #
+  # The Linux lane above runs the whole suite; this one runs the crates whose
+  # behaviour differs by platform, so a Windows-only regression cannot hide
+  # behind a green Linux run. Crates needing a display, a desktop portal or
+  # espeak-ng are left to the Linux lane, where those exist.
+  cargo-test-windows:
+    name: cargo test (windows)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-windows
+
+      - name: cargo test
+        run: >
+          cargo test
+          -p fotonvoice-config
+          -p fotonvoice-routing
+          -p fotonvoice-hotkeys
+          -p fotonvoice-winput
+          -p fotonvoice-update
+          -p fotonvoice-text
+          -p fotonvoice-bugreport
+
+  # -- Frontend type check -------------------------------------------------------
+  frontend-check:
+    name: Frontend type check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm install
+
+      # svelte-check (Svelte + TypeScript type checking)
+      - run: npm run check
+
+      # Frontend unit tests (vitest)
+      - run: npm run test:unit

@@ -1,0 +1,210 @@
+name: build-linux
+
+# Linux lane, mirroring build-msvc.yml's shape: CI artifact only (no
+# releases, no version gates). Produces a portable Vulkan AppImage + deb.
+# Whisper accelerates through the host Vulkan driver (glslc compiled at
+# build time); parakeet/moonshine ride CPU ONNX here, same as upstream's
+# proven Linux lane. fotonvoice-llm-sidecar ships as the 0-byte build.rs
+# placeholder (lane dormant) exactly like the Windows artifact.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths: ['fotonvoice-src/**', '.github/workflows/build-linux.yml']
+
+concurrency:
+  group: build-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: fotonvoice-src/fotonvoice-engine-0.5.8
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # squashfs-tools (unsquashfs) is required for APPIMAGE_EXTRACT_AND_RUN=1
+      # which lets appimagetool/linuxdeploy run without FUSE on CI runners.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libasound2-dev \
+            libspeechd-dev \
+            libxdo-dev \
+            patchelf \
+            squashfs-tools \
+            pkg-config \
+            build-essential \
+            jq
+
+      # The ggml Vulkan backend compiles its compute shaders at build time
+      # with glslc, which ships in the LunarG Vulkan SDK. End-users only need
+      # their GPU's Vulkan driver at runtime.
+      - name: Install Vulkan SDK
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update -q
+          sudo apt-get install -y vulkan-sdk
+          glslc --version
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fotonvoice-src/fotonvoice-engine-0.5.8
+          key: build-linux
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: fotonvoice-src/fotonvoice-engine-0.5.8/package-lock.json
+
+      # tauri.conf.json sets beforeBuildCommand to "echo skip", so the
+      # frontend dist must be built before tauri build runs.
+      - name: Frontend (vite)
+        run: |
+          npm ci
+          npm run build
+
+      # APPIMAGE_EXTRACT_AND_RUN=1 tells linuxdeploy/appimagetool to extract
+      # and run without FUSE (uses unsquashfs from squashfs-tools instead).
+      # QT_QPA_PLATFORM=offscreen prevents Qt platform errors in headless CI.
+      - name: Build AppImage + deb (Vulkan)
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          QT_QPA_PLATFORM: offscreen
+        run: npm run tauri build -- --features vulkan
+
+      # linuxdeploy bundles whatever graphics/Wayland/input libraries exist on
+      # the build host. On ubuntu-22.04 those are older than modern desktops,
+      # and loading them instead of the host's copies breaks Wayland frame
+      # callbacks (a window renders once, then the compositor never sends
+      # another frame) and trips "unrecognized keysym" xkbcommon errors.
+      # Strip them so the AppImage falls through to the host's libraries at
+      # runtime. libvulkan is intentionally left bundled.
+      - name: Slim AppImage to host graphics/input libraries
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          set -euo pipefail
+          appimage=$(find . -path '*/bundle/appimage/*.AppImage' ! -name '*.zsync' | head -1)
+          if [ -z "${appimage:-}" ]; then echo "No AppImage found to slim"; exit 1; fi
+          echo "Slimming $appimage"
+          chmod +x ./appimagetool.bin
+
+          work=$(mktemp -d)
+          cp "$appimage" "$work/in.AppImage"
+          chmod +x "$work/in.AppImage"
+          ( cd "$work" && ./in.AppImage --appimage-extract >/dev/null )
+
+          root="$work/squashfs-root"
+          # Bundle WebKitGTK 4.1 helper processes (WebKitNetworkProcess,
+          # WebKitWebProcess); the bundled libwebkit2gtk needs them at a fixed
+          # relative path the Tauri bundler already rewrote for.
+          helper_dir=""
+          for dir in "/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1" "/usr/lib/webkit2gtk-4.1" "/usr/lib64/webkit2gtk-4.1"; do
+            if [ -d "$dir" ]; then
+              helper_dir="$dir"
+              break
+            fi
+          done
+          if [ -n "$helper_dir" ]; then
+            echo "Found WebKitGTK helper processes in $helper_dir, bundling into AppImage..."
+            mkdir -p "$root/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"
+            cp -r "$helper_dir"/* "$root/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/"
+          fi
+
+          for script in "$root/AppRun" "$root/apprun-hooks/linuxdeploy-plugin-gtk.sh"; do
+            [ -f "$script" ] || continue
+            sed -i '/^export WEBKIT_EXEC_PATH=/d; /^export WEBKIT_INJECTED_BUNDLE_PATH=/d' "$script"
+            sed -i '2i export WEBKIT_EXEC_PATH="${APPDIR}/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"' "$script"
+            sed -i '3i export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/injected-bundle"' "$script"
+          done
+
+          # Some libraries can be neither stripped nor left on the library
+          # path, so they are parked in usr/lib/fallback instead: the AppRun
+          # hook exposes each one only when the host has no library of that
+          # soname, so a host with its own copy always wins.
+          # This has to run before the strip loop below, which skips
+          # usr/lib/fallback. Keep this list in sync with build_appimage.sh.
+          mkdir -p "$root/usr/lib/fallback"
+          for pat in 'libsystemd.so*' 'libudev.so*' \
+                     'libgstgl-1.0.so*' 'libwayland-server.so*'; do
+            find "$root" -name "$pat" -not -path '*/fallback/*' -print \
+              -exec mv -t "$root/usr/lib/fallback/" {} + 2>/dev/null || true
+          done
+          echo "Host-first fallback libraries:"; ls -la "$root/usr/lib/fallback"
+
+          # Everything below is deleted so the AppImage falls through to the
+          # host's copy. The rule: once a library comes from the host, every
+          # library it links against must come from the host too, or the
+          # host's copy resolves its symbols against our stale bundled one
+          # and aborts at startup. A library may only be stripped if its
+          # soname is stable across distros - libxml2 (.so.2 vs .so.16 on
+          # Arch) and libunistring (.so.2 vs .so.5) are deliberately kept
+          # bundled for that reason.
+          for pat in \
+            'libwayland-*.so*' 'libEGL.so*' 'libGL.so*' 'libGLX.so*' \
+            'libGLdispatch.so*' 'libOpenGL.so*' 'libglapi.so*' \
+            'libgbm.so*' 'libdrm.so*' \
+            'libxkbcommon.so*' 'libxkbcommon-x11.so*' \
+            'libglib-2.0.so*' 'libgobject-2.0.so*' 'libgio-2.0.so*' \
+            'libgmodule-2.0.so*' 'libgthread-2.0.so*' \
+            'libpcre2-8.so*' 'libpcre.so*' 'libffi.so*' \
+            'libmount.so*' 'libblkid.so*' 'libselinux.so*' \
+            'libgiognutls.so' 'libgnutls.so*' 'libhogweed.so*' 'libnettle.so*' \
+            'libtasn1.so*' 'libp11-kit.so*' 'libidn2.so*' \
+            'libgstreamer-*.so*' 'libgst*.so*' 'liborc-0.4.so*' \
+            'libunwind.so*' 'libdw.so*' 'libelf.so*' \
+            'libbz2.so*' 'liblzma.so*' 'libzstd.so*'; do
+            find "$root" -name "$pat" -not -path '*/fallback/*' -print -delete 2>/dev/null || true
+          done
+
+          # Install the AppRun hook that exposes usr/lib/fallback host-first.
+          cp scripts/appimage-hooks/host-first-fallback.sh "$root/apprun-hooks/"
+          chmod +x "$root/apprun-hooks/host-first-fallback.sh"
+          if ! grep -q "host-first-fallback.sh" "$root/AppRun"; then
+            sed -i '/^exec /i source "$this_dir"/apprun-hooks/host-first-fallback.sh' "$root/AppRun"
+          fi
+
+          # Repackage. appimage-pack.sh embeds a runtime that also works on
+          # hosts without libfuse2, falling back to appimagetool's own
+          # runtime if it cannot fetch one, and verifies the result unpacks
+          # before returning.
+          ./scripts/appimage-pack.sh "$root" "$appimage" ./appimagetool.bin
+          echo "Repackaged $appimage ($(du -h "$appimage" | cut -f1))"
+
+      # Search the whole workspace so the path is correct regardless of
+      # whether cargo uses a workspace-level or package-level target
+      # directory.
+      - name: Collect artifacts
+        run: |
+          mkdir -p upload
+          find . \( -name "*.AppImage" -o -name "*.deb" \) \
+              ! -name "*.AppImage.zsync" \
+              ! -path "*/.cargo/*" | \
+          while read -r f; do
+            base=$(basename "$f")
+            ext="${base##*.}"
+            dest="upload/fotonvoice-engine-linux-x86_64-vulkan.${ext}"
+            cp "$f" "$dest"
+            echo "Collected: $dest ($(du -sh "$f" | cut -f1))"
+          done
+          ls -lh upload/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fotonvoice-linux-vulkan
+          path: fotonvoice-src/fotonvoice-engine-0.5.8/upload/

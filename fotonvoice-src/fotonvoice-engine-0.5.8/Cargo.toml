@@ -1,0 +1,155 @@
+[workspace]
+members = [
+    "crates/fotonvoice-config",
+    "crates/fotonvoice-routing",
+    "crates/fotonvoice-hotkeys",
+    "crates/fotonvoice-audio",
+    "crates/fotonvoice-inference",
+    "crates/fotonvoice-tts",
+    "crates/fotonvoice-inject",
+    "crates/fotonvoice-winput",
+    "crates/fotonvoice-dbus",
+    "crates/fotonvoice-mcp",
+    "crates/fotonvoice-llm",
+    "crates/fotonvoice-text",
+    "crates/fotonvoice-update",
+    "crates/fotonvoice-llm-sidecar",
+    "src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+authors = ["FotonVoice Engine Contributors"]
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full", "test-util"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Paths / dirs
+dirs = "5"
+
+# Audio
+cpal = "0.15"
+rubato = "0.15"
+rodio = "0.17"
+# FFT for the LuxTTS mel frontend and the Linkwitz-Riley crossover merge
+rustfft = "6"
+
+# Regex / text processing
+regex = "1"
+
+# Clipboard
+arboard = "3"
+
+# HTTP client
+# "blocking" lets the (synchronous) TTS worker thread lazily fetch a reference
+# voice clip the first time it is needed, mirroring the old pocket-tts crate's
+# own blocking download-on-first-use behavior.
+reqwest = { version = "0.12", features = ["json", "stream", "multipart", "blocking"] }
+bytes = "1"
+
+# DBus (Linux only)
+zbus = { version = "4", features = ["tokio"] }
+
+# Desktop notifications
+notify-rust = "4"
+
+# xdg-desktop-portal bindings (Linux). 0.13+ is required for
+# `register_host_app`: since xdg-desktop-portal 1.21 the GlobalShortcuts portal
+# refuses a session from a host app that has not declared an application id.
+# Only the shortcuts portal is compiled in; 0.13 gates each portal behind a
+# feature, and pulling the rest in would add code FotonVoice Engine never calls.
+#
+# Deliberately NOT requesting ashpd's "tokio" feature. That feature exists only
+# to pick zbus's reactor (`zbus/tokio`) - neither `global_shortcuts` nor
+# `register_host_app` touch the `tokio` crate directly. Enabling it would still
+# flip zbus's reactor for every OTHER consumer of this same zbus 5.x build in
+# the dependency graph, via Cargo's feature unification - including
+# `tauri-plugin-single-instance`, whose Linux implementation calls
+# `zbus::blocking::connection::Builder::build()` during plugin setup (which
+# already runs inside Tauri's own ambient Tokio runtime). zbus's tokio-backed
+# blocking facade builds a brand-new multi-thread runtime internally
+# (`zbus::utils::block_on`) and panics with "Cannot start a runtime from
+# within a runtime" the moment that runs on a thread already driving one -
+# exactly what happened here. zbus's default `async-io` reactor has no such
+# problem: it runs its own background poller thread independent of whatever
+# executor polls the outer future, so it mixes safely with our Tokio-driven
+# code and never touches the plugin at all.
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "global_shortcuts"] }
+futures-util = "0.3"
+
+# Crypto (webhook HMAC)
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+
+# Archive / download helpers
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
+
+# Time / dates
+chrono = { version = "0.4", features = ["serde"] }
+
+# Channel utilities
+crossbeam-channel = "0.5"
+
+# ONNX inference (optional Moonshine STT backend)
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+ndarray = "0.16"
+
+# Internal crates
+fotonvoice-config   = { path = "crates/fotonvoice-config" }
+fotonvoice-routing  = { path = "crates/fotonvoice-routing" }
+fotonvoice-hotkeys  = { path = "crates/fotonvoice-hotkeys" }
+fotonvoice-audio    = { path = "crates/fotonvoice-audio" }
+fotonvoice-inference = { path = "crates/fotonvoice-inference" }
+fotonvoice-tts      = { path = "crates/fotonvoice-tts" }
+fotonvoice-inject   = { path = "crates/fotonvoice-inject" }
+fotonvoice-winput   = { path = "crates/fotonvoice-winput" }
+fotonvoice-dbus     = { path = "crates/fotonvoice-dbus" }
+fotonvoice-mcp      = { path = "crates/fotonvoice-mcp" }
+fotonvoice-llm      = { path = "crates/fotonvoice-llm" }
+fotonvoice-text     = { path = "crates/fotonvoice-text" }
+fotonvoice-update   = { path = "crates/fotonvoice-update" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1
+
+# Optimize all external dependencies at opt-level 3 in dev mode so that
+# ONNX Runtime, Whisper.cpp bindings, Rubato audio resampling, VAD, and
+# tokenizers run at full native speed instead of crawling in unoptimized debug mode.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Keep inference and DSP loops at full speed even in dev builds
+[profile.dev.package.fotonvoice-inference]
+opt-level = 3
+
+[profile.dev.package.fotonvoice-audio]
+opt-level = 3
+

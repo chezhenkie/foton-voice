@@ -1,0 +1,270 @@
+# UI & Windows
+
+**Frontend:** `src/` (Svelte 5, Tailwind CSS 4, Vite 5)
+
+## Window Layout
+
+FotonVoice Engine opens several `WebviewWindow`s managed by Tauri:
+
+| Window | Route | Default Size | Properties |
+|---|---|---|---|
+| Settings | `/settings` | 720 x 640 (min 600 x 450) | Resizable, standard chrome |
+| Setup Wizard | `/wizard` | Fitted to the display, 16:9 (min 1280 x 720) | Resizable, first run only |
+| Setup / Diagnostics | `/udev-warning` | 580 x 600 (min 480 x 420) | Always-on-top |
+| Update | `/update` | 560 x 620 (min 460 x 420) | Resizable, built on demand |
+| Overlay | `/overlay` | 592 x 222 | Transparent, always-on-top, no decorations, click-through |
+
+Settings, the Wizard, and Setup/Diagnostics are declared in `src-tauri/tauri.conf.json`, start hidden (`visible: false`), and are shown programmatically. The Overlay and Update windows are built entirely in code (`window::open_overlay_window` / `window::open_update_window` in `src-tauri/src/window.rs`) rather than declared statically.
+
+### Window Lifecycle
+
+Windows close like any other window: the close button destroys them rather than
+hiding them. FotonVoice Engine is a tray application, so the last window closing must not
+end the process - the app refuses the resulting exit request (an explicit quit
+from the tray carries an exit code, and is honoured) and carries on listening
+for its hotkey with nothing on screen.
+
+Because a closed window no longer exists, every entry point rebuilds one on
+demand: the tray menu and its left click, a second launch of the binary, the
+startup auto-open, and the wizard's hand-off to Settings. Raising an existing
+window pins it above others briefly before focusing it - Linux desktops
+routinely ignore a bare focus request from a process that does not already own
+the focused window - and does not move it.
+
+---
+
+## Settings Window
+
+The main configuration interface. Organized into a sidebar with eleven tabs:
+
+### General Tab
+- "Open setup wizard" button - re-runs the first-run wizard
+- **HuggingFace access token** - the single field for the token used by every gated model FotonVoice Engine can download (Pocket-TTS, Breeze-TTS-2, VoxCPM2); read-only, showing the value, when `HF_TOKEN` is exported. Writes `tts.hf_token`, the same field the setup wizard's voice step edits, so a token entered in either place shows up in the other.
+- "Check for a new version on launch" toggle, and a "Check for updates" button that reports the result inline
+- MCP server toggle, visual feedback toggle, and record timeout control
+- Recording status indicator and word count
+- Manual record/stop button
+
+### Audio Input Tab
+- Input device selector (lists all CPAL devices)
+- Gain slider
+- VAD threshold slider
+- Noise suppression toggle (RNNoise; applies to the next recording)
+- Dynamic stream toggle
+- Live audio level meter (VU meter, updates from `audio-level` events during monitoring)
+- Evdev device path input
+
+### Engine Tab
+- Backend selector (`whisper-cpp`, `moonshine`, `parakeet`, `remote-openai`)
+- Whisper model size selector with download status
+- Compute device selector (auto / CPU / CUDA / Vulkan)
+- Thread count control
+- Moonshine model and language settings
+- Parakeet TDT model selector and download controls
+- Remote Speech Engine settings (endpoint URL, Bearer API token, model identifier, ISO language, and interactive "Test Connection" button with server model discovery tag chips)
+- **Missing Model Warning & Auto-Redirection**: Startup check programmatically determines if the configured voice model file is downloaded. If missing, it immediately switches the active Settings tab to "Engine" and presents a yellow warning alert prompting the user to select and download a model.
+
+### Post-Processing Tab
+- **S1-mini dictation cleanup**: global toggle, styling selection (`semi-formal`, etc.), and reactive download progress for Qwen3-0.6B model files (~480 MB)
+- **Basic Text Cleanup**: filler removal, spoken punctuation, and auto-format-lists toggles. Greyed out and disabled whenever S1-mini is enabled, with a note that S1-mini already covers the same normalization - the two are never applied together.
+- Custom vocabulary list editor
+- Snippet key-value editor
+
+### Hotkeys Tab
+- Hotkey binding management (add/edit/delete bindings, key combo recorder, gesture selector). Shows which mechanism is delivering shortcuts and, on the portal path, the keys your desktop actually bound for each binding - which may differ from what was requested, since your desktop gets the final say. The key recorder captures inside FotonVoice Engine's own focused window using ordinary browser key events; it is not a global listener. It refuses combinations no desktop can bind - modifiers with no regular key, or two regular keys - explains why while you are still recording, and leaves the existing shortcut in place.
+- Per-keybind S1-mini dictation cleanup override, shown as a cyan `S1-mini` badge on active bindings
+
+### Output Commands Tab
+- Visual editor for `targets.toml` - add/edit/delete output commands (the tab is
+  labelled "Output Commands"; the file and its `[[target]]` blocks are unchanged)
+- A note at the top explaining the spoken form: "FotonVoice Engine", then the command's
+  name, then the text
+- Per-target fields: command name (the target's name, and the phrase that routes
+  dictation here through a Voice Command Router target), delivery type, and
+  type-specific options - including, for file targets, a timestamp format with a
+  live preview that flags an invalid pattern
+- Per-target processing override controls (filler removal, spoken punctuation, list formatting, code mode)
+- Single-line mode for `inject` and `command` targets
+
+### Visual Feedback Tab
+- Preview and selection of overlay animation styles
+- **Show overlay on voice command trigger**: Checkbox toggle to enable or disable displaying the temporary UI overlay pill when a voice command trigger is activated (`show_command_overlay`).
+- **Command overlay duration (seconds)**: Number input control to set the display duration (1-10s, default 3s) for the voice command overlay pill (`command_overlay_duration_secs`).
+- **Overlay Position Control**: Dropdown choice for setting the Heads-Up display screen alignment (**Top**, **Center**, or **Bottom** of the screen).
+- **Overlay Display Control**: Dropdown choice to select which target monitor display screen (**Primary Monitor** or specific connected panels like `"HDMI-1"`) the visual overlay appears on. Features a graceful disconnection primary display failover and a golden warning badge alert.
+- Overlay appearance controls
+
+### TTS Tab
+- Enable/disable toggle
+- Engine selector (eSpeak-NG / Piper / Pocket-TTS / Inflect-Micro-v2 / Breeze-TTS-2 / VoxCPM2)
+- Voice design speaker prompt inputs for Breeze-TTS-2 and VoxCPM2
+- Reference voice selector with download status per voice and support for custom `.wav` voice clips
+- Model Memory mode selector (**Always Loaded** vs **On Demand** with idle unload minutes slider)
+- Pronunciation snippet dictionary editor
+- Stop key configuration
+- Response overlay toggle
+
+Gated engines (Pocket-TTS, Breeze-TTS-2, VoxCPM2) point to the single HuggingFace access token field in the **General** tab rather than each carrying its own copy.
+
+### OpenAI API Tab
+Configures post-processing through any OpenAI-compatible API server (a local
+Ollama or LM Studio instance, or a hosted provider).
+- Enable/disable toggle
+- API URL (defaults to a local server, e.g. `http://localhost:11434`; may include a `/v1` suffix)
+- API Key (sent as a `Bearer` token; required by most remote servers, optional for localhost)
+- Model name
+- Mode selector
+- Custom prompt text area
+- "Test Connection" button -> shows available models
+
+### Bug Report Tab
+Gathers a diagnostic report and offers four ways to send it. Full detail in
+[Bug Reports](./bug_reports.md).
+- A ledger of what is collected and what never is, shown **above** the form -
+  the disclosure must be readable without typing anything
+- Summary, area, frequency and description fields, with a minimum length so a
+  one-word report cannot be filed
+- "Show me exactly what will be sent" - the literal issue body, not a summary of it
+- **Send report** (only in builds with a relay endpoint compiled in; no GitHub
+  account needed), **Open on GitHub** (prefills GitHub's form; nothing is sent
+  until the user submits it there), **Save report to a file**, **Copy report**,
+  **Email it**
+- The rate limits, how many reports have been sent, and a **Reset ID** button
+
+Backed by `src-tauri/src/bug_report.rs` and the `fotonvoice-bugreport` crate.
+
+### About Tab
+- Version information
+- Links to documentation and source
+
+---
+
+## Overlay Window
+
+A transparent, always-on-top, click-through floating HUD that visualizes audio activity, rendered by a dedicated `WebviewWindow` loading the `/overlay` Svelte route (`src/lib/Overlay/Overlay.svelte`) - the same component tree used for the style preview in Settings. It has no title bar or decorations, ignores mouse input (the cursor hit-test is disabled at the windowing-system level), and auto-shows/hides based on recording state (controlled by `ui.show_overlay`). Every style plays a spring-driven load animation on appear and an unload animation on dismiss - on Windows the window is created at startup and stays mapped, rendering nothing visible while idle; on Linux the backend (`tray::spawn_status_ticker`) creates it on demand and destroys it after a 500ms idle debounce, a WebKitGTK repaint workaround. See `docs/overlays.md` for the full mechanism.
+
+The window coordinates are calculated dynamically relative to the active display monitor's size and scale factor, placing the visualizer cleanly in the **Center**, **Top** (60 logical pixels from the top), or **Bottom** (60 logical pixels from the bottom) of the screen depending on the `ui.overlay_position` setting. The HUD target display can be locked to a specific monitor screen (`ui.overlay_monitor`), failing over gracefully to the primary monitor with a golden warning badge if the target screen is unplugged. Position changes are hot-reloaded and applied instantly in real-time.
+
+### Visualization Styles
+
+Set via `ui.overlay_style` in config. Each style has a unique identity, audio visualizer, and target indicator - see the [Overlay UI Guide](./overlays.md) for full details. Svelte components with the same designs live in `src/lib/Overlay/` for the web overlay layer.
+
+#### `blue_wave` (default) - Ocean Wave
+A glass tide pool: three layered waves whose tide rises with the microphone level, rising bubbles, and a buoy tag bobbing on the surface that shows the active target. Water fills on load and drains on unload. Component: `BlueWave.svelte`.
+
+#### `voice_card` - Voice Card
+A membership-card design with a gold chip, holographic sheen, and a 20x6 VU-meter LED dot matrix (green->amber->red) with fast-attack/slow-decay ballistics. The active target is embossed in the card's `TARGET` field. Deals in/out with a card flip. Component: `VoiceCard.svelte`.
+
+#### `waveform` - Oscilloscope
+A green-phosphor oscilloscope with a live scrolling line trace of the microphone signal, graticule grid, and a `TGT >` target readout chip. Powers on/off like a CRT (expands from / collapses to a scanline). Component: `Waveform.svelte`.
+
+#### `pulse` - Pulse Ring
+A sonar/radar dial: rotating sweep arm with trailing wedge, expanding audio pulse rings, contact blips, and an audio-reactive core - paired with a pulsing "TARGET LOCK" plate showing the active target. Component: `Pulse.svelte`.
+
+#### `none`
+Overlay is disabled entirely.
+
+### Speaking Pill
+
+While TTS is speaking, a green "SYSTEM RESPONDING" pill with a live mini-equalizer and the active target label slides up from the bottom of the overlay window (and a red pill is shown for MCP recording in the web overlay layer).
+
+---
+
+## Setup Wizard
+
+Opens once, on a machine whose config file does not exist yet, and is the only
+window shown on that first launch. Seven steps, each writing its choice to the
+config as it is made:
+
+| Step | Writes | Notes |
+|---|---|---|
+| Welcome | - | A read-only contents page; the cards preview the steps rather than linking to them |
+| Engine | `engine.backend`, model size, `whisper_cpp.device`, `remote_openai.*` | Choose from 4 engines: `whisper.cpp`, `Moonshine`, `Parakeet TDT`, or `Remote Speech Engine`. For local models, Continue downloads the chosen model and waits for it. For Remote Speech Engine, an interactive connection test validates the endpoint and fetches available models before proceeding |
+| Hotkey | `bindings.toml` | Only gestures the running shortcut backend can deliver are offered, and the combination is validated by the same Rust rules the portal registration uses. Blocked until the desktop has accepted the shortcut, because the next step is a live test |
+| Overlay | `ui.show_overlay`, `ui.overlay_style`, `ui.overlay_position` | Each style previews a recording of the real overlay, bundled at `src/assets/overlays/<style id>.webm`, falling back to a CSS animation |
+| Test | - | A real dictation: the transcript is injected into the focused window, and the readout follows the pipeline's own recording and processing state |
+| Voice | `tts.enabled`, `tts.engine`, `tts.hf_token` | Each engine downloads from its own card (Breeze-TTS-2, Pocket-TTS, Inflect-Micro-v2, VoxCPM2, Piper, eSpeak-NG); the play button unlocks once its assets are on disk. Pocket-TTS and Breeze-TTS-2 are gated downloads, so the step asks for a HuggingFace access token and keeps those two cards locked until one is entered. The token is saved to `tts.hf_token`. An exported `HF_TOKEN` is shown instead, read-only |
+| Done | `ui.setup_completed` | Lists anything that failed, with the raw backend error and a copyable diagnostics report |
+
+The first hotkey is bound to a `command` delivery target named "Command",
+created by the wizard if it does not exist. Command delivery falls through to
+typing into the focused window when no "FotonVoice Engine &lt;target&gt;" phrase is present,
+so it behaves exactly like `inject` until a second target exists.
+
+The window opens at the largest 16:9 size that fits the display, capped at
+1600 x 900 and floored at 1280 x 720 - the size below which the layout starts
+to wrap. A fixed size is not safe: 1600 x 900 on a 1080p display at 125%
+scaling is 2000 x 1125 physical, and opens with its footer off-screen.
+
+Re-runnable afterwards with `fotonvoice-engine --setup` (also `--wizard`,
+`--setup-wizard`, `--first-run`), which works whether or not the app is already
+running, or from Settings -> General. A re-run builds a fresh window and starts
+at step one.
+
+---
+
+## Frontend State Management
+
+### Config Store (`src/stores/config.ts`)
+
+```typescript
+// Reactive store - all Settings components bind to this
+export const config = writable<AppConfig>(defaultConfig);
+export const configDirty = writable(false);
+
+// Auto-save: debounced 400ms after any change
+config.subscribe((cfg) => {
+  // 400ms debounce -> invoke('save_config', { newConfig: cfg })
+});
+```
+
+Initialized by `loadConfig()` which calls `get_config()` IPC on startup. The `config-changed` Tauri event refreshes the store when another window or external process modifies config, with a guard to avoid circular auto-save loops.
+
+### Status Store (`src/stores/status.ts`)
+
+```typescript
+export const status = writable<AppStatus>({
+  recording: false,
+  processing: false,
+  speaking: false,
+  audio_ready: true,
+  word_count: 0,
+  active_target_id: "default",
+  active_target_label: "Focused Window",
+});
+
+// Derived convenience stores:
+export const recording = derived(status, ($s) => $s.recording);
+export const speaking = derived(status, ($s) => $s.speaking);
+export const wordCount = derived(status, ($s) => $s.word_count);
+export const activeTargetLabel = derived(status, ($s) => $s.active_target_label ?? "Focused Window");
+```
+
+Updated by `status-tick` Tauri events (emitted by the backend when the state changes, plus a heartbeat under a second apart) and an initial `get_status()` call on load.
+
+---
+
+## Tauri Events (Backend -> Frontend)
+
+| Event | Payload | Description |
+|---|---|---|
+| `status-tick` | `AppStatus` | State update, on change plus a sub-second heartbeat |
+| `config-changed` | `AppConfig` | Config was modified (by any window or externally) |
+| `audio-level` | `f32` | RMS audio level for the VU meter and overlay visualisers (while recording or monitoring), at most one per frame |
+| `update-progress` | `{ downloaded, total }` | Bytes fetched so far while an update downloads |
+| `update-installed` | `String` (version) | The new version is in place; the app is about to restart |
+| `update-failed` | `String` | The update could not be installed; the running version is untouched |
+
+---
+
+## Build & Dev
+
+```bash
+# Development (hot-reload frontend, Rust recompiles on save)
+npm run tauri dev
+
+# Production build (AppImage on Linux, .exe/.msi on Windows)
+npm run tauri build
+```
+
+The Vite dev server runs on `http://localhost:5173`. In dev mode, Tauri loads the frontend from Vite. In production, frontend assets are bundled into the binary.

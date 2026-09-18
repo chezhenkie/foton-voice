@@ -1,0 +1,1890 @@
+<script lang="ts">
+  import type { AppConfig } from "../../stores/config";
+  import { config, configDirty, saveConfig } from "../../stores/config";
+  import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
+  import { onMount, onDestroy } from "svelte";
+  import CustomSelect from "./CustomSelect.svelte";
+
+  let { cfg = $bindable() } = $props<{ cfg: AppConfig }>();
+  function markDirty() {
+    config.set(cfg);
+    configDirty.set(true);
+  }
+
+  // -- Run Speed Timer --------------------------------------------------------
+  let runSpeed = $state<number | null>(null);
+  let elapsed = $state(0);
+  let isCounting = $state(false);
+  let timerId: any = null;
+  let unlistenTtsStart: (() => void) | null = null;
+  let unlistenTtsEnd: (() => void) | null = null;
+  let unlistenTtsError: (() => void) | null = null;
+  let voiceSpeaking = $state(false);
+  let ttsError = $state<string | null>(null);
+  let startTime = 0;
+
+  function startTimer() {
+    isCounting = true;
+    elapsed = 0;
+    runSpeed = null;
+    startTime = performance.now();
+    
+    if (timerId) clearInterval(timerId);
+    timerId = setInterval(() => {
+      elapsed = Math.round(performance.now() - startTime);
+      if (elapsed > 10000) {
+        clearInterval(timerId);
+        isCounting = false;
+        runSpeed = null;
+      }
+    }, 10);
+  }
+
+  // -- Piper ------------------------------------------------------------------
+
+  const PIPER_VOICES = [
+    "announcer",
+    "BT7274",
+    "de_DE-mls-medium",
+    "de_DE-thorsten_emotional-medium",
+    "de_DE-thorsten-high",
+    "de_DE-thorsten-medium",
+    "en-gb-southern_english_female-low",
+    "en-us-lessac-medium",
+    "en_GB-alba-medium",
+    "en_GB-cori-high",
+    "en_GB-cori-medium",
+    "en_GB-jenny_dioco-medium",
+    "en_GB-northern_english_male-medium",
+    "en_GB-semaine-medium",
+    "en_GB-vctk-medium",
+    "en_US-carlin-high",
+    "en_US-data_7024-medium",
+    "en_US-eminem-medium",
+    "en_US-hal_6409-medium",
+    "es_ES-davefx-medium",
+    "es_ES-sharvard-medium",
+    "es_MX-claude-high",
+    "fr_FR-mls-medium",
+    "fr_FR-siwis-medium",
+    "fr_FR-tom-medium",
+    "fr_FR-upmc-medium",
+    "glados",
+    "nl_BE-nathalie-medium",
+    "nl_BE-rdh-medium",
+    "nl_NL-alex-medium",
+    "nl_NL-pim-medium",
+    "nl_NL-ronnie-medium",
+    "PDA",
+    "ScorchAI"
+  ];
+
+  let downloadedMap = $state<Record<string, boolean>>({});
+  let checking = $state(false);
+  let downloading = $state(false);
+  let testing = $state(false);
+  let showTestEdit = $state(false);
+  let voiceDirError = $state<string | null>(null);
+  // Voices present in the configured voices folder (onnx + json pairs) - the
+  // menu lists these first, then the download catalogue entries not on disk.
+  let folderVoices = $state<string[]>([]);
+
+  function allVoiceNames(): string[] {
+    return Array.from(new Set([...folderVoices, ...PIPER_VOICES]));
+  }
+
+  async function checkAllVoicesDownloaded() {
+    checking = true;
+    try {
+      const listed = await invoke<unknown>("list_piper_voices", {
+        voiceDir: cfg.tts.voice_dir,
+      });
+      folderVoices = Array.isArray(listed) ? (listed as string[]) : [];
+    } catch (e) {
+      console.error("Failed to list piper voices in the folder", e);
+      folderVoices = [];
+    }
+    const newMap: Record<string, boolean> = {};
+    for (const v of allVoiceNames()) {
+      try {
+        newMap[v] = await invoke<boolean>("check_voice_downloaded", {
+          voiceName: v,
+          voiceDir: cfg.tts.voice_dir,
+        });
+      } catch (e) {
+        console.error("Failed to check download status for voice " + v, e);
+        newMap[v] = false;
+      }
+    }
+    downloadedMap = newMap;
+    checking = false;
+  }
+
+  async function triggerDownload(voice: string) {
+    if (downloading) return;
+    downloading = true;
+    try {
+      await invoke("download_voice", {
+        voiceName: voice,
+        voiceDir: cfg.tts.voice_dir,
+      });
+      downloadedMap[voice] = true;
+    } catch (e) {
+      alert(`Failed to download voice: ${e}`);
+    } finally {
+      downloading = false;
+    }
+  }
+
+  async function validateVoiceDir() {
+    const path = cfg.tts.voice_dir;
+    if (!path) {
+      voiceDirError = null;
+      return;
+    }
+    const exists = await invoke<boolean>("check_directory_exists", { path });
+    voiceDirError = exists ? null : "This folder does not exist. Please create it first or leave blank for the default location.";
+    if (!voiceDirError) {
+      await checkAllVoicesDownloaded();
+    }
+  }
+
+  function onVoiceDirChange() { markDirty(); }
+
+  function onVoiceDirKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+  }
+
+  async function onVoiceChanged() {
+    markDirty();
+  }
+
+  async function testTts() {
+    if (testing) return;
+    
+    try {
+      await saveConfig(cfg);
+    } catch (err) {
+      ttsError = `Failed to save configuration: ${err}`;
+      return;
+    }
+    
+    if (voiceSpeaking) {
+      voiceSpeaking = false;
+      try {
+        await invoke("stop_tts");
+      } catch (err) {
+        console.error("Failed to stop TTS:", err);
+      }
+    }
+    
+    testing = true;
+    ttsError = null;
+    startTimer();
+
+    let engineName = "TTS";
+    let voice: string | null = null;
+    
+    if (cfg.tts.engine === "piper") {
+      engineName = "Piper";
+      voice = cfg.tts.voice;
+    } else if (cfg.tts.engine === "pocket_tts") {
+      engineName = "Pocket-TTS";
+      voice = cfg.tts.pocket_tts.voice;
+    } else if (cfg.tts.engine === "breeze_tts_2") {
+      engineName = "Breeze-TTS-2";
+      voice = null;
+    } else if (cfg.tts.engine === "vox_cpm_2") {
+      engineName = "VoxCPM2";
+      voice = null;
+    } else if (cfg.tts.engine === "inflect_micro") {
+      engineName = "Inflect Micro";
+      voice = null;
+    } else if (cfg.tts.engine === "lux_tts") {
+      engineName = "LuxTTS";
+      voice = null;
+    } else if (cfg.tts.engine === "espeak") {
+      engineName = "eSpeak-NG";
+      voice = null;
+    }
+    
+    const custom = (cfg.tts.test_text ?? "").trim();
+    const textToSpeak = custom.length > 0
+      ? custom
+      : `Hi this is ${engineName} speaking from FotonVoice Engine`;
+    
+    try {
+      await invoke("speak_text", {
+        text: textToSpeak,
+        voice: voice,
+      });
+    } catch (e) {
+      ttsError = `${e}`;
+      clearInterval(timerId);
+      isCounting = false;
+      testing = false;
+    }
+  }
+
+  let engineSwitching = $state(false);
+
+  // Why the Test button is unavailable, or null when it is usable. Returning a
+  // reason rather than a bare boolean means a greyed-out button can say what is
+  // wrong instead of leaving the user to guess.
+  function testTtsDisabledReason(): string | null {
+    if (!cfg.tts.enabled) return "Enable text-to-speech above first.";
+    if (engineSwitching) return "Switching engine...";
+    if (voiceSpeaking) return null;
+    if (testing) return "Already speaking.";
+
+    if (cfg.tts.engine === "inflect_micro") {
+      if (!inflectAvailable) {
+        return "This build was compiled without the `inflect-micro` feature, so this engine cannot synthesize. Rebuild with: npm run tauri dev -- --features inflect-micro";
+      }
+      if (inflectChecking) return "Checking local model files...";
+      if (inflectDownloading) return "Downloading the model...";
+      if (!inflectReady) return "Download the model first.";
+    }
+    if (cfg.tts.engine === "lux_tts") {
+      if (!luxAvailable) {
+        return "This build was compiled without the `luxtts` feature, so this engine cannot synthesize. Rebuild with: npm run tauri dev -- --features luxtts";
+      }
+      if (luxChecking) return "Checking local model files...";
+      if (!luxReady) return "Place the model files first (download or manual copy).";
+    }
+    if (cfg.tts.engine === "breeze_tts_2") {
+      if (breezeChecking) return "Checking local model files...";
+      if (breezeDownloading) return "Downloading the model...";
+      if (!breezeReady) return "Download the model first.";
+    }
+    if (cfg.tts.engine === "vox_cpm_2") {
+      if (voxCpmChecking) return "Checking local model files...";
+      if (voxCpmDownloading) return "Downloading the model...";
+      if (!voxCpmReady) return "Download the model first.";
+    }
+    return null;
+  }
+
+  function isTestTtsDisabled() {
+    if (!cfg.tts.enabled || engineSwitching) return true;
+    if (voiceSpeaking) return false;
+    if (testing) return true;
+    
+    if (cfg.tts.engine === "piper") {
+      return checking || downloading || !downloadedMap[cfg.tts.voice];
+    }
+    if (cfg.tts.engine === "pocket_tts") {
+      return pocketTtsChecking || pocketTtsDownloading || !pocketTtsReady;
+    }
+    if (cfg.tts.engine === "breeze_tts_2") {
+      return breezeChecking || breezeDownloading || !breezeReady;
+    }
+    if (cfg.tts.engine === "vox_cpm_2") {
+      return voxCpmChecking || voxCpmDownloading || !voxCpmReady;
+    }
+    if (cfg.tts.engine === "inflect_micro") {
+      return inflectChecking || inflectDownloading || !inflectReady || !inflectAvailable;
+    }
+    if (cfg.tts.engine === "lux_tts") {
+      return luxChecking || !luxReady || !luxAvailable;
+    }
+    return false;
+  }
+
+  // -- Pocket-TTS -------------------------------------------------------------
+
+  let pocketTtsVoices = $state<{ id: string; label: string }[]>([]);
+  let pocketTtsVoiceDirError = $state<string | null>(null);
+
+  function activeClonedVoiceDir(): string {
+    if (cfg.tts.engine === "vox_cpm_2") return cfg.tts.vox_cpm_2.voice_dir || "";
+    if (cfg.tts.engine === "breeze_tts_2") return cfg.tts.breeze_tts_2.voice_dir || "";
+    if (cfg.tts.engine === "lux_tts") return cfg.tts.lux_tts.voice_dir || "";
+    return cfg.tts.pocket_tts.voice_dir || "";
+  }
+
+  function ensureDefaultClonedVoices() {
+    if (!pocketTtsVoices || pocketTtsVoices.length === 0) return;
+    const firstVoice = pocketTtsVoices[0].id;
+    let changed = false;
+
+    // VoxCPM2: default cloned voice to first voice if not selected or invalid
+    if (!cfg.tts.vox_cpm_2.cloned_voice || !pocketTtsVoices.some(v => v.id === cfg.tts.vox_cpm_2.cloned_voice)) {
+      cfg.tts.vox_cpm_2.cloned_voice = firstVoice;
+      changed = true;
+    }
+
+    // Breeze-TTS-2: default cloned voice to first voice if not selected or invalid
+    if (!cfg.tts.breeze_tts_2.cloned_voice || !pocketTtsVoices.some(v => v.id === cfg.tts.breeze_tts_2.cloned_voice)) {
+      cfg.tts.breeze_tts_2.cloned_voice = firstVoice;
+      changed = true;
+    }
+
+    // LuxTTS: default cloned voice to first voice if not selected or invalid
+    if (!cfg.tts.lux_tts.cloned_voice || !pocketTtsVoices.some(v => v.id === cfg.tts.lux_tts.cloned_voice)) {
+      cfg.tts.lux_tts.cloned_voice = firstVoice;
+      changed = true;
+    }
+
+    // Pocket-TTS: default voice to first voice if not selected or invalid
+    if (!cfg.tts.pocket_tts.voice || !pocketTtsVoices.some(v => v.id === cfg.tts.pocket_tts.voice)) {
+      cfg.tts.pocket_tts.voice = firstVoice;
+      changed = true;
+    }
+
+    if (changed) {
+      markDirty();
+    }
+  }
+
+  $effect(() => {
+    ensureDefaultClonedVoices();
+    // Voice Design is not offered for VoxCPM2 or Breeze-TTS-2 (see
+    // onEngineChanged) - force clone mode even for a config saved before
+    // that change.
+    if (cfg.tts.vox_cpm_2.voice_mode !== "clone") {
+      cfg.tts.vox_cpm_2.voice_mode = "clone";
+      markDirty();
+    }
+    if (cfg.tts.breeze_tts_2.voice_mode !== "clone") {
+      cfg.tts.breeze_tts_2.voice_mode = "clone";
+      markDirty();
+    }
+  });
+
+  async function loadPocketTtsVoices() {
+    try {
+      pocketTtsVoices = await invoke<{ id: string; label: string }[]>("list_pocket_tts_voices", {
+        voiceDir: activeClonedVoiceDir(),
+      });
+      ensureDefaultClonedVoices();
+    } catch (e) {
+      console.error("list_pocket_tts_voices:", e);
+    }
+  }
+
+  async function validatePocketTtsVoiceDir(customPath?: string | Event) {
+    const path = typeof customPath === "string" ? customPath : activeClonedVoiceDir();
+    if (!path) {
+      pocketTtsVoiceDirError = null;
+      await loadPocketTtsVoices();
+      return;
+    }
+    const exists = await invoke<boolean>("check_directory_exists", { path });
+    pocketTtsVoiceDirError = exists ? null : "This folder does not exist. Please create it first or leave blank for the default location.";
+    if (!pocketTtsVoiceDirError) {
+      await loadPocketTtsVoices();
+    }
+  }
+
+  function onPocketTtsVoiceDirChange() {
+    markDirty();
+  }
+
+  function onPocketTtsVoiceDirKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+  }
+
+  let piperVoiceOptions = $derived(
+    [
+      ...folderVoices.map((v) => ({
+        value: v,
+        label: `${v}${downloadedMap[v] ? " +" : ""}`
+      })),
+      ...PIPER_VOICES.filter((v) => !folderVoices.includes(v)).map((v) => ({
+        value: v,
+        label: `${v}${downloadedMap[v] ? " +" : ""}`
+      }))
+    ]
+  );
+
+  let pocketTtsVoiceOptions = $derived(
+    pocketTtsVoices.map(v => ({
+      value: v.id,
+      label: v.label
+    }))
+  );
+
+  // -- Model memory -----------------------------------------------------------
+  //
+  // Only the neural engines (Pocket-TTS, Breeze-TTS-2, Inflect-Micro-v2) keep
+  // weights resident; Piper and eSpeak shell out to a process per utterance and
+  // hold nothing between them.
+
+  const memoryModeOptions = [
+    { value: "always_loaded", label: "Always loaded (fastest response)" },
+    { value: "on_demand", label: "Load when needed, unload when idle (saves memory)" }
+  ];
+
+  // Derived rather than local state so a change made elsewhere - the tray
+  // toggle, another settings window - shows up here immediately.
+  let idleMinutes = $derived(Math.round((cfg.tts.idle_unload_secs ?? 900) / 60));
+
+  function onMemoryModeChanged() {
+    if (cfg.tts.memory_mode === "on_demand" && !cfg.tts.idle_unload_secs) {
+      cfg.tts.idle_unload_secs = 900;
+    }
+    markDirty();
+  }
+
+  function onIdleMinutesChange(e: Event) {
+    const raw = Number((e.currentTarget as HTMLInputElement).value);
+    // 1 minute floor: anything shorter would drop the model between two
+    // sentences of the same reply. 8 hours is effectively "never".
+    const minutes = Math.min(480, Math.max(1, Math.round(raw) || 15));
+    cfg.tts.idle_unload_secs = minutes * 60;
+    markDirty();
+  }
+
+  const engineOptions = [
+    { value: "vox_cpm_2", label: "VoxCPM2 (neural, voice cloning & design)" },
+    { value: "breeze_tts_2", label: "Breeze-TTS-2 (neural, voice design)" },
+    { value: "pocket_tts", label: "Pocket-TTS (neural, voice cloning)" },
+    { value: "lux_tts", label: "LuxTTS (neural, 48 kHz voice cloning)" },
+    { value: "piper", label: "Piper (neural, high quality)" },
+    { value: "inflect_micro", label: "Inflect Micro (neural, 38 MB)" },
+    { value: "espeak", label: "eSpeak-NG (lightweight)" }
+  ];
+
+  // -- Inflect-Micro-v2 -------------------------------------------------------
+  //
+  // A fixed-voice model, so there is no voice picker here - the knobs are the
+  // sampling seed and the two VITS noise scales. `inflectAvailable` reports
+  // whether the app was built with the `inflect-micro` feature; without it the
+  // engine can be selected but never synthesizes, so the UI says so up front.
+
+  let inflectAvailable = $state(true);
+  let inflectReady = $state(false);
+  let inflectChecking = $state(false);
+  let inflectDownloading = $state(false);
+  let inflectSignature = $state<string | null>(null);
+  let inflectInspecting = $state(false);
+  let inflectError = $state<string | null>(null);
+
+  async function checkInflectAvailable() {
+    try {
+      inflectAvailable = await invoke<boolean>("inflect_micro_available");
+    } catch (e) {
+      console.error("inflect_micro_available:", e);
+      inflectAvailable = false;
+    }
+  }
+
+  async function checkInflectReady() {
+    inflectChecking = true;
+    try {
+      inflectReady = await invoke<boolean>("check_inflect_micro_downloaded", {
+        modelDir: cfg.tts.inflect_micro.model_dir,
+      });
+    } catch (e) {
+      console.error("check_inflect_micro_downloaded:", e);
+      inflectReady = false;
+    } finally {
+      inflectChecking = false;
+    }
+  }
+
+  async function downloadInflect() {
+    if (inflectDownloading) return;
+    inflectDownloading = true;
+    inflectError = null;
+    try {
+      await invoke("download_inflect_micro", {
+        modelDir: cfg.tts.inflect_micro.model_dir,
+      });
+      inflectReady = true;
+    } catch (e) {
+      // Reported inline rather than through alert(): the backend lists every URL
+      // it tried, which is far too long for a modal, and a blocking dialog here
+      // leaves the user with no way to copy the detail out.
+      inflectError = `${e}`;
+    } finally {
+      inflectDownloading = false;
+    }
+  }
+
+  // Diagnostic: report the tensor names the downloaded export actually declares.
+  // Useful when synthesis fails because the graph's naming doesn't match what
+  // the Rust side binds against.
+  async function inspectInflect() {
+    if (inflectInspecting) return;
+    inflectInspecting = true;
+    inflectSignature = null;
+    try {
+      const sig = await invoke<unknown>("inflect_micro_inspect", {
+        modelDir: cfg.tts.inflect_micro.model_dir,
+      });
+      inflectSignature = JSON.stringify(sig, null, 2);
+    } catch (e) {
+      inflectSignature = `${e}`;
+    } finally {
+      inflectInspecting = false;
+    }
+  }
+
+  function onInflectSettingChanged() { markDirty(); }
+
+  // -- LuxTTS -----------------------------------------------------------------
+  //
+  // Voice-cloning model: the voice is a .wav + .txt pair in the shared voice
+  // folder. The graphs are not downloaded by the app - they are placed in the
+  // model dir by the user (or a future download lane) - so the ready check is
+  // the primary gate.
+
+  let luxAvailable = $state(true);
+  let luxReady = $state(false);
+  let luxChecking = $state(false);
+
+  async function checkLuxAvailable() {
+    try {
+      luxAvailable = await invoke<boolean>("lux_tts_available");
+    } catch (e) {
+      console.error("lux_tts_available:", e);
+      luxAvailable = false;
+    }
+  }
+
+  async function checkLuxReady() {
+    luxChecking = true;
+    try {
+      luxReady = await invoke<boolean>("check_lux_tts_downloaded", {
+        modelDir: cfg.tts.lux_tts.model_dir,
+      });
+    } catch (e) {
+      console.error("check_lux_tts_downloaded:", e);
+      luxReady = false;
+    } finally {
+      luxChecking = false;
+    }
+  }
+
+  function onLuxSettingChanged() { markDirty(); }
+
+  let pocketTtsReady = $state(false);
+  let pocketTtsChecking = $state(false);
+  let pocketTtsDownloading = $state(false);
+
+  async function checkPocketTtsReady() {
+    pocketTtsChecking = true;
+    try {
+      pocketTtsReady = await invoke<boolean>("check_pocket_tts_ready", {
+        voice: cfg.tts.pocket_tts.voice,
+        voiceDir: cfg.tts.pocket_tts.voice_dir,
+      });
+    } catch (e) {
+      console.error("check_pocket_tts_ready:", e);
+      pocketTtsReady = false;
+    } finally {
+      pocketTtsChecking = false;
+    }
+  }
+
+  async function downloadPocketTts() {
+    if (pocketTtsDownloading) return;
+    pocketTtsDownloading = true;
+    try {
+      await invoke("download_pocket_tts", {
+        voice: cfg.tts.pocket_tts.voice,
+        voiceDir: cfg.tts.pocket_tts.voice_dir,
+        hfToken: cfg.tts.hf_token,
+      });
+      pocketTtsReady = true;
+    } catch (e) {
+      alert(`Failed to download Pocket-TTS assets: ${e}`);
+    } finally {
+      pocketTtsDownloading = false;
+    }
+  }
+
+  function onPocketTtsVoiceChanged() {
+    markDirty();
+    pocketTtsReady = false;
+    checkPocketTtsReady();
+  }
+
+  // -- VoxCPM2 ---------------------------------------------------------------
+
+  let voxCpmReady = $state(false);
+  let voxCpmChecking = $state(false);
+  let voxCpmDownloading = $state(false);
+
+  async function checkVoxCpmReady() {
+    voxCpmChecking = true;
+    try {
+      voxCpmReady = await invoke<boolean>("check_vox_cpm_2_ready", {
+        modelDir: cfg.tts.vox_cpm_2.model_dir,
+      });
+    } catch (e) {
+      console.error("check_vox_cpm_2_ready:", e);
+      voxCpmReady = false;
+    } finally {
+      voxCpmChecking = false;
+    }
+  }
+
+  async function downloadVoxCpm2() {
+    if (voxCpmDownloading) return;
+    voxCpmDownloading = true;
+    try {
+      const token = cfg.tts.hf_token;
+      await invoke("download_vox_cpm_2", {
+        modelDir: cfg.tts.vox_cpm_2.model_dir,
+        hfToken: token,
+      });
+      voxCpmReady = true;
+    } catch (e) {
+      alert(`Failed to download VoxCPM2 assets: ${e}`);
+    } finally {
+      voxCpmDownloading = false;
+    }
+  }
+
+  // -- Breeze-TTS-2 -----------------------------------------------------------
+
+  let breezeReady = $state(false);
+  let breezeChecking = $state(false);
+  let breezeDownloading = $state(false);
+
+  async function checkBreezeReady() {
+    breezeChecking = true;
+    try {
+      breezeReady = await invoke<boolean>("check_breeze_tts_2_ready", {
+        modelDir: cfg.tts.breeze_tts_2.model_dir,
+      });
+    } catch (e) {
+      console.error("check_breeze_tts_2_ready:", e);
+      breezeReady = false;
+    } finally {
+      breezeChecking = false;
+    }
+  }
+
+  async function downloadBreezeTts2() {
+    if (breezeDownloading) return;
+    breezeDownloading = true;
+    try {
+      const token = cfg.tts.hf_token;
+      await invoke("download_breeze_tts_2", {
+        modelDir: cfg.tts.breeze_tts_2.model_dir,
+        hfToken: token,
+      });
+      breezeReady = true;
+    } catch (e) {
+      alert(`Failed to download Breeze-TTS-2 assets: ${e}`);
+    } finally {
+      breezeDownloading = false;
+    }
+  }
+
+  /**
+   * Whether the session has an `HF_TOKEN` environment variable, shown as a
+   * note by the gated-engine panels. The token itself is entered once in the
+   * General tab, which is the single source of truth for `tts.hf_token`.
+   */
+  let envHfToken = $state<string | null>(null);
+  const hfFromEnv = $derived(!!envHfToken);
+
+  async function onEngineChanged() {
+    markDirty();
+    engineSwitching = true;
+    try {
+      if (cfg.tts.engine === "vox_cpm_2") {
+        // Voice Design doesn't work for VoxCPM2 in the current audio.cpp
+        // build (the prompt is silently ignored) - Voice Cloning is the
+        // only mode exposed in the UI, so force it here too in case an
+        // older config still has voice_mode "prompt" from before that.
+        cfg.tts.vox_cpm_2.voice_mode = "clone";
+        voxCpmReady = false;
+        await checkVoxCpmReady();
+        await loadPocketTtsVoices();
+      } else if (cfg.tts.engine === "breeze_tts_2") {
+        // Voice Design doesn't reliably apply the described voice for
+        // Breeze-TTS-2 either - Voice Cloning is the only mode exposed in
+        // the UI, so force it here too in case an older config still has
+        // voice_mode "prompt" from before that.
+        cfg.tts.breeze_tts_2.voice_mode = "clone";
+        breezeReady = false;
+        await checkBreezeReady();
+        await loadPocketTtsVoices();
+      } else if (cfg.tts.engine === "pocket_tts") {
+        pocketTtsReady = false;
+        await loadPocketTtsVoices();
+        await checkPocketTtsReady();
+      } else if (cfg.tts.engine === "inflect_micro") {
+        inflectReady = false;
+        await checkInflectAvailable();
+        await checkInflectReady();
+      } else if (cfg.tts.engine === "lux_tts") {
+        luxReady = false;
+        await checkLuxAvailable();
+        await loadPocketTtsVoices();
+        await checkLuxReady();
+      } else if (cfg.tts.engine === "piper") {
+        if (cfg.tts.voice_dir) {
+          await validateVoiceDir();
+        } else {
+          await checkAllVoicesDownloaded();
+        }
+      }
+    } finally {
+      // Add a small 400ms delay to allow the backend save_config to run
+      setTimeout(() => {
+        engineSwitching = false;
+      }, 400);
+    }
+  }
+
+  onMount(async () => {
+    invoke<string | null>("hf_token_env")
+      .then((t) => (envHfToken = t && t.trim() ? t.trim() : null))
+      .catch(() => (envHfToken = null));
+
+    if (cfg.tts.voice_dir) {
+      validateVoiceDir();
+    } else {
+      checkAllVoicesDownloaded();
+    }
+
+    // Always load pocket TTS voices so they are ready for any cloning engine
+    loadPocketTtsVoices();
+
+    if (cfg.tts.engine === "vox_cpm_2") {
+      checkVoxCpmReady();
+    }
+
+    if (cfg.tts.engine === "breeze_tts_2") {
+      checkBreezeReady();
+    }
+
+    if (cfg.tts.engine === "pocket_tts") {
+      checkPocketTtsReady();
+    }
+
+    if (cfg.tts.engine === "inflect_micro") {
+      await checkInflectAvailable();
+      checkInflectReady();
+    }
+
+    if (cfg.tts.engine === "lux_tts") {
+      await checkLuxAvailable();
+      checkLuxReady();
+    }
+
+    unlistenTtsStart = await listen<void>("tts-playback-start", () => {
+      if (isCounting) {
+        clearInterval(timerId);
+        runSpeed = elapsed;
+        isCounting = false;
+      }
+      testing = false;
+      voiceSpeaking = true;
+    });
+
+    // Playback-end also clears `testing`. Otherwise an utterance that completes
+    // without ever starting playback - a run that produces no audio but also no
+    // error - leaves the button stuck on "Speaking..." indefinitely, since only
+    // playback-start cleared it.
+    unlistenTtsEnd = await listen<void>("tts-playback-end", () => {
+      voiceSpeaking = false;
+      if (testing) {
+        clearInterval(timerId);
+        isCounting = false;
+        testing = false;
+      }
+    });
+
+    // Speak errors happen asynchronously in the TTS worker thread (missing
+    // engine binary, voice not downloaded, no audio device, ...). Without this
+    // the Test button hangs on "Speaking..." with no feedback at all.
+    unlistenTtsError = await listen<string>("tts-error", (event) => {
+      ttsError = event.payload;
+      clearInterval(timerId);
+      isCounting = false;
+      runSpeed = null;
+      testing = false;
+      voiceSpeaking = false;
+    });
+  });
+
+  onDestroy(() => {
+    if (timerId) clearInterval(timerId);
+    if (unlistenTtsStart) unlistenTtsStart();
+    if (unlistenTtsEnd) unlistenTtsEnd();
+    if (unlistenTtsError) unlistenTtsError();
+  });
+
+  // -- Stop Key Recorder -----------------------------------------------------------
+
+  let isRecordingStopKey = $state(false);
+  let currentlyPressedStopKeys = $state<string[]>([]);
+
+  function mapBrowserKeyToEvdev(key: string, code: string): string {
+    const codeUpper = code.toUpperCase();
+    if (key === "Control") return "KEY_LEFTCTRL";
+    if (key === "Alt") return "KEY_LEFTALT";
+    if (key === "Shift") return "KEY_LEFTSHIFT";
+    if (key === "Meta" || key === "OS" || key === "Super") return "KEY_LEFTMETA";
+    if (codeUpper === "SPACE") return "KEY_SPACE";
+    if (codeUpper === "ENTER") return "KEY_ENTER";
+    if (codeUpper === "ESCAPE" || codeUpper === "ESC") return "KEY_ESC";
+    if (codeUpper === "TAB") return "KEY_TAB";
+    if (codeUpper === "BACKSPACE") return "KEY_BACKSPACE";
+    if (codeUpper === "DELETE") return "KEY_DELETE";
+    if (codeUpper.startsWith("KEY")) return codeUpper;
+    if (codeUpper.startsWith("DIGIT")) return `KEY_${codeUpper.replace("DIGIT", "")}`;
+    if (codeUpper.startsWith("ARROW")) return `KEY_${codeUpper.replace("ARROW", "")}`;
+    if (codeUpper.startsWith("F") && codeUpper.length > 1) return `KEY_${codeUpper}`;
+    if (key.length === 1) return `KEY_${key.toUpperCase()}`;
+    return `KEY_${codeUpper}`;
+  }
+
+  function handleStopKeyDown(e: KeyboardEvent) {
+    if (!isRecordingStopKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const evdevKey = mapBrowserKeyToEvdev(e.key, e.code);
+    if (!currentlyPressedStopKeys.includes(evdevKey)) {
+      currentlyPressedStopKeys = [...currentlyPressedStopKeys, evdevKey];
+    }
+    // Escape triggers browser blur before keyup fires, so commit immediately
+    // on keydown for single-key combos where Escape is the key pressed.
+    // For multi-key combos, keyup still handles commit as normal.
+    if (e.key === "Escape") {
+      cfg.tts.stop_key = [...currentlyPressedStopKeys];
+      markDirty();
+      currentlyPressedStopKeys = [];
+      isRecordingStopKey = false;
+    }
+  }
+
+  function handleStopKeyUp(e: KeyboardEvent) {
+    if (!isRecordingStopKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (currentlyPressedStopKeys.length > 0) {
+      cfg.tts.stop_key = [...currentlyPressedStopKeys];
+      markDirty();
+    }
+    currentlyPressedStopKeys = [];
+    isRecordingStopKey = false;
+  }
+
+  function handleStopKeyBlur() {
+    // Safety net: if blur fires while we have pending keys (e.g. Escape blur race),
+    // commit whatever was captured rather than discarding it silently.
+    if (currentlyPressedStopKeys.length > 0) {
+      cfg.tts.stop_key = [...currentlyPressedStopKeys];
+      markDirty();
+      currentlyPressedStopKeys = [];
+    }
+    isRecordingStopKey = false;
+  }
+
+  // TTS Snippets & Dictionary editing
+  let ttsSnippetList = $state<{key: string, val: string}[]>(
+    Object.entries(cfg.tts.snippets || {}).map(([k, v]) => ({ key: k, val: v as string }))
+  );
+
+  let isTtsSnippetInitialized = false;
+  $effect(() => {
+    const list = ttsSnippetList;
+    const newSnippets: Record<string, string> = {};
+    for (const {key, val} of list) {
+      if (key.trim()) {
+        newSnippets[key.trim()] = val.trim();
+      }
+    }
+
+    const existing = cfg.tts.snippets || {};
+    const existingKeys = Object.keys(existing);
+    const newKeys = Object.keys(newSnippets);
+    let changed = existingKeys.length !== newKeys.length;
+    if (!changed) {
+      for (const k of newKeys) {
+        if (existing[k] !== newSnippets[k]) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (changed) {
+      cfg.tts.snippets = newSnippets;
+      if (isTtsSnippetInitialized) {
+        markDirty();
+      }
+    }
+    isTtsSnippetInitialized = true;
+  });
+
+  function addEmptyTtsSnippetRow() {
+    ttsSnippetList = [...ttsSnippetList, { key: "", val: "" }];
+  }
+
+  function removeTtsSnippetRow(index: number) {
+    ttsSnippetList = ttsSnippetList.filter((_, i) => i !== index);
+  }
+
+</script>
+
+<section>
+  <h2>Text to Speech</h2>
+
+  <div class="field-group">
+    <h3>TTS Engine</h3>
+    <label class="field">
+      <span>Enable TTS</span>
+      <input type="checkbox" bind:checked={cfg.tts.enabled} onchange={markDirty} />
+    </label>
+    <label class="field">
+      <span>Engine</span>
+      <CustomSelect bind:value={cfg.tts.engine} options={engineOptions} onchange={onEngineChanged} />
+    </label>
+    {#if cfg.tts.engine === "piper"}
+    <label class="field">
+      <span>GPU Acceleration</span>
+      <input type="checkbox" bind:checked={cfg.tts.gpu} onchange={markDirty} />
+    </label>
+    <p class="hint" style="margin-top: -6px; margin-bottom: 12px;">Use CUDA GPU acceleration (ONNX Runtime). Falls back to CPU if unavailable.</p>
+    {:else if cfg.tts.engine === "pocket_tts"}
+    <label class="field">
+      <span>Vulkan GPU Acceleration</span>
+      <input type="checkbox" bind:checked={cfg.tts.pocket_tts.gpu} onchange={markDirty} />
+    </label>
+    <p class="hint" style="margin-top: -6px; margin-bottom: 12px;">Runs synthesis on the GPU via Vulkan. Falls back to the CPU whenever no Vulkan device can be opened.</p>
+    {:else if cfg.tts.engine === "breeze_tts_2"}
+    <label class="field">
+      <span>Vulkan GPU Acceleration</span>
+      <input type="checkbox" bind:checked={cfg.tts.breeze_tts_2.gpu} onchange={markDirty} />
+    </label>
+    <p class="hint" style="margin-top: -6px; margin-bottom: 12px;">Runs synthesis on the GPU via Vulkan. Falls back to the CPU whenever no Vulkan device can be opened.</p>
+    {:else if cfg.tts.engine === "vox_cpm_2"}
+    <label class="field">
+      <span>Vulkan GPU Acceleration</span>
+      <input type="checkbox" bind:checked={cfg.tts.vox_cpm_2.gpu} onchange={markDirty} />
+    </label>
+    <p class="hint" style="margin-top: -6px; margin-bottom: 12px;">Runs synthesis on the GPU via Vulkan. Falls back to the CPU whenever no Vulkan device can be opened.</p>
+    {/if}
+    <label class="field">
+      <span>Speed ({cfg.tts.speed.toFixed(2)}x)</span>
+      <input
+        type="range" min="0.90" max="1.10" step="0.01"
+        bind:value={cfg.tts.speed}
+        onchange={markDirty}
+        class="range-input"
+      />
+    </label>
+    <div class="row tts-test-row">
+      <div class="test-buttons">
+        <button class="btn-preview" onclick={testTts} disabled={isTestTtsDisabled()} title={testTtsDisabledReason() ?? "Speak a test phrase"}>
+          {testing ? "Speaking..." : voiceSpeaking ? "* Stop & Test" : "Test TTS"}
+        </button>
+        <button
+          class="btn-preview"
+          class:btn-preview-active={showTestEdit}
+          onclick={() => (showTestEdit = !showTestEdit)}
+          title="Edit the test text (any language)"
+        >
+          Edit
+        </button>
+      </div>
+      {#if isCounting || runSpeed !== null}
+        <div class="run-speed-container">
+          <span class="run-speed-label">Run speed</span>
+          <span class="run-speed-value" class:counting={isCounting}>
+            {isCounting ? `${elapsed} ms` : `${runSpeed} ms`}
+          </span>
+        </div>
+      {/if}
+    </div>
+    {#if showTestEdit}
+      <textarea
+        class="test-text-input"
+        rows="3"
+        bind:value={cfg.tts.test_text}
+        onchange={markDirty}
+        placeholder="Custom test text (any language). Empty = the default phrase."
+      ></textarea>
+      <p class="hint">Test TTS speaks this text instead of the built-in phrase. Leave empty to restore the default.</p>
+    {/if}
+    {#if ttsError}
+      <p class="field-error-msg tts-error-msg">x {ttsError}</p>
+    {/if}
+    {#if !ttsError && isTestTtsDisabled() && testTtsDisabledReason()}
+      <p class="hint">Test TTS unavailable: {testTtsDisabledReason()}</p>
+    {/if}
+  </div>
+
+  <!-- -- Piper section ---------------------------------------------------- -->
+  {#if cfg.tts.engine === "piper"}
+  <div class="field-group">
+    <h3>Piper Voice</h3>
+    <label class="field col">
+      <span class="field-title">Voice</span>
+      <CustomSelect bind:value={cfg.tts.voice} options={piperVoiceOptions} onchange={onVoiceChanged} />
+    </label>
+
+    <div class="voice-status-container">
+      {#if checking}
+        <span class="status-checking">... Checking local voice files...</span>
+      {:else if downloading}
+        <span class="status-downloading">... Downloading {cfg.tts.voice} (model + config)...</span>
+      {:else}
+        <div class="status-missing-wrapper">
+          <span class={downloadedMap[cfg.tts.voice] ? "status-downloaded" : "status-missing"}>
+            {downloadedMap[cfg.tts.voice] ? "+ Voice downloaded and ready" : "x Voice files missing"}
+          </span>
+          <button class="btn-download" onclick={() => triggerDownload(cfg.tts.voice)} disabled={downloadedMap[cfg.tts.voice] || downloading}>
+            {downloadedMap[cfg.tts.voice] ? "Downloaded" : " Download"}
+          </button>
+        </div>
+      {/if}
+    </div>
+
+    <div class="field">
+      <span>Voice directory (leave blank for default)</span>
+      <input
+        type="text"
+        bind:value={cfg.tts.voice_dir}
+        onchange={onVoiceDirChange}
+        onblur={validateVoiceDir}
+        onkeydown={onVoiceDirKeydown}
+        class:field-input-error={!!voiceDirError}
+      />
+      {#if voiceDirError}
+        <p class="field-error-msg">{voiceDirError}</p>
+      {/if}
+    </div>
+    <p class="hint">Default voice directory: <code>~/.local/share/fotonvoice-engine/piper-voices/</code></p>
+  </div>
+  {/if}
+
+  <!-- -- VoxCPM2 section ----------------------------------------------- -->
+  {#if cfg.tts.engine === "vox_cpm_2"}
+  <div class="field-group">
+    <h3>VoxCPM2 Voice</h3>
+
+    <div class="info-banner" style="background: rgba(45, 140, 255, 0.1); border: 1px solid rgba(45, 140, 255, 0.3); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;">
+      <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; color: #4fa3ff; margin-bottom: 4px;">
+        <span>!</span>
+        <span>OpenBMB VoxCPM2 - 2B Autoregressive Diffusion TTS</span>
+      </div>
+      <p style="font-size: 0.85rem; line-height: 1.4; color: #d0d7de; margin: 0;">
+        Runs through audio.cpp with optional Vulkan acceleration. Supports reference <strong>Voice Cloning</strong> and <strong>Ultimate Cloning</strong> (reference audio + transcript matching). Licensed under <strong>Apache 2.0</strong>.
+      </p>
+    </div>
+
+    <p class="hint" style="margin-top: 0;">
+      Voice Design (prompt-based) isn't offered here: audio.cpp's current VoxCPM2 build doesn't
+      act on the prompt yet, an upstream limitation. Voice Cloning below works correctly.
+    </p>
+
+    <label class="field col">
+      <span class="field-title">Cloned Voice Reference Clip</span>
+      <CustomSelect
+        bind:value={cfg.tts.vox_cpm_2.cloned_voice}
+        options={pocketTtsVoiceOptions}
+        defaultToFirst={true}
+        onchange={markDirty}
+      />
+    </label>
+
+    <div class="field">
+      <span>Shared Voice Folder (leave blank for default)</span>
+      <input
+        type="text"
+        bind:value={cfg.tts.vox_cpm_2.voice_dir}
+        onchange={() => { markDirty(); validatePocketTtsVoiceDir(cfg.tts.vox_cpm_2.voice_dir); }}
+      />
+    </div>
+    <p class="hint">Default directory: <code>~/.local/share/fotonvoice-engine/cloned-tts-voices/</code></p>
+
+    <div class="field" style="margin-top: 6px;">
+      <span>Enable Ultimate Cloning</span>
+      <input
+        type="checkbox"
+        bind:checked={cfg.tts.vox_cpm_2.ultimate_cloning}
+        onchange={markDirty}
+      />
+    </div>
+    <p class="hint" style="margin-top: -6px;">
+      When enabled, VoxCPM2 reads a companion <code>.txt</code> transcript file next to the <code>.wav</code> reference audio (e.g. <code>voice_name.txt</code> alongside <code>voice_name.wav</code>) for maximum phoneme alignment, nuanced breathing, and exact prosodic preservation.
+    </p>
+
+    <div class="voice-status-container">
+      {#if voxCpmChecking}
+        <span class="status-checking">... Checking local model files...</span>
+      {:else if voxCpmDownloading}
+        <span class="status-downloading">... Downloading VoxCPM2 model weights from HuggingFace (4.5 GB)...</span>
+      {:else}
+        <div class="status-missing-wrapper">
+          <span class={voxCpmReady ? "status-downloaded" : "status-missing"}>
+            {voxCpmReady ? "+ Model weights downloaded and ready" : "x Model files missing"}
+          </span>
+          <button class="btn-download" onclick={downloadVoxCpm2} disabled={voxCpmReady || voxCpmDownloading}>
+            {voxCpmReady ? "Downloaded" : " Download"}
+          </button>
+        </div>
+      {/if}
+    </div>
+
+    <p class="hint">
+      VoxCPM2 model files are hosted on HuggingFace at <code>huggingface.co/openbmb/VoxCPM2</code>.
+      An optional token can avoid anonymous download rate limits - set it once in the
+      <strong>General</strong> tab.
+      {#if hfFromEnv}Currently using the <code>HF_TOKEN</code> environment variable.{/if}
+    </p>
+
+    <div class="field">
+      <span>Model directory (leave blank for default)</span>
+      <input
+        type="text"
+        bind:value={cfg.tts.vox_cpm_2.model_dir}
+        onchange={markDirty}
+      />
+    </div>
+    <p class="hint">Default directory: <code>~/.local/share/fotonvoice-engine/models/voxcpm2/</code></p>
+
+    <label class="field">
+      <span>Pre-warm on startup</span>
+      <input type="checkbox" bind:checked={cfg.tts.vox_cpm_2.prewarm} onchange={markDirty} />
+    </label>
+    <p class="hint" style="margin-top: -6px;">Loads the model at startup so the first reply doesn't pay the load cost.</p>
+  </div>
+  {/if}
+
+  <!-- -- Breeze-TTS-2 section --------------------------------------------- -->
+  {#if cfg.tts.engine === "breeze_tts_2"}
+  <div class="field-group">
+    <h3>Breeze-TTS-2 Voice</h3>
+
+    <div class="non-commercial-warning">
+      <div class="warning-header">
+        <span class="warning-icon">!</span>
+        <strong>Non-Commercial License Warning</strong>
+      </div>
+      <p class="warning-text">
+        Breeze-TTS-2 model weights are released under the <strong>BreezeBlue Research and Non-Commercial License</strong>.
+        Commercial use requires a personal or commercial license directly from the creator (RESONIA, INC.).
+      </p>
+    </div>
+
+    <p class="hint" style="margin-top: 0;">
+      Voice Design (prompt-based) isn't offered here: it doesn't reliably apply the described
+      voice and quality suffers compared to Voice Cloning below, which works correctly.
+    </p>
+
+    <label class="field col">
+      <span class="field-title">Cloned Voice Reference Clip</span>
+      <CustomSelect
+        bind:value={cfg.tts.breeze_tts_2.cloned_voice}
+        options={pocketTtsVoiceOptions}
+        defaultToFirst={true}
+        onchange={markDirty}
+      />
+    </label>
+
+    <div class="field">
+      <span>Shared Voice Folder (leave blank for default)</span>
+      <input
+        type="text"
+        bind:value={cfg.tts.breeze_tts_2.voice_dir}
+        onchange={() => { markDirty(); validatePocketTtsVoiceDir(cfg.tts.breeze_tts_2.voice_dir); }}
+      />
+    </div>
+    <p class="hint">Default directory: <code>~/.local/share/fotonvoice-engine/cloned-tts-voices/</code></p>
+
+    <div class="license-warning-card" style="margin-top: 4px; margin-bottom: 8px;">
+      <p class="license-title">! Voice Cloning Transcript Required</p>
+      <p class="license-text">
+        Unlike Pocket-TTS and VoxCPM2, Breeze-TTS-2 cannot clone a voice without a transcript.
+        Drop reference <code>.wav</code> audio files into your shared voice folder along with a
+        matching text file (e.g. <code>voice_name.txt</code>) containing exactly what is spoken
+        in the audio - cloning fails without one.
+      </p>
+    </div>
+
+    <div class="voice-status-container">
+      {#if breezeChecking}
+        <span class="status-checking">... Checking local model files...</span>
+      {:else if breezeDownloading}
+        <span class="status-downloading">... Downloading Breeze-TTS-2 model weights from HuggingFace...</span>
+      {:else}
+        <div class="status-missing-wrapper">
+          <span class={breezeReady ? "status-downloaded" : "status-missing"}>
+            {breezeReady ? "+ Model weights downloaded and ready" : "x Model files missing"}
+          </span>
+          <button class="btn-download" onclick={downloadBreezeTts2} disabled={breezeReady || breezeDownloading}>
+            {breezeReady ? "Downloaded" : " Download"}
+          </button>
+        </div>
+      {/if}
+    </div>
+
+    <p class="hint">
+      Breeze-TTS-2 runs through the audio.cpp engine, which downloads the model on its first use
+      here - no HuggingFace token required.
+    </p>
+
+    <div class="field">
+      <span>Model directory (leave blank for default)</span>
+      <input
+        type="text"
+        bind:value={cfg.tts.breeze_tts_2.model_dir}
+        onchange={markDirty}
+      />
+    </div>
+    <p class="hint">Default directory: <code>~/.local/share/fotonvoice-engine/models/breeze-tts-2/</code></p>
+
+    <label class="field">
+      <span>Pre-warm on startup</span>
+      <input type="checkbox" bind:checked={cfg.tts.breeze_tts_2.prewarm} onchange={markDirty} />
+    </label>
+    <p class="hint" style="margin-top: -6px;">Loads the model at startup so the first reply doesn't pay the load cost.</p>
+  </div>
+  {/if}
+
+  <!-- -- Pocket-TTS section ----------------------------------------------- -->
+  {#if cfg.tts.engine === "pocket_tts"}
+  <div class="field-group">
+    <h3>Pocket-TTS Voice</h3>
+    <label class="field col">
+      <span class="field-title">Voice</span>
+      <CustomSelect
+        bind:value={cfg.tts.pocket_tts.voice}
+        options={pocketTtsVoiceOptions}
+        defaultToFirst={true}
+        onchange={onPocketTtsVoiceChanged}
+      />
+    </label>
+
+    <div class="voice-status-container">
+      {#if pocketTtsChecking}
+        <span class="status-checking">... Checking local model files...</span>
+      {:else if pocketTtsDownloading}
+        <span class="status-downloading">... Downloading Pocket-TTS model &amp; voice clip (may take a few minutes)...</span>
+      {:else}
+        <div class="status-missing-wrapper">
+          <span class={pocketTtsReady ? "status-downloaded" : "status-missing"}>
+            {pocketTtsReady ? "+ Model and voice clip downloaded and ready" : "x Model files missing"}
+          </span>
+          <button class="btn-download" onclick={downloadPocketTts} disabled={pocketTtsReady || pocketTtsDownloading}>
+            {pocketTtsReady ? "Downloaded" : " Download"}
+          </button>
+        </div>
+      {/if}
+    </div>
+
+    <p class="hint">
+      Pocket-TTS runs through the audio.cpp engine, which downloads the model and voice clip on
+      their first use here - no HuggingFace token required.
+    </p>
+
+    <div class="field">
+      <span>Custom voice directory (leave blank for default)</span>
+      <input
+        type="text"
+        bind:value={cfg.tts.pocket_tts.voice_dir}
+        onchange={onPocketTtsVoiceDirChange}
+        onblur={validatePocketTtsVoiceDir}
+        onkeydown={onPocketTtsVoiceDirKeydown}
+        class:field-input-error={!!pocketTtsVoiceDirError}
+      />
+      {#if pocketTtsVoiceDirError}
+        <p class="field-error-msg">{pocketTtsVoiceDirError}</p>
+      {/if}
+    </div>
+    <p class="hint">
+      Drop a <code>.wav</code> reference clip into this folder to add it to the voice list -
+      the filename (without extension) becomes the voice's id, e.g. <code>narrator.wav</code> adds
+      "Narrator (Custom)". Naming a clip after a built-in voice (e.g. <code>alba.wav</code>) replaces
+      that voice's reference clip. Default: <code>~/.local/share/fotonvoice-engine/cloned-tts-voices/</code>
+    </p>
+
+    <label class="field">
+      <span>Pre-warm on startup</span>
+      <input type="checkbox" bind:checked={cfg.tts.pocket_tts.prewarm} onchange={markDirty} />
+    </label>
+    <p class="hint" style="margin-top: -6px;">Loads the model at startup so the first reply doesn't pay the load cost.</p>
+  </div>
+  {/if}
+
+  {#if cfg.tts.engine === "inflect_micro"}
+  <div class="field-group">
+    <h3>Inflect Micro</h3>
+    <p class="hint" style="margin-top: 0;">
+      A 9.4M-parameter VITS model (38 MB) with a single fixed English voice at 24 kHz, so
+      there is no voice to choose. Needs <code>espeak-ng</code> installed for phonemization.
+    </p>
+
+    {#if !inflectAvailable}
+      <p class="field-error-msg">
+        <strong>This build cannot run this engine.</strong> The ONNX half is behind an opt-in
+        cargo feature, so Test TTS stays disabled until the app is rebuilt with it:
+        <br /><code>npm run tauri dev -- --features inflect-micro</code>
+        <br /><code>npm run tauri build -- --features inflect-micro</code>
+        <br />The <code>--</code> is required, or npm consumes the flag itself. Downloading the
+        model works either way - only synthesis needs the feature.
+      </p>
+    {/if}
+
+    <div class="voice-status-container">
+      {#if inflectChecking}
+        <span class="status-checking">... Checking local model files...</span>
+      {:else if inflectDownloading}
+        <span class="status-downloading">... Downloading Inflect-Micro-v2 model (~38 MB)...</span>
+      {:else}
+        <div class="status-missing-wrapper">
+          <span class={inflectReady ? "status-downloaded" : "status-missing"}>
+            {inflectReady ? "+ Model downloaded and ready" : "x Model files missing"}
+          </span>
+          <button class="btn-download" onclick={downloadInflect} disabled={inflectReady || inflectDownloading}>
+            {inflectReady ? "Downloaded" : " Download"}
+          </button>
+        </div>
+      {/if}
+    </div>
+
+    {#if inflectError}
+      <pre class="field-error-msg" style="white-space: pre-wrap; overflow-x: auto;">x {inflectError}</pre>
+    {/if}
+
+    <label class="field">
+      <span>Sampling seed</span>
+      <input
+        type="number"
+        min="0"
+        step="1"
+        bind:value={cfg.tts.inflect_micro.seed}
+        onchange={onInflectSettingChanged}
+      />
+    </label>
+    <p class="hint">
+      The model is deterministic for a fixed seed, so the same text always produces identical
+      audio. Change it to resample the prosody.
+    </p>
+
+    <label class="field">
+      <span>Variation (0.0 - 1.0)</span>
+      <input
+        type="number"
+        min="0"
+        max="1"
+        step="0.01"
+        bind:value={cfg.tts.inflect_micro.noise_scale}
+        onchange={onInflectSettingChanged}
+      />
+    </label>
+
+    <p class="hint">
+      Higher values give more expressive but less predictable delivery. Default is 0.667.
+    </p>
+
+    <label class="field">
+      <span>Pre-warm on startup</span>
+      <input
+        type="checkbox"
+        bind:checked={cfg.tts.inflect_micro.prewarm}
+        onchange={onInflectSettingChanged}
+      />
+    </label>
+    <p class="hint">
+      Loads the ONNX graphs at launch so the first spoken response has no load delay.
+    </p>
+
+    <div class="field">
+      <span>Model directory (leave blank for default)</span>
+      <input
+        type="text"
+        bind:value={cfg.tts.inflect_micro.model_dir}
+        onchange={onInflectSettingChanged}
+      />
+    </div>
+    <p class="hint">
+      Point this at an existing copy of the model to skip downloading. Default:
+      <code>~/.local/share/fotonvoice-engine/models/inflect-micro/</code>
+    </p>
+
+    <div class="field">
+      <span>Model diagnostics</span>
+      <button class="btn-download" onclick={inspectInflect} disabled={!inflectReady || inflectInspecting}>
+        {inflectInspecting ? "Inspecting..." : " Inspect graphs"}
+      </button>
+    </div>
+    <p class="hint">
+      Reports the tensor names the downloaded export declares. Useful if synthesis fails with a
+      message about an input that could not be mapped.
+    </p>
+    {#if inflectSignature}
+      <pre class="hint" style="white-space: pre-wrap; overflow-x: auto;">{inflectSignature}</pre>
+    {/if}
+  </div>
+  {/if}
+
+  {#if cfg.tts.engine === "lux_tts"}
+  <div class="field-group">
+    <h3>LuxTTS</h3>
+    <p class="hint" style="margin-top: 0;">
+      A lightweight ZipVoice-family flow-matching model with 48 kHz voice cloning from a
+      reference clip. Needs <code>espeak-ng</code> installed for phonemization.
+    </p>
+
+    {#if !luxAvailable}
+      <p class="field-error-msg">
+        <strong>This build cannot run this engine.</strong> The ONNX half is behind an opt-in
+        cargo feature, so Test TTS stays disabled until the app is rebuilt with it:
+        <br /><code>npm run tauri dev -- --features luxtts</code>
+        <br /><code>npm run tauri build -- --features luxtts</code>
+        <br />The <code>--</code> is required, or npm consumes the flag itself.
+      </p>
+    {/if}
+
+    <div class="voice-status-container">
+      {#if luxChecking}
+        <span class="status-checking">... Checking local model files...</span>
+      {:else}
+        <div class="status-missing-wrapper">
+          <span class={luxReady ? "status-downloaded" : "status-missing"}>
+            {luxReady ? "+ Model files found and ready" : "x Model files missing"}
+          </span>
+        </div>
+      {/if}
+    </div>
+
+    <p class="hint">
+      Place <code>text_encoder.onnx</code>, <code>fm_decoder.onnx</code> (+ optional
+      <code>*_int8.onnx</code> variants), <code>vocos.onnx</code> and <code>tokens.txt</code>
+      into the model directory. Default:
+      <code>~/.local/share/fotonvoice-engine/models/lux-tts/</code>
+    </p>
+
+    <label class="field">
+      <span>Reference voice</span>
+      <CustomSelect
+        bind:value={cfg.tts.lux_tts.cloned_voice}
+        options={pocketTtsVoiceOptions}
+        defaultToFirst={true}
+        onchange={onLuxSettingChanged}
+      />
+    </label>
+
+    <p class="hint">
+      The reference clip is a <code>&lt;voice&gt;.wav</code> plus a paired
+      <code>&lt;voice&gt;.txt</code> transcript in the voice folder. The transcript must
+      say exactly what is spoken in the clip. The encoded voice is cached as
+      <code>&lt;voice&gt;.luxtprompt</code> and reused until the clip or transcript changes.
+    </p>
+
+    <label class="field">
+      <span>ODE steps</span>
+      <input
+        type="number"
+        min="1"
+        max="32"
+        step="1"
+        bind:value={cfg.tts.lux_tts.num_steps}
+        onchange={onLuxSettingChanged}
+      />
+    </label>
+    <p class="hint">
+      Solver iterations. The model is distilled to 4 steps - the README recommends 3-4;
+      more sounds slightly better but renders proportionally slower.
+    </p>
+
+    <label class="field">
+      <span>Guidance scale</span>
+      <input
+        type="number"
+        min="0.0"
+        max="10.0"
+        step="0.1"
+        bind:value={cfg.tts.lux_tts.guidance_scale}
+        onchange={onLuxSettingChanged}
+      />
+    </label>
+    <p class="hint">
+      Classifier-free guidance strength. 3.0 is the reference default.
+    </p>
+
+    <label class="field">
+      <span>Use int8 graphs</span>
+      <input
+        type="checkbox"
+        bind:checked={cfg.tts.lux_tts.quantized}
+        onchange={onLuxSettingChanged}
+      />
+    </label>
+    <p class="hint">
+      The int8 exports use a quarter of the RAM (~130 MB vs ~470 MB) and load faster.
+      Uncheck to synthesize from the fp32 graphs instead.
+    </p>
+
+    <label class="field">
+      <span>Sampling seed</span>
+      <input
+        type="number"
+        min="0"
+        step="1"
+        bind:value={cfg.tts.lux_tts.seed}
+        onchange={onLuxSettingChanged}
+      />
+    </label>
+    <p class="hint">
+      The flow-matching noise is deterministic for a fixed seed, so the same text always
+      produces identical audio. Change it to resample the prosody.
+    </p>
+
+    <label class="field col">
+      <span>Reference trim ({cfg.tts.lux_tts.ref_duration}s)</span>
+      <input
+        type="range" min="12" max="25" step="0.5"
+        bind:value={cfg.tts.lux_tts.ref_duration}
+        onchange={onLuxSettingChanged}
+        class="range-input"
+      />
+    </label>
+    <div class="ref-band-block">
+      <span>12-13 usable</span>
+      <span>14-15 good</span>
+      <span>16-18 very good</span>
+      <span>19+ very heavy and best</span>
+    </div>
+    <p class="hint">
+      Seconds of the reference clip used for cloning. Longer trims clone better but
+      render slower; 18 s is the default. Changing this re-encodes the cached voice.
+    </p>
+
+    <label class="field">
+      <span>Smooth output</span>
+      <input
+        type="checkbox"
+        bind:checked={cfg.tts.lux_tts.return_smooth}
+        onchange={onLuxSettingChanged}
+      />
+    </label>
+    <p class="hint">
+      Uses only the 24 kHz vocoder leg (upstream "return_smooth"): smoother, less
+      metallic, slightly less crisp than the standard 48 kHz crossover.
+    </p>
+
+    <label class="field">
+      <span>Pre-warm on startup</span>
+      <input
+        type="checkbox"
+        bind:checked={cfg.tts.lux_tts.prewarm}
+        onchange={onLuxSettingChanged}
+      />
+    </label>
+    <p class="hint">
+      Loads the ONNX graphs at launch so the first spoken response has no load delay.
+    </p>
+
+    <div class="field">
+      <span>Model directory (leave blank for default)</span>
+      <input
+        type="text"
+        bind:value={cfg.tts.lux_tts.model_dir}
+        onchange={onLuxSettingChanged}
+        onblur={checkLuxReady}
+      />
+    </div>
+
+    <div class="field">
+      <span>Reference voice directory (leave blank for default)</span>
+      <input
+        type="text"
+        bind:value={cfg.tts.lux_tts.voice_dir}
+        onchange={onLuxSettingChanged}
+        onblur={validatePocketTtsVoiceDir}
+        class:field-input-error={!!pocketTtsVoiceDirError}
+      />
+      {#if pocketTtsVoiceDirError}
+        <p class="field-error-msg">{pocketTtsVoiceDirError}</p>
+      {/if}
+    </div>
+    <p class="hint">
+      Default: <code>~/.local/share/fotonvoice-engine/cloned-tts-voices/</code>
+    </p>
+  </div>
+  {/if}
+
+  <!-- -- Model memory section --------------------------------------------- -->
+  <div class="field-group">
+    <h3>Model Memory</h3>
+    <label class="field col">
+      <span class="field-title">When TTS is enabled</span>
+      <CustomSelect bind:value={cfg.tts.memory_mode} options={memoryModeOptions} onchange={onMemoryModeChanged} />
+    </label>
+
+    {#if cfg.tts.memory_mode === "on_demand"}
+      <label class="field">
+        <span>Unload after (minutes idle)</span>
+        <input
+          type="number"
+          min="1"
+          max="480"
+          step="1"
+          value={idleMinutes}
+          onchange={onIdleMinutesChange}
+          class="idle-minutes-input"
+        />
+      </label>
+      <p class="hint">
+        The model is loaded the moment FotonVoice Engine knows it will be needed - as soon as you start
+        dictating to a target that speaks - and stays primed while you keep using it. The
+        countdown restarts on every use, so it only unloads after {idleMinutes}
+        {idleMinutes === 1 ? "minute" : "minutes"} of no speech. The first reply after an
+        unload takes a few seconds longer while the model loads again.
+      </p>
+    {:else}
+      <p class="hint">
+        The model stays in memory for the whole session - the fastest possible response, at
+        the cost of holding its memory even while TTS sits unused.
+      </p>
+    {/if}
+  </div>
+
+  <div class="field-group">
+    <h3>Playback</h3>
+    <label class="field">
+      <span>Show response overlay</span>
+      <input type="checkbox" bind:checked={cfg.tts.response_overlay} onchange={markDirty} />
+    </label>
+
+    <div class="border-t border-white/5 pt-[14px] flex flex-col gap-2">
+      <h5 class="mb-1 text-[11px] font-bold uppercase text-accent-blue tracking-[0.06em]">Stop Key Bind</h5>
+      <p class="hint" style="margin: 0 0 8px 0;">Press a key combo to immediately stop TTS playback - works even when this window is hidden.</p>
+      <div
+        class={[
+          "border-2 rounded-desktop p-6 text-center cursor-pointer outline-none transition-all duration-200 flex flex-col items-center justify-center min-h-[80px]",
+          isRecordingStopKey
+            ? "border-solid border-[#f43f5e] bg-[rgba(244,63,94,0.05)] animate-border-pulse"
+            : "border-dashed border-white/5 bg-black/25 hover:border-accent-blue hover:bg-black/35 focus:border-accent-blue focus:bg-black/35"
+        ].join(" ")}
+        tabindex="0"
+        role="button"
+        aria-label="Stop key recorder"
+        onclick={() => isRecordingStopKey = true}
+        onfocus={() => isRecordingStopKey = true}
+        onblur={handleStopKeyBlur}
+        onkeydown={handleStopKeyDown}
+        onkeyup={handleStopKeyUp}
+      >
+        {#if isRecordingStopKey}
+          <div class="flex items-center gap-[10px]">
+            <span class="w-2 h-2 bg-accent-blue rounded-full animate-flash"></span>
+            <span class="text-[13px] font-semibold text-accent-blue">
+              {currentlyPressedStopKeys.length > 0
+                ? currentlyPressedStopKeys.join(" + ").replace(/KEY_/g, "")
+                : "Press your physical shortcut combination now..."}
+            </span>
+          </div>
+        {:else}
+          <span class="text-[12px] text-obsidian-300 flex flex-col gap-2 items-center">
+            {#if cfg.tts.stop_key.length > 0}
+              <div class="flex gap-1.5">
+                {#each cfg.tts.stop_key as k}
+                  <kbd class="px-1.5! py-0.5! text-[12px] bg-accent-blue text-black border-0 font-extrabold rounded">{k.replace("KEY_", "")}</kbd>
+                {/each}
+              </div>
+              <span class="text-[10px] text-accent-blue opacity-80">(Click / Tab here to record a new stop key)</span>
+            {:else}
+              ! Click/Focus here to press a stop key!
+            {/if}
+          </span>
+        {/if}
+      </div>
+    </div>
+  </div>
+
+  <div class="field-group mt-6">
+    <div class="field-label-row">
+      <div style="display: flex; flex-direction: column;">
+        <h3 style="margin-bottom: 0;">TTS Snippets (Pronunciation Guide)</h3>
+        <p class="hint" style="margin-top: 4px;">Type a word (e.g. "fotonvoice-engine") -> its spoken expansion/pronunciation (e.g. "vox control"). Only affects speech playback.</p>
+      </div>
+      <button class="btn-add-inline" type="button" onclick={addEmptyTtsSnippetRow}>
+        + Add Pronunciation
+      </button>
+    </div>
+
+    <div class="dynamic-list">
+      {#each ttsSnippetList as snippet, idx}
+        <div class="dynamic-list-row">
+          <input 
+            type="text" 
+            placeholder="Word / Abbreviation" 
+            bind:value={ttsSnippetList[idx].key} 
+            style="flex: 0.4;"
+          />
+          <span style="color: var(--text-muted);">-></span>
+          <input 
+            type="text" 
+            placeholder="Spoken pronunciation" 
+            bind:value={ttsSnippetList[idx].val} 
+            style="flex: 1;"
+          />
+          <button class="btn-remove-inline" type="button" onclick={() => removeTtsSnippetRow(idx)}>x</button>
+        </div>
+      {/each}
+      {#if ttsSnippetList.length === 0}
+        <div class="empty-state" style="padding: 20px; grid-column: 1 / -1;">
+          <p>No pronunciation snippets defined.</p>
+        </div>
+      {/if}
+    </div>
+  </div>
+</section>
+
+<style>
+  @reference "../../app.css";
+
+  .row {
+    @apply flex gap-2 mt-2;
+  }
+  .btn-preview {
+    @apply bg-[var(--surface2)] border border-[var(--border)] text-[var(--text)] rounded-[var(--radius)] p-1.5 px-3.5 text-xs cursor-pointer transition-all duration-200 ease-out;
+  }
+  .btn-preview:hover:not(:disabled) {
+    @apply bg-[var(--border)] text-[var(--accent)];
+  }
+  .btn-preview:disabled {
+    @apply opacity-40 cursor-not-allowed;
+  }
+
+  .idle-minutes-input {
+    @apply w-20 bg-[var(--bg)] border border-[var(--border)] text-[var(--text)] rounded-[var(--radius)] p-1.5 px-2.5 text-[13px] text-right;
+  }
+
+  .voice-status-container {
+    @apply flex items-center bg-[var(--bg)] border border-[var(--border)] rounded-[var(--radius)] p-2.5 px-3.5 text-[13px] min-h-[42px];
+  }
+  .status-downloaded {
+    @apply text-emerald-400 font-semibold;
+  }
+  .status-downloading {
+    @apply text-[var(--accent2)];
+  }
+  .status-checking {
+    @apply text-[var(--text-muted)];
+  }
+  .status-missing-wrapper {
+    @apply flex items-center justify-between w-full;
+  }
+  .status-missing {
+    @apply text-red-400;
+  }
+  .btn-download {
+    @apply bg-[var(--accent)] border-none text-white rounded-[var(--radius)] p-1.5 px-3 text-xs cursor-pointer font-semibold transition-colors duration-200;
+  }
+  .btn-download:hover:not(:disabled) {
+    @apply bg-[var(--accent2)];
+  }
+  .btn-download:disabled {
+    @apply bg-[var(--surface2)] border border-[var(--border)] text-[var(--text-muted)] opacity-50 cursor-not-allowed;
+  }
+  .field-input-error {
+    @apply border-red-500!;
+  }
+  .field-input-error:focus {
+    @apply border-red-500 shadow-[0_0_0_2px_rgba(239,68,68,0.15),_inset_0_2px_4px_rgba(0,0,0,0.2)];
+  }
+  .field-error-msg {
+    @apply mt-1 text-sm leading-5 text-red-400;
+  }
+  .range-input {
+    @apply w-full accent-[var(--accent)];
+  }
+  .ref-band-block {
+    @apply grid grid-cols-4 gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-[var(--radius)] p-1.5 px-3 text-[11px] text-[var(--text-muted)] -mt-1 whitespace-nowrap;
+  }
+  .number-input {
+    @apply w-20;
+  }
+
+  .tts-test-row {
+    @apply flex justify-between items-center w-full;
+  }
+  .test-buttons {
+    @apply flex gap-2;
+  }
+  .btn-preview-active {
+    @apply bg-[var(--border)] text-[var(--accent)];
+  }
+  .test-text-input {
+    @apply w-full bg-[var(--bg)] border border-[var(--border)] text-[var(--text)] rounded-[var(--radius)] p-2 px-3 text-[13px] resize-y;
+  }
+  .tts-error-msg {
+    @apply w-full break-words;
+  }
+  .run-speed-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .run-speed-label {
+    color: var(--text-muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .run-speed-value {
+    color: var(--accent);
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+  }
+  .run-speed-value.counting {
+    color: var(--accent2);
+    text-shadow: 0 0 8px rgba(56, 189, 248, 0.3);
+  }
+
+  .non-commercial-warning {
+    @apply bg-amber-950/30 border border-amber-500/40 rounded-[var(--radius)] p-3 mb-2 flex flex-col gap-1.5;
+  }
+  .warning-header {
+    @apply flex items-center gap-2 text-amber-400 text-xs font-semibold;
+  }
+  .warning-icon {
+    @apply text-sm;
+  }
+  .warning-text {
+    @apply text-[12px] text-amber-200/80 leading-relaxed m-0 max-w-none;
+  }
+
+  .field-input-textarea {
+    @apply w-full bg-[var(--bg)] text-[var(--text)] border border-[var(--border)] rounded-[var(--radius)] p-2 px-3 text-[13px] resize-y mt-1 outline-none box-border transition-all duration-200 ease-out;
+  }
+  .field-input-textarea:focus {
+    @apply border-[var(--accent2)] shadow-[0_0_0_2px_rgba(79,195,247,0.2)];
+  }
+
+  .engine-radio-group {
+    @apply flex flex-col gap-2 mt-1.5 w-full;
+  }
+  .engine-radio-option {
+    @apply flex flex-col gap-1 p-3 bg-[var(--bg)] border border-[var(--border)] rounded-[var(--radius)] cursor-pointer transition-all duration-200 ease-out;
+  }
+  .engine-radio-option:hover {
+    @apply border-[var(--accent2)] bg-[var(--surface2)];
+  }
+  .engine-radio-option.selected {
+    @apply border-[var(--accent)] bg-[var(--surface2)];
+  }
+  .engine-radio-header {
+    @apply flex items-center gap-2.5;
+  }
+  .engine-radio-name {
+    @apply font-medium text-sm text-[var(--text)];
+  }
+  .engine-radio-desc {
+    @apply text-xs text-[var(--text-muted)] ml-6 leading-normal;
+  }
+
+</style>

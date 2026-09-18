@@ -1,0 +1,57 @@
+[package]
+name = "fotonvoice-tts"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fotonvoice-config = { workspace = true }
+fotonvoice-text = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+tempfile = { workspace = true }
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+crossbeam-channel = { workspace = true }
+rodio = { workspace = true }
+# Not the workspace `ort`: that is configured `load-dynamic`, which resolves
+# ONNX Runtime at runtime and so needs a system libonnxruntime present. Nothing
+# in the workspace provides one, and its absence surfaces as the TTS worker
+# dying inside session creation. Use the same self-contained setup as
+# `fotonvoice-inference`: default features include `download-binaries`, which
+# fetches a prebuilt ONNX Runtime at build time and links it in, so the shipped
+# binary needs no system library. Building this feature therefore needs network
+# access to the ONNX Runtime binary host at compile time; for a fully offline
+# build, switch to `default-features = false, features = ["load-dynamic", "std",
+# "api-24"]` and ship a libonnxruntime alongside the app.
+ort = { version = "2.0.0-rc.12", optional = true, default-features = false, features = ["load-dynamic", "std", "api-24"] }
+rubato = { workspace = true, optional = true }
+rustfft = { workspace = true, optional = true }
+
+# Linux only: PR_SET_PDEATHSIG so a spawned `audiocpp_server` never outlives
+# this process, even on an ungraceful exit. See `audiocpp::AudioCppServer::spawn`.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[features]
+default = []
+# Inflect-Micro-v2 neural TTS via ONNX Runtime. Opt-in like `moonshine` on
+# fotonvoice-inference, and for the same reason: it pulls in ONNX Runtime. The
+# eSpeak-NG phoneme frontend is a runtime dependency, checked for before
+# synthesis.
+inflect-micro = ["dep:ort"]
+# LuxTTS neural TTS via ONNX Runtime: ZipVoice-family flow matching with 48 kHz
+# voice cloning. Same ONNX Runtime story as `inflect-micro`; adds rubato for
+# resampling and rustfft for the mel frontend + crossover merge.
+luxtts = ["dep:ort", "dep:rubato", "dep:rustfft"]
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }

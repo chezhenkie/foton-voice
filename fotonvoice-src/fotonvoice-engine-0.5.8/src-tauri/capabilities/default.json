@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability.json",
+  "identifier": "default",
+  "description": "Default capability set for VoxCtr windows",
+  "platforms": ["linux", "windows", "macOS"],
+  "windows": ["settings", "overlay", "udev-warning", "update"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "shell:allow-open",
+    "notification:default",
+    "fs:default",
+    "dialog:default"
+  ]
+}
