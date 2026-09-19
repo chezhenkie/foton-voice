@@ -11,6 +11,11 @@ fn main() {
     // binary via scripts/prepare-sidecar.mjs before Tauri bundles.
     ensure_sidecar_placeholder("fotonvoice-llm-sidecar");
 
+    // `FOTONVOICE_BUILD_SHA` is baked into the binary by `option_env!` (see
+    // `lib.rs`'s `BUILD_SHA`), which is resolved at compile time - so without
+    // this, a rebuild after the SHA changes would silently keep the old value.
+    println!("cargo:rerun-if-env-changed=FOTONVOICE_BUILD_SHA");
+
     tauri_build::build()
 }
 

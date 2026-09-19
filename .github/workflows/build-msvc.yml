@@ -11,6 +11,10 @@ jobs:
     defaults:
       run:
         working-directory: fotonvoice-src/fotonvoice-engine-0.5.8
+    env:
+      # Baked into the binary and reported by `--version`, so any artifact from
+      # this workflow can say exactly which commit produced it.
+      FOTONVOICE_BUILD_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
