@@ -36,26 +36,6 @@ jobs:
       - name: Build (msvc, WebGPU features)
         run: cargo build --release -p fotonvoice-app --features parakeet-webgpu,moonshine-webgpu,nemotron-streaming-webgpu
 
-      - name: Fetch WebView2 fixed runtime
-        shell: pwsh
-        env:
-          WV2_URL: https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/c3d95bc1-a0a7-4ca6-aaa1-fa0ac3dd1a37/Microsoft.WebView2.FixedVersionRuntime.153.0.4234.32.x64.cab
-        run: |
-          New-Item -ItemType Directory -Force -Path publish | Out-Null
-          if (Test-Path "publish\WebView2Runtime.zip") { exit 0 }
-          Invoke-WebRequest $env:WV2_URL -OutFile wv2.cab -UseBasicParsing
-          $cab = Get-Item wv2.cab
-          "cab bytes: $($cab.Length)"
-          if ($cab.Length -lt 100000000) { throw "WebView2 cab download too small ($($cab.Length) bytes) - CDN may have rejected the request" }
-          New-Item -ItemType Directory -Force -Path wv2pkg | Out-Null
-          expand.exe wv2.cab -F:* wv2pkg
-          if ($LASTEXITCODE -ne 0) { throw "expand.exe failed with exit $LASTEXITCODE" }
-          $pkg = Get-ChildItem wv2pkg -Recurse -Directory | Where-Object { $_.Name -match "FixedVersionRuntime" } | Select-Object -First 1
-          if (-not $pkg) { throw "No FixedVersionRuntime folder after expand" }
-          "pkg: $($pkg.FullName)"
-          Compress-Archive -Path "$($pkg.FullName)\*" -DestinationPath "publish\WebView2Runtime.zip" -CompressionLevel Optimal
-          Remove-Item -Recurse -Force wv2pkg, wv2.cab
-
       - name: Collect
         run: |
           New-Item -ItemType Directory -Force -Path publish | Out-Null
