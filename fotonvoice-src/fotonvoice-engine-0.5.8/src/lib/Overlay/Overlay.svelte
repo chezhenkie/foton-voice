@@ -218,6 +218,19 @@
     document.documentElement.classList.add("overlay-window");
     document.body.classList.add("overlay-window");
 
+    // Tell the backend this window has something to show. The window is
+    // created fully transparent (see window::reveal_overlay) because a fresh
+    // webview is on screen well before it has painted anything - a black box
+    // flashing over the overlay's bounds on every keybind press. Two frames:
+    // the first fires before the paint that follows this mount, the second
+    // once that paint has gone out. The backend reveals the window anyway
+    // after a timeout, so an overlay that never gets here still appears.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        invoke("overlay_content_ready").catch(() => {});
+      });
+    });
+
     // Force absolute transparency on HTML, body, and App containers to allow Tauri's transparent window to clip correctly
     document.documentElement.style.setProperty("background", "transparent", "important");
     document.body.style.setProperty("background", "transparent", "important");

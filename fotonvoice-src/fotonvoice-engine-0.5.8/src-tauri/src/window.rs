@@ -77,12 +77,10 @@ pub const OVERLAY_WINDOW: &str = "overlay";
 // window edge clipping into the Voice Card style's rounded corners before
 // this was widened.
 //
-// On Linux the window is doubled (upstream 0.5.9): it is rebuilt from
-// scratch on every activation there (see tray::spawn_status_ticker), and the
-// larger surface gives the visualizer styles - custom ones especially -
-// more room to render their load/outro animations into. Windows keeps the
-// original size, since its overlay is the long-lived always-mapped window
-// and its layout is verified-good.
+// On Linux the window is doubled (upstream 0.5.9, kept): the larger surface
+// gives the visualizer styles - custom ones especially - more room to render
+// their load/outro animations into. Windows keeps the original size, since
+// its layout is verified-good.
 #[cfg(target_os = "linux")]
 const OVERLAY_WIDTH: f64 = 1184.0;
 #[cfg(target_os = "linux")]
@@ -101,11 +99,49 @@ const OVERLAY_HEIGHT: f64 = 222.0;
 ///
 /// `anchor` / `monitor_pref` are `config.ui.overlay_position` /
 /// `overlay_monitor`.
+///
+/// How long the overlay may stay hidden waiting for its content to paint.
+/// The frontend normally reports in well inside this (see `reveal_overlay`),
+/// so this only matters when it cannot - a custom overlay whose script throws
+/// before the report, say, or a first paint that is simply slow. Was 600ms
+/// until a Hyprland/XWayland box with an older iGPU revealed the overlay
+/// indefinitely after the timeout fired before WebKitGTK's first real paint;
+/// 3s gives a slow first paint room to finish. (upstream 1444f4d)
+const OVERLAY_REVEAL_TIMEOUT: Duration = Duration::from_millis(3000);
+
+/// Make the overlay window visible, if it is not already.
+///
+/// The window is built fully transparent and revealed once the frontend
+/// reports it has painted (`overlay_content_ready`, see commands.rs).
+/// Opacity rather than unmapped or offscreen: an unmapped webview may never
+/// render, an offscreen position can be clamped by the WM, a mapped fully
+/// transparent window renders normally and is reliably invisible - including
+/// any frame the WM draws around it. No compositor: set_opacity does nothing
+/// and the overlay behaves as before. (upstream 9e33af5)
+pub fn reveal_overlay(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window(OVERLAY_WINDOW) else {
+        return;
+    };
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::*;
+        if let Ok(gtk_window) = window.gtk_window() {
+            gtk_window.set_opacity(1.0);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = window;
+}
+
 pub fn open_overlay_window(
     app: &tauri::AppHandle,
     anchor: &str,
     monitor_pref: &str,
 ) -> Result<tauri::WebviewWindow, String> {
+    // Only a window built by this call starts hidden. Re-entering with one
+    // already on screen must not blank the overlay the user is looking at.
+    let is_new = app.get_webview_window(OVERLAY_WINDOW).is_none();
+
     let window = match app.get_webview_window(OVERLAY_WINDOW) {
         Some(existing) => existing,
         None => tauri::WebviewWindowBuilder::new(
@@ -130,25 +166,17 @@ pub fn open_overlay_window(
         .map_err(|e| format!("Could not create the overlay window: {e}"))?,
     };
 
-    // This has to happen *before* the calls below: on Linux, tao's
-    // `set_ignore_cursor_events` reaches into the GTK window's underlying
-    // GdkWindow and unwraps it unconditionally
-    // (tao/src/platform_impl/linux/event_loop.rs, WindowRequest::CursorIgnoreEvents).
-    // That GdkWindow doesn't exist until the widget is realized, which GTK
-    // does synchronously inside `show()` - calling it any earlier panics
-    // (and, being inside a GTK callback, aborts the whole process instead of
-    // unwinding).
-    if let Err(e) = window.show() {
-        tracing::error!("Failed to show overlay window: {:?}", e);
-    }
-
-    // Click-through: mouse events pass to whatever is beneath the overlay.
-    if let Err(e) = window.set_ignore_cursor_events(true) {
-        tracing::warn!("Failed to make overlay window click-through: {:?}", e);
-    }
-
-    // Keeps the window out of focus grabs / alt-tab at the window-manager
-    // level, on top of `skip_taskbar` + `focused(false)` above.
+    // Everything the window manager reads when presenting a window must be
+    // set BEFORE mapping: applied afterwards, the window is mapped as a
+    // default-type window at a WM-chosen position and re-evaluated a moment
+    // later, which on KWin draws a brief black frame on every activation.
+    // `realize()` creates the underlying GdkWindow without mapping it, which
+    // is what gives us somewhere to put these first. (upstream 2307242)
+    //
+    // Click-through is mouse only. An XWayland overlay that accepts keyboard
+    // focus eats Space-up of CTRL+SPACE; Hyprland then never sends the portal
+    // Deactivated until focus returns - recording hangs after release.
+    // (upstream ae814d6)
     //
     // `Utility` rather than `Notification`: the app is forced through
     // XWayland on Linux (see `lib.rs`'s `GDK_BACKEND=x11` override - this
@@ -166,13 +194,56 @@ pub fn open_overlay_window(
     {
         use gtk::prelude::*;
         if let Ok(gtk_window) = window.gtk_window() {
+            gtk_window.realize();
+            gtk_window.set_accept_focus(false);
+            gtk_window.set_can_focus(false);
+            gtk_window.set_focus_on_map(false);
             if let Some(gdk_window) = gtk_window.window() {
                 gdk_window.set_type_hint(gtk::gdk::WindowTypeHint::Utility);
+            }
+            // Mapped but fully transparent until its content has painted -
+            // see `reveal_overlay`. Set before `show()` so there is no frame
+            // in which the window is both mapped and opaque.
+            if is_new {
+                gtk_window.set_opacity(0.0);
             }
         }
     }
 
+    // Position before mapping too: placed beforehand the window appears
+    // where it belongs instead of the WM placing it and us moving it after
+    // the fact.
     reposition_overlay_inner(&window, anchor, monitor_pref);
+
+    // On Linux, tao's `set_ignore_cursor_events` reaches into the GTK
+    // window's underlying GdkWindow and unwraps it unconditionally
+    // (tao/src/platform_impl/linux/event_loop.rs, WindowRequest::CursorIgnoreEvents).
+    // That GdkWindow does not exist until the widget is realized, so this
+    // has to come after the block above (which realizes it explicitly) or
+    // after `show()` (which realizes it as a side effect). Calling it any
+    // earlier panics - and, being inside a GTK callback, aborts the whole
+    // process instead of unwinding.
+    if let Err(e) = window.show() {
+        tracing::error!("Failed to show overlay window: {:?}", e);
+    }
+
+    // Click-through: mouse events pass to whatever is beneath the overlay.
+    if let Err(e) = window.set_ignore_cursor_events(true) {
+        tracing::warn!("Failed to make overlay window click-through: {:?}", e);
+    }
+
+    reposition_overlay_inner(&window, anchor, monitor_pref);
+
+    // Safety net for the hidden-until-painted gate: if the frontend never
+    // reports in, reveal anyway. An overlay that flashes black is a blemish;
+    // one that never appears is a broken feature.
+    if is_new {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(OVERLAY_REVEAL_TIMEOUT).await;
+            reveal_overlay(&handle);
+        });
+    }
 
     Ok(window)
 }
@@ -212,30 +283,75 @@ pub fn reassert_overlay_topmost(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(OVERLAY_WINDOW) {
         let _ = window.set_always_on_top(false);
         let _ = window.set_always_on_top(true);
+        #[cfg(target_os = "linux")]
+        {
+            use gtk::prelude::*;
+            if let Ok(gtk_window) = window.gtk_window() {
+                gtk_window.set_accept_focus(false);
+                gtk_window.set_can_focus(false);
+            }
+        }
     }
 }
 
-/// Actually destroy the overlay window when it has nothing to show (Linux).
-///
-/// Every attempt at forcing WebKitGTK/the compositor to repaint the window
-/// back to blank instead of destroying it - hiding it (with or without a
-/// forced repaint nudge first, gated by a generation counter, a lock, or
-/// both), moving it, resizing it, mapping an extra window from this
-/// process, spawning a genuinely separate process, changing its X11
-/// window-type hint - failed to reliably clear a stuck frame on the
-/// reported system (KDE, XWayland): a stale frame WebKitGTK had already
-/// painted kept reappearing the instant the window was shown again. A
-/// destroyed window has nothing for the compositor to display, stale buffer
-/// or not, which sidesteps the question entirely - see
-/// `tray::spawn_status_ticker`'s doc comment for why this is called from
-/// there rather than from the overlay's own frontend: that was tried first
-/// and is a dead end, since destroying the window that's running the code
-/// deciding when to bring it back also destroys that code.
+/// Poll interval for [`suspend_overlay_without_outputs`]. Far coarser than
+/// the ticker's 150ms cadence: this only ever reacts to a screen going
+/// idle/locked, never to anything on the hot dictation path.
 #[cfg(target_os = "linux")]
-pub fn hide_overlay(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(OVERLAY_WINDOW) {
-        let _ = window.close();
+pub const NO_OUTPUTS_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Hide the overlay window while the compositor reports no real outputs, and
+/// show it again once one comes back. (upstream 64209ba)
+///
+/// The bundled WebKitGTK paces its compositor off a vblank thread that
+/// divides by the current output's refresh rate. When a compositor (seen on
+/// Hyprland) drops to zero real outputs - idle, screen lock, DPMS off - and
+/// falls back to a placeholder monitor, that monitor has been observed
+/// reporting scale 0 to GTK and a refresh rate of 0 into the same divide
+/// crashes the whole process with SIGFPE. Unmapping the window for as long
+/// as there is nothing to display it on narrows the crash window to the poll
+/// interval; it does nothing once WebKitGTK has the divide fixed upstream.
+#[cfg(target_os = "linux")]
+pub fn suspend_overlay_without_outputs(app: &tauri::AppHandle, suspended: &mut bool) {
+    let Some(window) = app.get_webview_window(OVERLAY_WINDOW) else {
+        return;
+    };
+    // Any error is treated as "outputs present": this must never hide the
+    // overlay on a desktop that is working normally just because a query
+    // failed.
+    let has_outputs = window.available_monitors().map(|m| !m.is_empty()).unwrap_or(true);
+
+    if !has_outputs && !*suspended {
+        *suspended = true;
+        tracing::info!(
+            "No display outputs reported; hiding the overlay window until one returns \
+             (works around a SIGFPE in the bundled WebKitGTK's vblank thread)"
+        );
+        let _ = window.hide();
+    } else if has_outputs && *suspended {
+        *suspended = false;
+        let _ = window.show();
     }
+}
+
+/// Force the overlay window's client-side buffer to repaint by resizing it
+/// by a couple of pixels and immediately back. (upstream 769f6b1)
+///
+/// Reported on KDE/XWayland even with the host's own current WebKitGTK: the
+/// overlay stays frozen on its last frame after every dictation, and the
+/// stale pixels were confirmed (via XGetImage) to live in the client's own
+/// buffer. The reporter found that a real resize - grow 2px, then shrink
+/// back, as two separate operations rather than one that cancels out -
+/// reliably clears it. Same fix run by the app itself via tauri's
+/// `set_size`; costs nothing where nothing was ever stuck.
+#[cfg(target_os = "linux")]
+pub async fn nudge_overlay_repaint(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window(OVERLAY_WINDOW) else {
+        return;
+    };
+    let _ = window.set_size(tauri::LogicalSize::new(OVERLAY_WIDTH + 2.0, OVERLAY_HEIGHT));
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let _ = window.set_size(tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT));
 }
 
 /// Top-left Y for the overlay given the anchor, in the same pixel space as

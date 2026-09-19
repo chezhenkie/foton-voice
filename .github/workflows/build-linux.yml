@@ -137,11 +137,21 @@ jobs:
           # path, so they are parked in usr/lib/fallback instead: the AppRun
           # hook exposes each one only when the host has no library of that
           # soname, so a host with its own copy always wins.
+          #   libwebkit2gtk / libjavascriptcoregtk: the runner's WebKitGTK
+          #     renders a transparent window's compositing layers without
+          #     their alpha channel, so an overlay animating as it closes
+          #     leaves an opaque, blurry copy of its last frame on screen
+          #     until the window is destroyed. Newer WebKitGTK is fine.
+          #     Host-first rather than stripped so a desktop without
+          #     WebKitGTK still has a working app, and the bundled helper
+          #     processes stay where they are: they are only used when this
+          #     bundled copy is. (upstream 0975eef)
           # This has to run before the strip loop below, which skips
           # usr/lib/fallback. Keep this list in sync with build_appimage.sh.
           mkdir -p "$root/usr/lib/fallback"
           for pat in 'libsystemd.so*' 'libudev.so*' \
-                     'libgstgl-1.0.so*' 'libwayland-server.so*'; do
+                     'libgstgl-1.0.so*' 'libwayland-server.so*' \
+                     'libwebkit2gtk-4.*.so*' 'libjavascriptcoregtk-4.*.so*'; do
             find "$root" -name "$pat" -not -path '*/fallback/*' -print \
               -exec mv -t "$root/usr/lib/fallback/" {} + 2>/dev/null || true
           done

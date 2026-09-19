@@ -166,47 +166,19 @@ pub fn sync_tts_memory_item(app: tauri::AppHandle, state: Arc<AppState>) {
     });
 }
 
-/// How long the overlay window stays alive after nothing is left to show,
-/// before it's actually destroyed. Long enough for the frontend's own
-/// outro fade (`Overlay.svelte`'s 450ms unmount timeout) to finish playing
-/// inside a still-live window; a fast reactivation within this window finds
-/// the overlay already there and never triggers a destroy/recreate cycle
-/// at all.
-#[cfg(target_os = "linux")]
-const OVERLAY_HIDE_DEBOUNCE: Duration = Duration::from_millis(500);
-
-/// Emits `status-tick`, animates the tray icon, and - on Linux - owns the
-/// dictation overlay window's entire lifecycle.
+/// Emits `status-tick`, animates the tray icon, and builds the dictation
+/// overlay window if the startup pre-build failed (see `lib.rs`).
 ///
-/// On Linux the overlay is created fresh (`window::open_overlay_window`) the
-/// moment there's something to show, and destroyed (`window::hide_overlay`)
-/// again once idle for `OVERLAY_HIDE_DEBOUNCE`, rather than being created
-/// once at startup and left mapped for the app's whole session the way it is
-/// on Windows. That is a direct consequence of a long debugging history: on
-/// some systems (confirmed: KDE, XWayland) WebKitGTK never repaints this
-/// window's buffer back to blank on its own, no matter how a repaint is
-/// requested or how tightly the request is ordered against a reactivation -
-/// every variant of "hide it and trust a forced repaint lands before it's
-/// shown again" left a stale frame reappearing the instant the window was
-/// un-hidden. Destroying the window sidesteps the question entirely: a
-/// freshly created `WebviewWindow` has never had anything painted into it.
-///
-/// This has to live here rather than in the overlay's own frontend
-/// (`Overlay.svelte`), which is where upstream tried it first and it is a
-/// dead end: destroying the window that's running the code deciding when to
-/// bring it back also destroys that code. The very first idle cycle after
-/// launch - which happens automatically, since nothing is recording yet -
-/// would destroy the window and, with it, the only thing that could ever
-/// have asked for it to come back. This ticker already polls every piece of
-/// state that decides overlay visibility (recording, speaking, MCP
-/// recording) for the tray icon and `status-tick`, and it is a plain
-/// sequential loop, so it can own the window's lifecycle too without needing
-/// any locking of its own: it is the only thing that ever touches the
-/// overlay window on this platform, by construction.
-///
-/// On Windows the whole create/destroy cycle is compiled out: WebView2 has
-/// no such repaint bug, the overlay is created at startup (lib.rs) and stays
-/// mapped for the session.
+/// The overlay window is normally built during startup and kept for the rest
+/// of the session; this loop builds it on the first activation only if that
+/// failed. What is on screen is decided inside it by `Overlay.svelte`, which
+/// renders nothing while idle. The old Linux destroy/recreate per dictation
+/// (a WebKitGTK stale-frame workaround) is gone: its cause is fixed by the
+/// host-first WebKitGTK AppImage packaging (see
+/// `scripts/appimage-hooks/host-first-fallback.sh`), and rebuilding cost a
+/// black box flash plus a page load on every keybind press. Linux also gets
+/// the no-outputs suspend poll and the post-dictation repaint nudge, both
+/// cfg-gated here.
 pub fn spawn_status_ticker(
     handle: tauri::AppHandle,
     state_for_ticker: Arc<AppState>,
@@ -236,13 +208,22 @@ pub fn spawn_status_ticker(
         // keeps the common tick from rebuilding and re-joining it.
         let mut label_inputs: Option<(String, String, bool)> = None;
         let mut cached_label = String::new();
-        // Linux only: whether the overlay window currently exists, and (while
-        // it shouldn't) how long it's been idle - see this function's doc
-        // comment for why this loop owns creating/destroying it.
+        // Linux only: whether the overlay window has been built by this loop
+        // yet (the startup pre-build in lib.rs is not visible here; a failed
+        // pre-build is recovered on the first activation).
         #[cfg(target_os = "linux")]
-        let mut overlay_visible = false;
+        let mut overlay_built = false;
+        // Guards against a SIGFPE in the bundled WebKitGTK's vblank thread
+        // when the compositor briefly has zero outputs - see
+        // `window::suspend_overlay_without_outputs`. (upstream 64209ba)
         #[cfg(target_os = "linux")]
-        let mut overlay_idle_since: Option<tokio::time::Instant> = None;
+        let mut overlay_suspended_no_outputs = false;
+        #[cfg(target_os = "linux")]
+        let mut last_output_check = tokio::time::Instant::now() - crate::window::NO_OUTPUTS_POLL_INTERVAL;
+        // Whether the overlay had something to show on the previous tick -
+        // drives the post-dictation repaint nudge below. (upstream 769f6b1)
+        #[cfg(target_os = "linux")]
+        let mut was_showing_overlay = false;
 
         loop {
             interval.tick().await;
@@ -316,48 +297,57 @@ pub fn spawn_status_ticker(
                 }
             }
 
-            // -- Overlay window lifecycle (Linux only) ----------------------------
-            // Decide whether the overlay window should exist right now, and
-            // create/destroy it to match - see this function's doc comment for
-            // why that lifecycle lives here. Mirrors the same condition
-            // Overlay.svelte derives client-side for its own content
-            // (`isRecordingOrSpeaking`), since that logic still decides what
-            // to render inside the window once it exists; this only decides
-            // whether the window itself exists at all.
+            // -- Overlay window build fallback (Linux only) ------------------------
+            // Build the overlay window the first time there is anything to
+            // show, then keep it - normally lib.rs already built it at
+            // startup and this is a no-op fetch. Mirrors the same condition
+            // Overlay.svelte derives client-side for its own content.
+            #[cfg(target_os = "linux")]
+            let should_show_overlay = {
+                let cfg = state_for_ticker.config.lock().await;
+                (is_recording && state_for_ticker.is_overlay_enabled())
+                    || (state_for_ticker.is_speaking()
+                        && cfg.data.tts.enabled
+                        && cfg.data.tts.response_overlay)
+                    || (state_for_ticker.is_mcp_recording() && cfg.data.mcp.visual_feedback)
+                    || state_for_ticker.is_command_overlay_active()
+            };
+            #[cfg(target_os = "linux")]
+            if should_show_overlay && !overlay_built {
+                let (position, monitor) = last_pos
+                    .as_ref()
+                    .map(|(pos, mon, _)| (pos.as_str(), mon.as_str()))
+                    .unwrap_or(("center", "primary"));
+                match crate::window::open_overlay_window(&handle, position, monitor) {
+                    Ok(_) => overlay_built = true,
+                    Err(e) => tracing::error!("Failed to open the dictation overlay: {e}"),
+                }
+            }
+
+            // On some WebKitGTK/compositor combinations the overlay's client
+            // buffer never repaints back to blank once the last dictation's
+            // content is gone - see `window::nudge_overlay_repaint`. Nudging
+            // twice, at 1s then 3s after the transition to idle, mirrors the
+            // reporter's own timing; harmless when nothing was stuck.
+            #[cfg(target_os = "linux")]
+            if overlay_built && was_showing_overlay && !should_show_overlay {
+                let nudge_handle = handle.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    crate::window::nudge_overlay_repaint(&nudge_handle).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    crate::window::nudge_overlay_repaint(&nudge_handle).await;
+                });
+            }
             #[cfg(target_os = "linux")]
             {
-                let should_show_overlay = {
-                    let cfg = state_for_ticker.config.lock().await;
-                    (is_recording && state_for_ticker.is_overlay_enabled())
-                        || (state_for_ticker.is_speaking()
-                            && cfg.data.tts.enabled
-                            && cfg.data.tts.response_overlay)
-                        || (state_for_ticker.is_mcp_recording() && cfg.data.mcp.visual_feedback)
-                        || state_for_ticker.is_command_overlay_active()
-                };
-                if should_show_overlay {
-                    overlay_idle_since = None;
-                    if !overlay_visible {
-                        let (position, monitor) = last_pos
-                            .as_ref()
-                            .map(|(pos, mon, _)| (pos.as_str(), mon.as_str()))
-                            .unwrap_or(("center", "primary"));
-                        match crate::window::open_overlay_window(&handle, position, monitor) {
-                            Ok(_) => overlay_visible = true,
-                            Err(e) => tracing::error!("Failed to open the dictation overlay: {e}"),
-                        }
-                    }
-                } else if overlay_visible {
-                    match overlay_idle_since {
-                        None => overlay_idle_since = Some(tokio::time::Instant::now()),
-                        Some(since) if since.elapsed() >= OVERLAY_HIDE_DEBOUNCE => {
-                            crate::window::hide_overlay(&handle);
-                            overlay_visible = false;
-                            overlay_idle_since = None;
-                        }
-                        _ => {}
-                    }
-                }
+                was_showing_overlay = should_show_overlay;
+            }
+
+            #[cfg(target_os = "linux")]
+            if overlay_built && last_output_check.elapsed() >= crate::window::NO_OUTPUTS_POLL_INTERVAL {
+                last_output_check = tokio::time::Instant::now();
+                crate::window::suspend_overlay_without_outputs(&handle, &mut overlay_suspended_no_outputs);
             }
 
             let active_target_id = state_for_ticker.active_target.lock().await.clone();

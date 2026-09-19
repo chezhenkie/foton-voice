@@ -351,12 +351,22 @@ done
 #     gstreamer1.0-plugins-base does not depend on, so a desktop with no
 #     WebKit of its own can be missing it entirely and the app then dies with
 #     "error while loading shared libraries: libgstgl-1.0.so.0".
+#   libwebkit2gtk / libjavascriptcoregtk — the ubuntu-22.04 build host's
+#     WebKitGTK renders a transparent window's compositing layers without
+#     their alpha channel, so an overlay animating as it closes leaves an
+#     opaque, blurry copy of its last frame on screen until the window is
+#     destroyed. Every newer WebKitGTK is fine, which is why a local build
+#     bundling this machine's own, newer WebKitGTK never reproduced it.
+#     Host-first rather than stripped so a desktop without WebKitGTK of its
+#     own still has a working app; the bundled helper processes stay put
+#     since they are only ever used when this bundled copy is. (upstream 0975eef)
 #
 # This has to run before the strip loop below, which skips usr/lib/fallback.
-# Keep this list in sync with .github/workflows/release.yml.
+# Keep this list in sync with .github/workflows/build-linux.yml.
 mkdir -p "$root/usr/lib/fallback"
 for pat in 'libsystemd.so*' 'libudev.so*' \
-           'libgstgl-1.0.so*' 'libwayland-server.so*'; do
+           'libgstgl-1.0.so*' 'libwayland-server.so*' \
+           'libwebkit2gtk-4.*.so*' 'libjavascriptcoregtk-4.*.so*'; do
     find "$root" -name "$pat" -not -path '*/fallback/*' -print \
         -exec mv -t "$root/usr/lib/fallback/" {} + 2>/dev/null || true
 done

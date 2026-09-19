@@ -481,29 +481,25 @@ pub fn run() {
             // (src/lib/Overlay/Overlay.svelte) - see that function's doc comment
             // and docs/overlays.md for how it's put together.
             //
-            // Windows only: the overlay is created here once and stays mapped for
-            // the app's whole session (its `/overlay` route renders nothing
-            // visible while idle). WebView2 has no trouble repainting the
-            // transparent buffer back to blank, so the always-mapped design is
-            // the simpler and lower-latency one on this platform.
-            //
-            // On Linux this is NOT done at startup: on some desktops (confirmed:
-            // KDE, XWayland) WebKitGTK never repaints this window's buffer back
-            // to blank on its own, so a mapped-forever window can freeze its last
-            // frame on screen. There the overlay's lifecycle is owned by
-            // tray::spawn_status_ticker (see its doc comment), which builds the
-            // window fresh on the first activation and destroys it again once
-            // idle.
+            // Built once here and kept for the session, on BOTH lanes. The
+            // old Linux destroy/recreate per dictation (a WebKitGTK
+            // stale-frame workaround) is gone with its cause: the host-first
+            // WebKitGTK AppImage packaging (see
+            // scripts/appimage-hooks/host-first-fallback.sh). Constructing
+            // the window costs one brief flash of an empty window - a webview
+            // is mapped before it has loaded /overlay and painted - and that
+            // cost lands here, before the user has asked for anything; the
+            // transparent-until-painted gate (reveal_overlay) covers the
+            // rest. tray::spawn_status_ticker still builds it on the first
+            // activation if this fails, so a failure delays rather than
+            // loses it.
             let overlay_handle = app.handle().clone();
-            #[cfg(target_os = "windows")]
-            {
-                if let Err(e) = crate::window::open_overlay_window(
-                    &overlay_handle,
-                    &cfg_data.ui.overlay_position,
-                    &cfg_data.ui.overlay_monitor,
-                ) {
-                    tracing::error!("Failed to open the dictation overlay: {e}");
-                }
+            if let Err(e) = crate::window::open_overlay_window(
+                &overlay_handle,
+                &cfg_data.ui.overlay_position,
+                &cfg_data.ui.overlay_monitor,
+            ) {
+                tracing::warn!("Could not pre-build the dictation overlay: {e}");
             }
             // overlay_tx carries position updates (sent whenever
             // config.ui.overlay_position / overlay_monitor change - see
@@ -555,6 +551,7 @@ pub fn run() {
             speak_text,
             get_custom_overlays,
             get_custom_overlay,
+            overlay_content_ready,
             get_custom_overlays_dir,
             get_cloned_tts_voices_dir,
             list_audio_devices,
