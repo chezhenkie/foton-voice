@@ -287,7 +287,7 @@
     editingBinding = {
       id: "binding_" + Math.random().toString(36).substring(2, 6),
       label: "New Binding",
-      keys: ["KEY_LEFTMETA", "KEY_SPACE"],
+      keys: [],
       // Never offer a new binding a gesture this backend cannot serve.
       gesture: supportedGestures.includes("hold") ? "hold" : supportedGestures[0],
       target_id: targets[0].id,
