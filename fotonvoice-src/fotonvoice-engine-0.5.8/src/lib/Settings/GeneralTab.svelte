@@ -30,17 +30,6 @@
     markDirty();
   }
 
-  let wizardError = $state<string | null>(null);
-
-  async function runSetupWizard() {
-    wizardError = null;
-    try {
-      await invoke("open_setup_wizard");
-    } catch (e) {
-      wizardError = `${e}`;
-    }
-  }
-
   onMount(() => {
     invoke<string | null>("hf_token_env")
       .then((t) => (envHfToken = t && t.trim() ? t.trim() : null))
@@ -50,21 +39,6 @@
 
 <section>
   <h2>General</h2>
-
-  <div class="field-group">
-    <h3>Setup</h3>
-    <div class="field">
-      <span>Run the first-launch setup wizard again</span>
-      <button class="btn-action" onclick={runSetupWizard}>Open setup wizard</button>
-    </div>
-    <p class="hint">
-      Walks through the engine, model, hotkey, overlay and voice choices in one flow, and downloads
-      whatever it needs. Your current settings stay in place until you change them in the wizard.
-    </p>
-    {#if wizardError}
-      <p class="hint error">Could not open the wizard: {wizardError}</p>
-    {/if}
-  </div>
 
   <div class="field-group">
     <h3>Hugging Face Access Token</h3>
@@ -87,8 +61,7 @@
     <p class="hint">
       Used by every gated model FotonVoice Engine can download - Pocket-TTS, Breeze-TTS-2, and VoxCPM2 in
       the TTS tab. Create a token at <code>huggingface.co/settings/tokens</code> and accept each
-      model's license on its Hugging Face page before downloading. Enter it once here; the setup
-      wizard reads and writes the same token, so the two always match.
+      model's license on its Hugging Face page before downloading. Enter it once here.
     </p>
   </div>
 

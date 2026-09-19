@@ -279,20 +279,11 @@ pub fn auto_download_speech_model_if_needed(
     app: &tauri::App,
     cfg_data: &Arc<AppConfig>,
 ) {
-    // A machine that has never run the wizard gets the wizard and nothing else.
-    // Every decision this function would make for the user - which model to
-    // fetch, whether to open Settings - is a step the wizard asks about, so
-    // making them here first would download the wrong model and bury the
-    // wizard behind a window the user did not ask for.
+    // A machine that has never been set up gets nothing: every decision this
+    // function would make for the user - which model to fetch, whether to
+    // open Settings - belongs to the user, not to a first launch.
     if !cfg_data.ui.setup_completed {
-        if app.get_webview_window(crate::window::WIZARD_WINDOW).is_some() {
-            if let Err(e) = crate::window::open_wizard_window(&app.handle().clone()) {
-                tracing::error!("Could not open the setup wizard: {e}");
-            }
-            return;
-        }
-        // No wizard window in this build: fall through to the old behaviour
-        // rather than leaving a new install with no visible setup at all.
+        return;
     }
 
     let show_settings = cfg_data.ui.auto_show_settings;

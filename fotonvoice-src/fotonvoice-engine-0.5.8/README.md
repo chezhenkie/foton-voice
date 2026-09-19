@@ -37,8 +37,6 @@ FotonVoice Engine acts as an intelligent desktop voice gateway, routing speech t
   * Supports `hold`, `toggle`, `double_tap`, and `double_tap_hold` gestures.
 * **Built-in Model Context Protocol (MCP) Server**:
   * Local JSON-RPC server (`/tmp/fotonvoice-mcp.sock` on Linux or named pipe on Windows) exposing `transcribe_voice`, `speak_text`, and `get_status` tools to AI clients like Claude Desktop and Cursor.
-* **First-Run Setup Wizard**:
-  * 7-step interactive wizard (`fotonvoice-engine --setup`) for instant microphone, engine, hotkey, and overlay configuration.
 
 ---
 
@@ -102,19 +100,14 @@ Pre-built binaries are available on the [Latest Releases](https://github.com/che
    ./fotonvoice-engine-linux-x86_64-vulkan.AppImage
    ```
    *The AppImage automatically utilizes Vulkan GPU acceleration if available, falling back gracefully to CPU compute.*
-3. On first launch, the **First-Run Setup Wizard** guides you through microphone selection, engine configuration, and hotkey binding. You can also re-launch it anytime with:
-   ```bash
-   fotonvoice-engine --setup
-   ```
+3. Open the tray icon to configure engines, hotkeys, and voices.
 
 ### Windows
 
 1. Download the installer from [Releases](https://github.com/chezhenkie/fotonvoice-engine/releases/latest):
    * **`fotonvoice-engine-windows-x86_64.exe`**: Standard edition (CPU inference for all engines).
    * **`fotonvoice-engine-windows-x86_64-webgpu.exe`**: GPU-accelerated edition (Direct3D 12 WebGPU acceleration for Moonshine).
-2. Run the installer and launch FotonVoice Engine from the Start Menu or System Tray.
-
----
+2. Run the installer and launch FotonVoice Engine from the Start Menu or System Tray.---
 
 ##  Building from Source
 

@@ -407,7 +407,7 @@ pub fn default_bindings() -> Vec<HotkeyBinding> {
         HotkeyBinding {
             id: "default_hold".into(),
             label: "Dictate (Hold)".into(),
-            keys: vec!["KEY_LEFTMETA".into(), "KEY_SPACE".into()],
+            keys: vec!["KEY_LEFTCTRL".into(), "KEY_SPACE".into()],
             gesture: GestureType::Hold,
             target_id: "default".into(),
             target_ids: vec!["default".into()],
@@ -426,7 +426,6 @@ pub fn default_bindings() -> Vec<HotkeyBinding> {
             label: "Dictate (Toggle)".into(),
             keys: vec![
                 "KEY_LEFTCTRL".into(),
-                "KEY_LEFTMETA".into(),
                 "KEY_SPACE".into(),
             ],
             gesture: GestureType::Toggle,

@@ -291,13 +291,12 @@ pub struct UiConfig {
     pub show_command_overlay: bool,
     #[serde(default = "default_command_overlay_duration_secs")]
     pub command_overlay_duration_secs: u32,
-    /// Whether the first-run setup wizard has been finished.
+    /// Whether the app has been set up at least once.
     ///
     /// The serde default is `true` on purpose: a config file written by an
     /// earlier FotonVoice Engine has no such field, and its owner has plainly already
     /// set the app up by hand. Only `UiConfig::default()` - reached when no
-    /// config file exists at all - starts this at `false`, so the wizard runs
-    /// exactly once, on a genuinely new machine.
+    /// config file exists at all - starts this at `false`.
     #[serde(default = "default_setup_completed")]
     pub setup_completed: bool,
 }
@@ -806,7 +805,7 @@ pub struct TtsConfig {
     pub gpu: bool,
     /// The single HuggingFace access token for every gated model FotonVoice Engine
     /// downloads (Pocket-TTS and Breeze-TTS-2 today). One token, one place -
-    /// entering it in Settings or in the setup wizard writes here.
+    /// entering it in Settings writes here.
     #[serde(default)]
     pub hf_token: Option<String>,
     #[serde(default)]
@@ -1041,19 +1040,6 @@ fn parse_tolerant_report(text: &str) -> (AppConfig, bool) {
     (serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or_default(), false)
 }
 
-/// Recover `ui.setup_completed` from text that will not parse as JSON at all.
-///
-/// Between the key and the value lie only whitespace and a colon, so the first
-/// `t` or `f` after the key is the boolean. `None` is returned when the key is
-/// absent: a config written before the field existed counts as set up, which
-/// is exactly what the serde default (`true`) says for a missing field.
-fn salvage_setup_completed(text: &str) -> Option<bool> {
-    let pos = text.find("\"setup_completed\"")?;
-    let rest = &text[pos + "\"setup_completed\"".len()..];
-    let idx = rest.find(|c| c == 't' || c == 'f')?;
-    Some(rest[idx..].starts_with("true"))
-}
-
 // -- Config manager ------------------------------------------------------------
 
 pub struct Config {
@@ -1076,20 +1062,14 @@ impl Config {
                         // The file could not be read at all. Quarantine it so
                         // the defaults this run operates on - and saves on the
                         // next write - do not overwrite the user's actual
-                        // settings. Keep the wizard from re-running: salvage
-                        // `setup_completed` from the raw text, since a file
-                        // bad enough to fail parsing still means the user had
-                        // set the app up.
+                        // settings.
                         tracing::warn!(
                             "Config at {} is unreadable; quarantining it and \
                              starting from defaults",
                             path.display()
                         );
                         Self::quarantine(&path);
-                        let mut fallback = parsed;
-                        fallback.ui.setup_completed =
-                            salvage_setup_completed(&text).unwrap_or(true);
-                        fallback
+                        parsed
                     } else {
                         parsed
                     }
@@ -1481,18 +1461,6 @@ mod tests {
         assert!(!fatal);
     }
 
-    /// A quarantined config must not push a set-up user through the wizard
-    /// again: the flag is salvaged straight from the raw, unparseable text.
-    #[test]
-    fn salvage_recovers_setup_completed_from_corrupt_text() {
-        // BOM-prefixed, the exact corruption the file may carry.
-        assert_eq!(salvage_setup_completed("\u{feff}{\"ui\": {\"setup_completed\": true}}"), Some(true));
-        assert_eq!(salvage_setup_completed("{\"ui\": {\"setup_completed\" : false}}"), Some(false));
-        // Key absent: a pre-field config counts as set up, per the serde default.
-        assert_eq!(salvage_setup_completed("[1, 2, 3]"), None);
-        assert_eq!(salvage_setup_completed("{oops"), None);
-    }
-
     /// Quarantine renames the unreadable file to `<name>.bad` and frees the
     /// original path for the config the app saves next.
     #[test]
@@ -1777,51 +1745,6 @@ mod tests {
     "spoken_punctuation": true,
     "auto_format_lists": true,
     "show_notification": true"#));
-    }
-
-    #[test]
-    fn test_fresh_install_starts_with_the_wizard_pending() {
-        // No config file on disk means a machine that has never run FotonVoice Engine,
-        // so the first-run wizard has to be pending.
-        let cfg = AppConfig::default();
-        assert!(!cfg.ui.setup_completed);
-    }
-
-    #[test]
-    fn test_existing_config_file_never_reopens_the_wizard() {
-        // A config written by an earlier FotonVoice Engine has no `setup_completed` key.
-        // Its owner has plainly already set the app up, so deserializing must
-        // treat the missing field as "done" rather than ambushing them with a
-        // setup wizard on an upgrade.
-        let legacy_json = r#"{
-            "show_overlay": true,
-            "overlay_style": "waveform",
-            "auto_show_settings": true,
-            "show_notification": false
-        }"#;
-
-        let parsed: UiConfig = serde_json::from_str(legacy_json).unwrap();
-        assert!(parsed.setup_completed);
-    }
-
-    #[test]
-    fn test_setup_completed_round_trips() {
-        let mut cfg = AppConfig::default();
-        assert!(!cfg.ui.setup_completed);
-
-        cfg.ui.setup_completed = true;
-        let json = serde_json::to_string(&cfg).unwrap();
-        let back: AppConfig = serde_json::from_str(&json).unwrap();
-        assert!(back.ui.setup_completed);
-
-        cfg.ui.setup_completed = false;
-        let json = serde_json::to_string(&cfg).unwrap();
-        let back: AppConfig = serde_json::from_str(&json).unwrap();
-        assert!(
-            !back.ui.setup_completed,
-            "an explicit false must survive a save/load cycle, or a user who \
-             quits the wizard would never see it again"
-        );
     }
 
     #[test]

@@ -11,23 +11,6 @@ static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 /// Label of the first-run setup window.
 pub const SETUP_WINDOW: &str = "udev-warning";
 
-/// Label of the first-launch setup wizard window.
-pub const WIZARD_WINDOW: &str = "wizard";
-
-/// The wizard's screens are laid out on a wide stage - two engine cards side by
-/// side, eight overlay thumbnails in a row, five voice cards in a row. The
-/// widest breakpoint in the step stylesheets is 1200px, and the tallest step
-/// (the overlay grid over the position preview) needs a shade under 1000px of
-/// height before its footer is pushed off the bottom. So the floor is the size
-/// at which every step is known to render at its intended breakpoint, and the
-/// window opens a little above it - enough slack for the layout to breathe
-/// without the dead space a much bigger window leaves behind. These must stay in step with the `wizard`
-/// entry in tauri.conf.json, which is what a fresh install's first launch uses.
-pub const WIZARD_WIDTH: f64 = 1280.0;
-pub const WIZARD_HEIGHT: f64 = 1057.0;
-pub const WIZARD_MIN_WIDTH: f64 = 1140.0;
-pub const WIZARD_MIN_HEIGHT: f64 = 900.0;
-
 /// Default and minimum geometry for the Settings window. Its sidebar plus the
 /// widest tab body need the width, and the longest tab needs the height before
 /// it starts scrolling on first open.
@@ -35,52 +18,6 @@ pub const SETTINGS_WIDTH: f64 = 880.0;
 pub const SETTINGS_HEIGHT: f64 = 1000.0;
 pub const SETTINGS_MIN_WIDTH: f64 = 720.0;
 pub const SETTINGS_MIN_HEIGHT: f64 = 640.0;
-
-/// Fraction of the display the window may occupy, leaving room for the title
-/// bar and a desktop panel. Height is the tighter of the two: panels are
-/// usually horizontal, and the title bar eats from the same axis.
-#[allow(dead_code)]
-const WIZARD_FIT_W: f64 = 0.94;
-#[allow(dead_code)]
-const WIZARD_FIT_H: f64 = 0.90;
-
-/// The largest window in the wizard's design proportions that fits the space
-/// available, capped at the design size and floored at the size below which the
-/// layout stops fitting.
-///
-/// A fixed design size is only safe at 100% scaling: the same window on a 1080p
-/// display at 125% is scaled up in physical pixels, wider and taller than the
-/// screen, so the footer with the Continue button ends up past the bottom edge.
-/// Sizes are logical pixels, which is what the compositor scales.
-///
-/// The floor wins over fitting on purpose. A user can move or scroll a window
-/// that is slightly too big for their desktop; they cannot unwrap a layout that
-/// has dropped to a narrower breakpoint, which is what a smaller window gives
-/// them.
-pub fn wizard_size_for(available_width: f64, available_height: f64) -> (f64, f64) {
-    let aspect = WIZARD_WIDTH / WIZARD_HEIGHT;
-
-    let w = available_width.min(WIZARD_WIDTH);
-    let h = available_height.min(WIZARD_HEIGHT);
-
-    // Shrink whichever axis is over-long, so the window keeps its proportions
-    // rather than letterboxing the layout it was designed around.
-    let (w, h) = if w / h > aspect { (h * aspect, h) } else { (w, w / aspect) };
-
-    (w.max(WIZARD_MIN_WIDTH), h.max(WIZARD_MIN_HEIGHT))
-}
-
-/// Resize a window to fit the display it is on, and re-centre it.
-#[allow(dead_code)]
-fn fit_to_display(window: &tauri::WebviewWindow) {
-    let Ok(Some(monitor)) = window.current_monitor() else {
-        return;
-    };
-    let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
-    let (w, h) = wizard_size_for(logical.width * WIZARD_FIT_W, logical.height * WIZARD_FIT_H);
-    let _ = window.set_size(tauri::LogicalSize::new(w, h));
-    let _ = window.center();
-}
 
 /// Minimum gap between "finish the setup" notifications, so holding a
 /// push-to-talk key does not produce a wall of toasts.
@@ -110,8 +47,7 @@ pub fn get_app_handle() -> Option<tauri::AppHandle> {
 /// Show the Settings window, building it if the user has closed it.
 ///
 /// Closing a window destroys it, so every entry point into Settings - the tray,
-/// a second launch, the wizard's "Open Settings" - has to be able to make a new
-/// one. Geometry is kept in step with the `settings` entry in tauri.conf.json.
+/// a second launch - has to be able to make a new one. Geometry is kept in step with the `settings` entry in tauri.conf.json.
 pub fn open_settings_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Some(existing) = app.get_webview_window("settings") {
         show_and_focus_window(&existing);
@@ -127,43 +63,6 @@ pub fn open_settings_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWind
         .decorations(true)
         .build()
         .map_err(|e| format!("Could not open Settings: {e}"))
-}
-
-/// Show the first-run wizard, building its window if it is no longer there.
-///
-/// The wizard closes itself when the user finishes, and a closed Tauri window
-/// cannot be shown again - so re-opening it has to construct a new one. That is
-/// the right behaviour anyway: a re-run should start at step one with a fresh
-/// webview, not resume on whatever screen the last run ended on.
-///
-/// Geometry is kept in step with the `wizard` entry in `tauri.conf.json`, which
-/// is what the first launch of a fresh install uses.
-pub fn open_wizard_window(app: &tauri::AppHandle) -> Result<(), String> {
-    if let Some(existing) = app.get_webview_window(WIZARD_WINDOW) {
-        let _ = existing.set_size(tauri::LogicalSize::new(WIZARD_WIDTH, WIZARD_HEIGHT));
-        let _ = existing.center();
-        show_and_focus_window(&existing);
-        return Ok(());
-    }
-
-    let window = tauri::WebviewWindowBuilder::new(
-        app,
-        WIZARD_WINDOW,
-        tauri::WebviewUrl::App("/wizard".into()),
-    )
-    .title("FotonVoice Engine - First-Run Setup")
-    .inner_size(WIZARD_WIDTH, WIZARD_HEIGHT)
-    .min_inner_size(WIZARD_MIN_WIDTH, WIZARD_MIN_HEIGHT)
-    .center()
-    .resizable(true)
-    .decorations(true)
-    .build()
-    .map_err(|e| format!("Could not open the setup wizard: {e}"))?;
-
-    let _ = window.set_size(tauri::LogicalSize::new(WIZARD_WIDTH, WIZARD_HEIGHT));
-    let _ = window.center();
-
-    Ok(())
 }
 
 /// Label of the dictation overlay window.
@@ -505,73 +404,3 @@ pub fn raise_window(window: &tauri::WebviewWindow, keep_on_top: bool) {
     }
 }
 
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 1080p at 100% scaling is the common case: wide enough for a comfortable
-    /// stage, and short enough that the height lands exactly on the floor.
-    #[test]
-    fn a_1080p_display_gets_a_usable_stage() {
-        let (w, h) = wizard_size_for(1920.0 * WIZARD_FIT_W, 1080.0 * WIZARD_FIT_H);
-        assert!((WIZARD_MIN_WIDTH..=WIZARD_WIDTH).contains(&w), "width {w}");
-        assert!((WIZARD_MIN_HEIGHT..=WIZARD_HEIGHT).contains(&h), "height {h}");
-        assert!(h <= 1080.0, "a {h}px window does not fit a 1080p display");
-    }
-
-    /// 1080p at 125% - the desktop is only 1536x864 logical pixels, which is
-    /// under the layout's floor. The floor wins: a window the user has to move
-    /// beats a layout that has wrapped.
-    #[test]
-    fn a_scaled_1080p_display_gets_at_least_the_layout_minimum() {
-        let (avail_w, avail_h) = (1536.0 * WIZARD_FIT_W, 864.0 * WIZARD_FIT_H);
-        let (w, h) = wizard_size_for(avail_w, avail_h);
-        assert!(w >= WIZARD_MIN_WIDTH && h >= WIZARD_MIN_HEIGHT);
-    }
-
-    #[test]
-    fn the_window_keeps_its_proportions_when_it_shrinks() {
-        // Wide enough to be capped by the design width, tall enough that the
-        // height floor does not kick in.
-        let (w, h) = wizard_size_for(2000.0, 3000.0);
-        let aspect = WIZARD_WIDTH / WIZARD_HEIGHT;
-        assert!(
-            ((w / h) - aspect).abs() < 0.01,
-            "expected {aspect}:1, got {w}x{h}"
-        );
-    }
-
-    /// A display too small for the layout gets the minimum rather than a
-    /// window whose contents wrap: the user can move a window, but cannot
-    /// unwrap a layout.
-    #[test]
-    fn a_small_display_never_goes_below_the_layout_minimum() {
-        let (w, h) = wizard_size_for(900.0, 500.0);
-        assert_eq!((w, h), (WIZARD_MIN_WIDTH, WIZARD_MIN_HEIGHT));
-    }
-
-    /// The breakpoint the CSS actually cares about: every wizard step is
-    /// designed for a stage wider than its widest `max-width` media query, and
-    /// tall enough not to push the footer past the bottom edge.
-    #[test]
-    fn every_display_clears_the_widest_css_breakpoint() {
-        for (avail_w, avail_h) in [
-            (1920.0, 1080.0),
-            (1536.0, 864.0),
-            (1280.0, 720.0),
-            (3840.0, 2160.0),
-            (900.0, 500.0),
-        ] {
-            let (w, h) = wizard_size_for(avail_w * WIZARD_FIT_W, avail_h * WIZARD_FIT_H);
-            assert!(w >= WIZARD_MIN_WIDTH, "{avail_w}x{avail_h} gave a {w}px-wide window");
-            assert!(h >= WIZARD_MIN_HEIGHT, "{avail_w}x{avail_h} gave a {h}px-tall window");
-        }
-    }
-
-    #[test]
-    fn a_large_display_is_capped_at_the_design_size() {
-        let (w, h) = wizard_size_for(3840.0, 2160.0);
-        assert_eq!((w, h), (WIZARD_WIDTH, WIZARD_HEIGHT));
-    }
-}
