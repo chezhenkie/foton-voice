@@ -113,6 +113,19 @@ pub fn start_dbus_service(app_state: Arc<AppState>) {
     let dbus_state_clone = dbus_state.clone();
 
     tokio::spawn(async move {
+        // Bound to a name that outlives this scope: zbus closes the connection
+        // when the last `Connection` handle drops, and closing it releases
+        // `ai.fotonvoice.engine.Dictation` and tears down the object server.
+        // Dropping it here is why the name was never actually on the bus even
+        // though startup logged it as registered. (upstream d944258)
+        let _conn = match fotonvoice_dbus::start_service(dbus_state, start_tx, stop_tx).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::error!("DBus service error: {e}");
+                return;
+            }
+        };
+
         loop {
             tokio::select! {
                 v = start_rx.recv() => {
@@ -137,11 +150,6 @@ pub fn start_dbus_service(app_state: Arc<AppState>) {
                     }
                 }
             }
-        }
-    });
-    tokio::spawn(async move {
-        if let Err(e) = fotonvoice_dbus::start_service(dbus_state, start_tx, stop_tx).await {
-            tracing::error!("DBus service error: {e}");
         }
     });
 }
