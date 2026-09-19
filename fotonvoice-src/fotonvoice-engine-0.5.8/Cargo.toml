@@ -12,7 +12,6 @@ members = [
     "crates/fotonvoice-mcp",
     "crates/fotonvoice-llm",
     "crates/fotonvoice-text",
-    "crates/fotonvoice-update",
     "crates/fotonvoice-llm-sidecar",
     "src-tauri",
 ]
@@ -129,7 +128,6 @@ fotonvoice-dbus     = { path = "crates/fotonvoice-dbus" }
 fotonvoice-mcp      = { path = "crates/fotonvoice-mcp" }
 fotonvoice-llm      = { path = "crates/fotonvoice-llm" }
 fotonvoice-text     = { path = "crates/fotonvoice-text" }
-fotonvoice-update   = { path = "crates/fotonvoice-update" }
 
 [profile.release]
 lto = "fat"

@@ -47,7 +47,6 @@ fotonvoice-inject    = { workspace = true }
 fotonvoice-dbus      = { workspace = true }
 fotonvoice-mcp       = { workspace = true }
 fotonvoice-llm       = { workspace = true }
-fotonvoice-update    = { workspace = true }
 
 # Runtime and utilities
 tokio = { workspace = true }

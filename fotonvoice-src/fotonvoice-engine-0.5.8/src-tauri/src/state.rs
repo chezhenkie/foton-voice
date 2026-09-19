@@ -113,16 +113,6 @@ pub struct AppState {
     /// the dictation overlay window when `config.ui.overlay_position` /
     /// `overlay_monitor` change - see its consumer in `lib.rs`.
     pub overlay_tx: crossbeam_channel::Sender<String>,
-
-    /// The update found by the last check, if there was one. Held so the update
-    /// window can be opened, closed and reopened without asking GitHub again,
-    /// and so installing does not have to re-resolve which asset to fetch.
-    pub pending_update: Arc<Mutex<Option<fotonvoice_update::PendingUpdate>>>,
-
-    /// True while an update is downloading or being written into place. Guards
-    /// against a second "Update and restart" - from an impatient click or a
-    /// second window - starting a parallel download over the same file.
-    pub updating: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -235,23 +225,6 @@ impl AppState {
 
     pub fn set_overlay_enabled(&self, v: bool) {
         self.overlay_enabled.store(v, Ordering::SeqCst);
-    }
-
-    /// Claim the right to run an update, returning false if one is already
-    /// running. Compare-and-swap rather than a check followed by a store: two
-    /// clicks a millisecond apart must not both get through.
-    pub fn begin_update(&self) -> bool {
-        self.updating
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-    }
-
-    pub fn end_update(&self) {
-        self.updating.store(false, Ordering::SeqCst);
-    }
-
-    pub fn is_updating(&self) -> bool {
-        self.updating.load(Ordering::SeqCst)
     }
 
     pub fn is_mcp_recording(&self) -> bool {

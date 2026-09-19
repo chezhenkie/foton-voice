@@ -37,10 +37,8 @@ FotonVoice Engine acts as an intelligent desktop voice gateway, routing speech t
   * Supports `hold`, `toggle`, `double_tap`, and `double_tap_hold` gestures.
 * **Built-in Model Context Protocol (MCP) Server**:
   * Local JSON-RPC server (`/tmp/fotonvoice-mcp.sock` on Linux or named pipe on Windows) exposing `transcribe_voice`, `speak_text`, and `get_status` tools to AI clients like Claude Desktop and Cursor.
-* **First-Run Setup Wizard & In-App Updates**:
+* **First-Run Setup Wizard**:
   * 7-step interactive wizard (`fotonvoice-engine --setup`) for instant microphone, engine, hotkey, and overlay configuration.
-  * Self-contained updater that downloads, cryptographically verifies (SHA-256), and atomically replaces application binaries on release.
-  * Redacted, allowlist-filtered one-click bug reporting.
 
 ---
 
@@ -88,8 +86,6 @@ FotonVoice Engine is designed with strict modularity, memory isolation, and high
 | **`fotonvoice-mcp`** | Native Model Context Protocol (MCP) JSON-RPC server and client. |
 | **`fotonvoice-config`** | Hot-reloadable TOML and JSON configuration management and validation. |
 | **`fotonvoice-text`** | Text normalization, filler-word sanitization, and regex replacement filters. |
-| **`fotonvoice-update`** | GitHub release checking, SHA-256 verification, and atomic self-updating. |
-| **`fotonvoice-bugreport`**| Allowlist-redacted diagnostic bundle generation and GitHub issue submission. |
 
 ---
 

@@ -23,7 +23,6 @@ mod startup_log;
 mod state;
 mod stop_key;
 mod tray;
-mod updater;
 mod webview2;
 mod window;
 
@@ -268,8 +267,6 @@ pub fn run() {
         hotkey_gesture_tx: Arc::new(Mutex::new(None)),
         hotkey_health: hotkey_health.clone(),
         overlay_tx: overlay_tx.clone(),
-        pending_update: Arc::new(Mutex::new(None)),
-        updating: Arc::new(AtomicBool::new(false)),
     });
 
     let (audio_level_tx, audio_level_rx) = crossbeam_channel::bounded::<f32>(128);
@@ -635,13 +632,6 @@ pub fn run() {
             reset_chat_conversation,
             test_chat_target,
             set_hotkeys_inhibited,
-            updater::check_for_update,
-            updater::get_pending_update,
-            updater::install_update,
-            updater::skip_update_version,
-            updater::set_update_auto_check,
-            updater::dismiss_update,
-            updater::open_update_window,
         ])
         .build(tauri::generate_context!())
         .expect("error building Tauri application")
