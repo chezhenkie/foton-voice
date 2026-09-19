@@ -1462,6 +1462,13 @@ fn shortcut_settings_candidates() -> &'static [(&'static str, &'static [&'static
 
 /// Fire-and-forget: these are GUI apps meant to stay open long after this
 /// command returns, so there is nothing useful to await here.
+///
+/// These are host desktop binaries (`kcmshell6`, `systemsettings`,
+/// `gnome-control-center`), not part of the bundle, so they are launched
+/// through `host_env::host_command` rather than `std::process::Command`
+/// directly: inside the AppImage, a plain `Command::new` hands them the
+/// bundle's `LD_LIBRARY_PATH`, and a host binary then resolves libraries
+/// from the bundle and can abort before showing a window. (upstream 5077423)
 #[cfg(target_os = "linux")]
 fn spawn_shortcut_settings(bin: &str, args: &[&str]) -> Result<(), String> {
     #[cfg(test)]
@@ -1470,7 +1477,7 @@ fn spawn_shortcut_settings(bin: &str, args: &[&str]) -> Result<(), String> {
             return Ok(());
         }
     }
-    std::process::Command::new(bin)
+    crate::host_env::host_command(bin)
         .args(args)
         .spawn()
         .map(|_| ())

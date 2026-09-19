@@ -137,4 +137,23 @@ mod tests {
             Some("/usr/share")
         );
     }
+
+    #[test]
+    fn host_command_strips_the_bundle_from_the_environment() {
+        // The shortcut-settings launchers (kcmshell6/systemsettings, group 3 /
+        // upstream 5077423) go through host_command: the bundle's
+        // LD_LIBRARY_PATH must not reach a host binary. Observed through a
+        // real child process, since `Command` exposes no env getter.
+        std::env::set_var("LD_LIBRARY_PATH", "/tmp/.mount_Vox123/usr/lib:/host/lib");
+        std::env::set_var("WEBKIT_EXEC_PATH", "/tmp/.mount_Vox123/usr/bin/webkit");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg("echo \"$LD_LIBRARY_PATH|$WEBKIT_EXEC_PATH\"");
+        apply_host_env(&mut cmd, Some("/tmp/.mount_Vox123"));
+        let out = String::from_utf8(cmd.output().unwrap().stdout).unwrap();
+        assert_eq!(
+            out.trim_end(),
+            "/host/lib|",
+            "bundle LD_LIBRARY_PATH entry gone (host one kept), bundle-only var gone"
+        );
+    }
 }

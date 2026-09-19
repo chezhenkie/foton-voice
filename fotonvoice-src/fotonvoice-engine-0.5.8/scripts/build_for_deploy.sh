@@ -86,7 +86,7 @@ cp "assets/app_icon.png" "${BUNDLE_DIR}/assets/"
 
 # Desktop entry template (install.sh writes it programmatically, but include it
 # so advanced users can inspect it)
-cp "fotonvoice-engine.desktop" "${BUNDLE_DIR}/" 2>/dev/null || true
+cp "ai.fotonvoice.engine.desktop" "${BUNDLE_DIR}/" 2>/dev/null || true
 
 ok "Staged to ${BUNDLE_DIR}"
 

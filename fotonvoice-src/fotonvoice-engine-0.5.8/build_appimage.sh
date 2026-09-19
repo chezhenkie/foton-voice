@@ -56,6 +56,18 @@ if [ -f "./appimagetool" ] && [ ! -f "./appimagetool.bin" ]; then
     chmod +x appimagetool.bin
 fi
 
+# A file merely existing isn't enough to trust it: a leftover copy (or an
+# interrupted download) can be zero-length or truncated. Running that fails
+# with execve returning ENOEXEC, which bash then reinterprets as a shell
+# script - producing a baffling "Argument list too long" instead of a clear
+# error. Validate it the same way a freshly fetched one would be, and fail
+# with instructions instead of breaking the build confusingly. (upstream c18ab61,
+# adapted: this repo commits appimagetool.bin rather than fetching it on demand)
+if [ -f "./appimagetool.bin" ] && ! file -b "./appimagetool.bin" 2>/dev/null | grep -q 'ELF 64-bit.*x86-64'; then
+    fail "./appimagetool.bin exists but is not a valid x86-64 ELF binary. Remove it and restore a healthy copy (git checkout -- fotonvoice-src/fotonvoice-engine-0.5.8/appimagetool.bin) before rebuilding."
+    exit 1
+fi
+
 # Create the wrapper script
 info "Creating headless FUSE-bypass wrapper script..."
 cat > ./appimagetool <<'EOF'
