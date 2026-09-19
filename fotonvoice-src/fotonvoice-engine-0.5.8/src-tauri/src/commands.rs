@@ -570,6 +570,13 @@ pub async fn download_model(model_size: String, model_dir: String) -> Result<(),
         .map_err(|e| e.to_string())
 }
 
+/// Delete the whisper.cpp GGUF file(s) for `model_size`.
+#[tauri::command]
+pub async fn delete_model(model_size: String, model_dir: String) -> Result<(), String> {
+    fotonvoice_inference::whisper_cpp::delete_model(&model_size, &model_dir)
+        .map_err(|e| e.to_string())
+}
+
 /// Whether the Moonshine ONNX backend was compiled into this build. The UI uses
 /// this to decide whether selecting Moonshine actually runs Moonshine (vs.
 /// transparently falling back to whisper-cpp).
@@ -598,6 +605,20 @@ pub async fn download_moonshine_model(model_size: String) -> Result<(), String> 
         fotonvoice_inference::moonshine::download_model(&model_size, "")
             .await
             .map_err(|e| e.to_string())
+    }
+    #[cfg(not(feature = "moonshine"))]
+    {
+        let _ = model_size;
+        Err("This build was compiled without the Moonshine backend. Rebuild with `--features moonshine` to use it.".into())
+    }
+}
+
+/// Delete the Moonshine ONNX folder for `model_size`.
+#[tauri::command]
+pub async fn delete_moonshine_model(model_size: String) -> Result<(), String> {
+    #[cfg(feature = "moonshine")]
+    {
+        fotonvoice_inference::moonshine::delete_model(&model_size, "").map_err(|e| e.to_string())
     }
     #[cfg(not(feature = "moonshine"))]
     {
@@ -642,6 +663,20 @@ pub async fn download_parakeet_model(model_size: String) -> Result<(), String> {
     }
 }
 
+/// Delete the Parakeet ONNX folder for `model_size`.
+#[tauri::command]
+pub async fn delete_parakeet_model(model_size: String) -> Result<(), String> {
+    #[cfg(feature = "parakeet")]
+    {
+        fotonvoice_inference::parakeet::delete_model(&model_size, "").map_err(|e| e.to_string())
+    }
+    #[cfg(not(feature = "parakeet"))]
+    {
+        let _ = model_size;
+        Err("This build was compiled without the Parakeet backend. Rebuild with `--features parakeet` to use it.".into())
+    }
+}
+
 /// Whether the Nemotron streaming ONNX backend was compiled into this build.
 #[tauri::command]
 pub fn nemotron_streaming_available() -> bool {
@@ -670,6 +705,21 @@ pub async fn download_nemotron_streaming_model(model_size: String) -> Result<(),
     {
         fotonvoice_inference::nemotron_streaming::download_model(&model_size, "")
             .await
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(feature = "nemotron-streaming"))]
+    {
+        let _ = model_size;
+        Err("This build was compiled without the Nemotron streaming backend. Rebuild with `--features nemotron-streaming` to use it.".into())
+    }
+}
+
+/// Delete the Nemotron streaming ONNX folder for `model_size`.
+#[tauri::command]
+pub async fn delete_nemotron_streaming_model(model_size: String) -> Result<(), String> {
+    #[cfg(feature = "nemotron-streaming")]
+    {
+        fotonvoice_inference::nemotron_streaming::delete_model(&model_size, "")
             .map_err(|e| e.to_string())
     }
     #[cfg(not(feature = "nemotron-streaming"))]

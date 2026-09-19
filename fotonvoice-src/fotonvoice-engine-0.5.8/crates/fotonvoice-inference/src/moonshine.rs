@@ -115,6 +115,21 @@ pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
     MODEL_FILES.iter().all(|f| dir.join(f).exists())
 }
 
+/// Remove the whole `<model_dir>/<size>/` folder. Refuses to run for unknown
+/// sizes so a mistyped size can never point the removal at an unexpected path.
+pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
+    if !valid_model_size(size) {
+        bail!("Unknown Moonshine model size '{size}' (expected 'tiny' or 'base')");
+    }
+    let dir = model_size_dir(model_dir, size);
+    if !dir.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(&dir)
+        .with_context(|| format!("Failed to delete {}", dir.display()))?;
+    Ok(())
+}
+
 // -- Download ------------------------------------------------------------------
 
 /// Serializes downloads so two triggers (e.g. a Settings click and an on-demand

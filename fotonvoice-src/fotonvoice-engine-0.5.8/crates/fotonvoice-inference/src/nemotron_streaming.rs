@@ -149,6 +149,22 @@ pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
     model_files(size).iter().all(|f| dir.join(f).exists())
 }
 
+/// Remove every file the `size` variant downloaded, i.e. the whole
+/// `<model_dir>/<size>/` folder. Refuses to run for unknown sizes so a
+/// mistyped size can never point the removal at an unexpected path.
+pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
+    if !valid_model_size(size) {
+        bail!("Unknown Nemotron streaming model size '{size}' (expected 'fp16' or 'int8-static')");
+    }
+    let dir = model_size_dir(model_dir, size);
+    if !dir.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(&dir)
+        .with_context(|| format!("Failed to delete {}", dir.display()))?;
+    Ok(())
+}
+
 // -- Download ------------------------------------------------------------------
 
 static DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

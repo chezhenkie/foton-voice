@@ -142,6 +142,16 @@
     }
   }
 
+  async function triggerDeleteNemotron(model: string) {
+    nemotronDownloadError = null;
+    try {
+      await invoke("delete_nemotron_streaming_model", { modelSize: model });
+      nemotronDownloadedMap[model] = false;
+    } catch (e) {
+      nemotronDownloadError = `${e}`;
+    }
+  }
+
   async function onNemotronModelChanged() {
     markDirty();
   }
@@ -197,6 +207,16 @@
       parakeetDownloadError = `${e}`;
     } finally {
       parakeetDownloading = false;
+    }
+  }
+
+  async function triggerDeleteParakeet(model: string) {
+    parakeetDownloadError = null;
+    try {
+      await invoke("delete_parakeet_model", { modelSize: model });
+      parakeetDownloadedMap[model] = false;
+    } catch (e) {
+      parakeetDownloadError = `${e}`;
     }
   }
 
@@ -285,6 +305,16 @@
     }
   }
 
+  async function triggerDeleteMoonshine(model: string) {
+    moonshineDownloadError = null;
+    try {
+      await invoke("delete_moonshine_model", { modelSize: model });
+      moonshineDownloadedMap[model] = false;
+    } catch (e) {
+      moonshineDownloadError = `${e}`;
+    }
+  }
+
   async function onMoonshineModelChanged() {
     markDirty();
   }
@@ -321,6 +351,19 @@
       downloadError = `${e}`;
     } finally {
       downloading = false;
+    }
+  }
+
+  async function triggerDeleteModel(model: string) {
+    downloadError = null;
+    try {
+      await invoke("delete_model", {
+        modelSize: model,
+        modelDir: cfg.engine.whisper_cpp.model_dir,
+      });
+      downloadedMap[model] = false;
+    } catch (e) {
+      downloadError = `${e}`;
     }
   }
 
@@ -461,7 +504,10 @@
             >... Downloading {cfg.engine.whisper_cpp.model_size} (GGUF format)...</span
           >
         {:else if downloadedMap[cfg.engine.whisper_cpp.model_size]}
-          <span class="status-downloaded">+ Model downloaded and ready</span>
+          <div class="status-missing-wrapper">
+            <span class="status-downloaded">+ Model downloaded and ready</span>
+            <button class="btn-delete" onclick={() => triggerDeleteModel(cfg.engine.whisper_cpp.model_size)}>Delete model</button>
+          </div>
         {:else}
           <div class="status-missing-wrapper">
             <span class="status-missing">x Model file missing</span>
@@ -583,7 +629,10 @@
               >... Downloading Moonshine {cfg.engine.moonshine.model_size} (ONNX)...</span
             >
           {:else if moonshineDownloadedMap[cfg.engine.moonshine.model_size]}
-            <span class="status-downloaded">+ Model downloaded</span>
+            <div class="status-missing-wrapper">
+              <span class="status-downloaded">+ Model downloaded</span>
+              <button class="btn-delete" onclick={() => triggerDeleteMoonshine(cfg.engine.moonshine.model_size)}>Delete model</button>
+            </div>
           {:else}
             <div class="status-missing-wrapper">
               <span class="status-missing">Model not downloaded</span>
@@ -645,7 +694,10 @@
               >... Downloading Parakeet {cfg.engine.parakeet.model_size} (ONNX)...</span
             >
           {:else if parakeetDownloadedMap[cfg.engine.parakeet.model_size]}
-            <span class="status-downloaded">+ Model downloaded and ready</span>
+            <div class="status-missing-wrapper">
+              <span class="status-downloaded">+ Model downloaded and ready</span>
+              <button class="btn-delete" onclick={() => triggerDeleteParakeet(cfg.engine.parakeet.model_size)}>Delete model</button>
+            </div>
           {:else}
             <div class="status-missing-wrapper">
               <span class="status-missing">Model not downloaded</span>
@@ -737,7 +789,10 @@
               >... Downloading Nemotron streaming {cfg.engine.nemotron_streaming.model_size} (ONNX)...</span
             >
           {:else if nemotronDownloadedMap[cfg.engine.nemotron_streaming.model_size]}
-            <span class="status-downloaded">+ Model downloaded and ready</span>
+            <div class="status-missing-wrapper">
+              <span class="status-downloaded">+ Model downloaded and ready</span>
+              <button class="btn-delete" onclick={() => triggerDeleteNemotron(cfg.engine.nemotron_streaming.model_size)}>Delete model</button>
+            </div>
           {:else}
             <div class="status-missing-wrapper">
               <span class="status-missing">Model not downloaded</span>
@@ -936,6 +991,12 @@
   }
   .btn-download:hover {
     @apply bg-[var(--accent2)];
+  }
+  .btn-delete {
+    @apply bg-red-500/10 border border-red-500/30 text-red-300 rounded-[var(--radius)] p-1.5 px-3 text-xs cursor-pointer font-semibold transition-colors duration-200;
+  }
+  .btn-delete:hover {
+    @apply bg-red-500/25 text-red-200;
   }
   .field-input-error {
     @apply border-red-500!;

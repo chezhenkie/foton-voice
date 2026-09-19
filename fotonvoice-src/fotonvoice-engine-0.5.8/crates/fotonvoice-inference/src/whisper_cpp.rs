@@ -283,6 +283,30 @@ pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
     candidates.iter().any(|filename| dir.join(filename).exists())
 }
 
+/// Remove the GGUF file(s) for `size` from `model_dir`. Refuses to run for
+/// unknown sizes so a mistyped size can never point the removal at an
+/// unexpected path.
+pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
+    let candidates = match GGUF_MAP.iter().find(|(name, _)| *name == size) {
+        Some((_, files)) => *files,
+        None => bail!("Unknown whisper.cpp model size '{size}'"),
+    };
+    let dir = if model_dir.is_empty() {
+        WhisperCppBackend::default_model_dir()
+    } else {
+        crate::util::expand_tilde(model_dir)
+    };
+    for filename in candidates {
+        let path = dir.join(filename);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("Failed to delete {}", path.display())),
+        }
+    }
+    Ok(())
+}
+
 /// Serializes calls to `download_model`. Guards against two independent
 /// triggers racing on the same file - e.g. the silent startup auto-download of
 /// the default "tiny" model firing at the same time the user clicks "Download"
