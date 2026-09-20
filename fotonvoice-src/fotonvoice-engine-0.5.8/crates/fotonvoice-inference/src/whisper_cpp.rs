@@ -1,4 +1,5 @@
 use std::{
+    io::Read,
     path::{Path, PathBuf},
     sync::Mutex,
     time::Instant,
@@ -32,6 +33,31 @@ static GGUF_MAP: &[(&str, &[&str])] = &[
 
 const GGUF_BASE_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
+
+/// Smallest byte size any shipped model file can plausibly have. Every model
+/// in GGUF_MAP is hundreds of MB, so anything under this floor is a truncated
+/// or zero-length download and must never be reported as present.
+const MODEL_FILE_MIN_BYTES: u64 = 1024 * 1024;
+
+/// True when `path` is a usable Whisper model file: it exists, is large enough
+/// to be real, and begins with the "GGUF" magic whisper.cpp validates when the
+/// model loads (whisper-rs-sys bundles that ggml code). Existence-only checks
+/// would report a zero-byte or half-written file as "downloaded", which then
+/// fails at load time - the UI shows green "ready" for a model that will not
+/// run.
+pub fn is_valid_model_file(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if meta.len() < MODEL_FILE_MIN_BYTES {
+        return false;
+    }
+    let mut magic = [0u8; 4];
+    match std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)) {
+        Ok(()) => &magic == b"GGUF",
+        Err(_) => false,
+    }
+}
 
 /// Retired: the tiny/base sizes this auto-downloaded silently no longer ship,
 /// and every remaining model is large enough that pulling it without asking
@@ -148,7 +174,7 @@ impl WhisperCppBackend {
 
         for filename in candidates {
             let path = model_dir.join(filename);
-            if path.exists() {
+            if is_valid_model_file(&path) {
                 return Ok(path);
             }
         }
@@ -282,7 +308,9 @@ pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
     } else {
         crate::util::expand_tilde(model_dir)
     };
-    candidates.iter().any(|filename| dir.join(filename).exists())
+    candidates
+        .iter()
+        .any(|filename| is_valid_model_file(&dir.join(filename)))
 }
 
 /// Remove the GGUF file(s) for `size` from `model_dir`. Refuses to run for
@@ -331,15 +359,28 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
     let filename = candidates[0];
     let path = model_dir.join(filename);
 
-    if path.exists() {
-        return Ok(());
+    // An existing file that fails the sanity check is a broken download, not a
+    // model - drop it and fetch a fresh copy rather than "succeeding".
+    match is_valid_model_file(&path) {
+        true => return Ok(()),
+        false => {
+            if path.exists() {
+                tracing::warn!("Discarding invalid model file before download: {}", path.display());
+                let _ = std::fs::remove_file(&path);
+            }
+        }
     }
 
     let _guard = DOWNLOAD_LOCK.lock().await;
     // Re-check after acquiring the lock: another caller may have just
     // finished downloading this exact file while we were waiting.
-    if path.exists() {
-        return Ok(());
+    match is_valid_model_file(&path) {
+        true => return Ok(()),
+        false => {
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
     }
 
     let url = format!("{}{}", GGUF_BASE_URL, filename);
@@ -351,6 +392,17 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
     tokio::fs::write(&path, bytes)
         .await
         .context("save model file")?;
+
+    // Never report a download as done unless the bytes on disk pass the same
+    // check `is_model_downloaded` uses. A truncated or bad write is removed so
+    // the next attempt starts clean.
+    if !is_valid_model_file(&path) {
+        let _ = std::fs::remove_file(&path);
+        bail!(
+            "Downloaded model failed verification (missing, too small, or not a GGUF file): {}",
+            path.display()
+        );
+    }
 
     info!("Whisper model downloaded successfully to: {}", path.display());
     Ok(())
@@ -505,6 +557,17 @@ mod tests {
 
     // -- model_dir tests -------------------------------------------------------
 
+    /// Write a file that passes `is_valid_model_file`: real GGUF magic plus
+    /// enough zero padding to clear the size floor.
+    fn write_valid_model(dir: &Path, name: &str) {
+        use std::io::Write;
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"GGUF").unwrap();
+        let padding = vec![0u8; MODEL_FILE_MIN_BYTES as usize];
+        f.write_all(&padding).unwrap();
+    }
+
     #[test]
     fn test_is_model_downloaded_default_dir_not_present() {
         // With empty model_dir (default) and no models on disk, returns false.
@@ -527,18 +590,68 @@ mod tests {
 
     #[test]
     fn test_is_model_downloaded_custom_dir_with_file() {
-        use std::io::Write;
         let dir = tempfile::tempdir().expect("tempdir");
-        let model_path = dir.path().join("ggml-small.en-q5_1.bin");
-        std::fs::File::create(&model_path)
-            .unwrap()
-            .write_all(b"fake")
-            .unwrap();
+        write_valid_model(dir.path(), "ggml-small.en-q5_1.bin");
 
         assert!(is_model_downloaded(
             "small.en",
             dir.path().to_str().unwrap()
         ));
+    }
+
+    #[test]
+    fn test_is_model_downloaded_rejects_empty_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::File::create(dir.path().join("ggml-small.en-q5_1.bin")).unwrap();
+
+        assert!(!is_model_downloaded(
+            "small.en",
+            dir.path().to_str().unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_is_model_downloaded_rejects_wrong_magic() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ggml-small.en-q5_1.bin");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(MODEL_FILE_MIN_BYTES)
+            .unwrap();
+
+        assert!(!is_model_downloaded(
+            "small.en",
+            dir.path().to_str().unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_model_file_accepts_only_real_gguf() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let missing = dir.path().join("missing.bin");
+        assert!(!is_valid_model_file(&missing));
+
+        let empty = dir.path().join("empty.bin");
+        std::fs::File::create(&empty).unwrap();
+        assert!(!is_valid_model_file(&empty));
+
+        let junk_no_magic = dir.path().join("junk.bin");
+        std::fs::File::create(&junk_no_magic)
+            .unwrap()
+            .set_len(MODEL_FILE_MIN_BYTES)
+            .unwrap();
+        assert!(!is_valid_model_file(&junk_no_magic));
+
+        let too_small_with_magic = dir.path().join("small-magic.bin");
+        let mut f = std::fs::File::create(&too_small_with_magic).unwrap();
+        f.write_all(b"GGUF").unwrap();
+        assert!(!is_valid_model_file(&too_small_with_magic));
+
+        let good = dir.path().join("good.bin");
+        write_valid_model(dir.path(), "good.bin");
+        assert!(is_valid_model_file(&good));
     }
 
     #[test]
@@ -576,13 +689,9 @@ mod tests {
 
     #[test]
     fn test_q8_recognized_and_preferred_over_quant() {
-        use std::io::Write;
         let dir = tempfile::tempdir().expect("tempdir");
         for f in ["ggml-small-q8_0.bin", "ggml-small-q5_1.bin"] {
-            std::fs::File::create(dir.path().join(f))
-                .unwrap()
-                .write_all(b"fake")
-                .unwrap();
+            write_valid_model(dir.path(), f);
         }
         let cfg = WhisperCppConfig {
             model_dir: dir.path().to_str().unwrap().to_string(),
@@ -613,13 +722,9 @@ mod tests {
 
     #[test]
     fn test_resolve_model_path_uses_custom_dir() {
-        use std::io::Write;
         let dir = tempfile::tempdir().expect("tempdir");
+        write_valid_model(dir.path(), "ggml-small.en-q5_1.bin");
         let model_path = dir.path().join("ggml-small.en-q5_1.bin");
-        std::fs::File::create(&model_path)
-            .unwrap()
-            .write_all(b"fake")
-            .unwrap();
 
         let cfg = WhisperCppConfig {
             model_dir: dir.path().to_str().unwrap().to_string(),
@@ -664,8 +769,6 @@ mod tests {
     // it through the whisper model-dir resolution path.
     #[test]
     fn test_is_model_downloaded_tilde_path() {
-        use std::io::Write;
-        
         let old_home = std::env::var_os("HOME");
         let temp_home = tempfile::tempdir().expect("create temp home");
         let home = temp_home.path().to_path_buf();
@@ -673,11 +776,7 @@ mod tests {
         std::env::set_var("HOME", &home);
 
         let dir = tempfile::tempdir_in(&home).expect("tempdir in home");
-        let model_path = dir.path().join("ggml-small.en-q5_1.bin");
-        std::fs::File::create(&model_path)
-            .unwrap()
-            .write_all(b"fake")
-            .unwrap();
+        write_valid_model(dir.path(), "ggml-small.en-q5_1.bin");
 
         // Construct a ~/... path pointing at the temp dir
         let rel = dir.path().strip_prefix(&home).unwrap();

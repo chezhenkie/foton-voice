@@ -5,6 +5,7 @@
   import { onMount } from "svelte";
 
   import CustomSelect from "./CustomSelect.svelte";
+  import ModelStatusRow from "./ModelStatusRow.svelte";
 
   let { cfg = $bindable() } = $props<{ cfg: AppConfig }>();
   function markDirty() {
@@ -110,8 +111,19 @@
   let nemotronGpuPresent = $state(true);
   let nemotronDownloadedMap = $state<Record<string, boolean>>({});
   let nemotronChecking = $state(false);
-  let nemotronDownloading = $state(false);
+  let nemotronDownloadingModel = $state<string | null>(null);
   let nemotronDownloadError = $state<string | null>(null);
+
+  const nemotronRowState = $derived(
+    nemotronChecking
+      ? "checking"
+      : nemotronDownloadingModel !== null &&
+          nemotronDownloadingModel === cfg.engine.nemotron_streaming.model_size
+        ? "downloading"
+        : nemotronDownloadedMap[cfg.engine.nemotron_streaming.model_size]
+          ? "present"
+          : "missing",
+  );
 
   async function checkNemotronDownloaded() {
     nemotronChecking = true;
@@ -130,39 +142,71 @@
     nemotronChecking = false;
   }
 
+  async function nemotronPresence(model: string): Promise<boolean> {
+    try {
+      return await invoke<boolean>("check_nemotron_streaming_downloaded", {
+        modelSize: model,
+      });
+    } catch {
+      return false;
+    }
+  }
+
   async function triggerNemotronDownload(model: string) {
-    if (nemotronDownloading) return;
-    nemotronDownloading = true;
+    if (nemotronDownloadingModel !== null) return;
+    nemotronDownloadingModel = model;
     nemotronDownloadError = null;
     try {
       await invoke("download_nemotron_streaming_model", { modelSize: model });
-      nemotronDownloadedMap[model] = true;
+      nemotronDownloadedMap[model] = await nemotronPresence(model);
+      if (!nemotronDownloadedMap[model]) {
+        nemotronDownloadError =
+          "Download finished but the model file failed its on-disk check. Please try again.";
+      }
     } catch (e) {
       nemotronDownloadError = `${e}`;
+      nemotronDownloadedMap[model] = await nemotronPresence(model);
     } finally {
-      nemotronDownloading = false;
+      nemotronDownloadingModel = null;
     }
   }
 
   async function triggerDeleteNemotron(model: string) {
+    if (nemotronDownloadingModel !== null) return;
+    nemotronDownloadingModel = model;
     nemotronDownloadError = null;
     try {
       await invoke("delete_nemotron_streaming_model", { modelSize: model });
-      nemotronDownloadedMap[model] = false;
     } catch (e) {
       nemotronDownloadError = `${e}`;
+    } finally {
+      nemotronDownloadingModel = null;
     }
+    nemotronDownloadedMap[model] = await nemotronPresence(model);
   }
 
   async function onNemotronModelChanged() {
     markDirty();
+    nemotronDownloadedMap[cfg.engine.nemotron_streaming.model_size] = await nemotronPresence(
+      cfg.engine.nemotron_streaming.model_size,
+    );
   }
 
   let downloadedMap = $state<Record<string, boolean>>({});
   let checking = $state(false);
-  let downloading = $state(false);
+  let downloadingModel = $state<string | null>(null);
   let modelDirError = $state<string | null>(null);
   let downloadError = $state<string | null>(null);
+
+  const whisperRowState = $derived(
+    checking
+      ? "checking"
+      : downloadingModel !== null && downloadingModel === cfg.engine.whisper_cpp.model_size
+        ? "downloading"
+        : downloadedMap[cfg.engine.whisper_cpp.model_size]
+          ? "present"
+          : "missing",
+  );
 
   // -- Moonshine ------------------------------------------------------------
   // Whether the app was built with the Moonshine backend. When false, choosing
@@ -170,16 +214,38 @@
   let moonshineAvailable = $state(true);
   let moonshineDownloadedMap = $state<Record<string, boolean>>({});
   let moonshineChecking = $state(false);
-  let moonshineDownloading = $state(false);
+  let moonshineDownloadingModel = $state<string | null>(null);
   let moonshineDownloadError = $state<string | null>(null);
+
+  const moonshineRowState = $derived(
+    moonshineChecking
+      ? "checking"
+      : moonshineDownloadingModel !== null &&
+          moonshineDownloadingModel === cfg.engine.moonshine.model_size
+        ? "downloading"
+        : moonshineDownloadedMap[cfg.engine.moonshine.model_size]
+          ? "present"
+          : "missing",
+  );
 
   // -- Parakeet -------------------------------------------------------------
   let parakeetAvailable = $state(true);
   let parakeetGpuPresent = $state(true);
   let parakeetDownloadedMap = $state<Record<string, boolean>>({});
   let parakeetChecking = $state(false);
-  let parakeetDownloading = $state(false);
+  let parakeetDownloadingModel = $state<string | null>(null);
   let parakeetDownloadError = $state<string | null>(null);
+
+  const parakeetRowState = $derived(
+    parakeetChecking
+      ? "checking"
+      : parakeetDownloadingModel !== null &&
+          parakeetDownloadingModel === cfg.engine.parakeet.model_size
+        ? "downloading"
+        : parakeetDownloadedMap[cfg.engine.parakeet.model_size]
+          ? "present"
+          : "missing",
+  );
 
   async function checkParakeetDownloaded() {
     parakeetChecking = true;
@@ -198,32 +264,52 @@
     parakeetChecking = false;
   }
 
+  async function parakeetPresence(model: string): Promise<boolean> {
+    try {
+      return await invoke<boolean>("check_parakeet_downloaded", { modelSize: model });
+    } catch {
+      return false;
+    }
+  }
+
   async function triggerParakeetDownload(model: string) {
-    if (parakeetDownloading) return;
-    parakeetDownloading = true;
+    if (parakeetDownloadingModel !== null) return;
+    parakeetDownloadingModel = model;
     parakeetDownloadError = null;
     try {
       await invoke("download_parakeet_model", { modelSize: model });
-      parakeetDownloadedMap[model] = true;
+      parakeetDownloadedMap[model] = await parakeetPresence(model);
+      if (!parakeetDownloadedMap[model]) {
+        parakeetDownloadError =
+          "Download finished but the model file failed its on-disk check. Please try again.";
+      }
     } catch (e) {
       parakeetDownloadError = `${e}`;
+      parakeetDownloadedMap[model] = await parakeetPresence(model);
     } finally {
-      parakeetDownloading = false;
+      parakeetDownloadingModel = null;
     }
   }
 
   async function triggerDeleteParakeet(model: string) {
+    if (parakeetDownloadingModel !== null) return;
+    parakeetDownloadingModel = model;
     parakeetDownloadError = null;
     try {
       await invoke("delete_parakeet_model", { modelSize: model });
-      parakeetDownloadedMap[model] = false;
     } catch (e) {
       parakeetDownloadError = `${e}`;
+    } finally {
+      parakeetDownloadingModel = null;
     }
+    parakeetDownloadedMap[model] = await parakeetPresence(model);
   }
 
   async function onParakeetModelChanged() {
     markDirty();
+    parakeetDownloadedMap[cfg.engine.parakeet.model_size] = await parakeetPresence(
+      cfg.engine.parakeet.model_size,
+    );
   }
 
   // -- Remote Speech Engine (OpenAI API) ------------------------------------
@@ -293,32 +379,52 @@
     moonshineChecking = false;
   }
 
+  async function moonshinePresence(model: string): Promise<boolean> {
+    try {
+      return await invoke<boolean>("check_moonshine_downloaded", { modelSize: model });
+    } catch {
+      return false;
+    }
+  }
+
   async function triggerMoonshineDownload(model: string) {
-    if (moonshineDownloading) return;
-    moonshineDownloading = true;
+    if (moonshineDownloadingModel !== null) return;
+    moonshineDownloadingModel = model;
     moonshineDownloadError = null;
     try {
       await invoke("download_moonshine_model", { modelSize: model });
-      moonshineDownloadedMap[model] = true;
+      moonshineDownloadedMap[model] = await moonshinePresence(model);
+      if (!moonshineDownloadedMap[model]) {
+        moonshineDownloadError =
+          "Download finished but the model file failed its on-disk check. Please try again.";
+      }
     } catch (e) {
       moonshineDownloadError = `${e}`;
+      moonshineDownloadedMap[model] = await moonshinePresence(model);
     } finally {
-      moonshineDownloading = false;
+      moonshineDownloadingModel = null;
     }
   }
 
   async function triggerDeleteMoonshine(model: string) {
+    if (moonshineDownloadingModel !== null) return;
+    moonshineDownloadingModel = model;
     moonshineDownloadError = null;
     try {
       await invoke("delete_moonshine_model", { modelSize: model });
-      moonshineDownloadedMap[model] = false;
     } catch (e) {
       moonshineDownloadError = `${e}`;
+    } finally {
+      moonshineDownloadingModel = null;
     }
+    moonshineDownloadedMap[model] = await moonshinePresence(model);
   }
 
   async function onMoonshineModelChanged() {
     markDirty();
+    moonshineDownloadedMap[cfg.engine.moonshine.model_size] = await moonshinePresence(
+      cfg.engine.moonshine.model_size,
+    );
   }
 
   async function checkAllModelsDownloaded() {
@@ -339,38 +445,64 @@
     checking = false;
   }
 
+  async function whisperPresence(model: string): Promise<boolean> {
+    try {
+      return await invoke<boolean>("check_model_downloaded", {
+        modelSize: model,
+        modelDir: cfg.engine.whisper_cpp.model_dir,
+      });
+    } catch {
+      return false;
+    }
+  }
+
   async function triggerDownload(model: string) {
-    if (downloading) return;
-    downloading = true;
+    if (downloadingModel !== null) return;
+    downloadingModel = model;
     downloadError = null;
     try {
       await invoke("download_model", {
         modelSize: model,
         modelDir: cfg.engine.whisper_cpp.model_dir,
       });
-      downloadedMap[model] = true;
+      // Never trust a successful invoke alone: the file must pass the same
+      // on-disk check the UI uses, so a broken partial download can never be
+      // reported as present.
+      downloadedMap[model] = await whisperPresence(model);
+      if (!downloadedMap[model]) {
+        downloadError =
+          "Download finished but the model file failed its on-disk check. Please try again.";
+      }
     } catch (e) {
       downloadError = `${e}`;
+      downloadedMap[model] = await whisperPresence(model);
     } finally {
-      downloading = false;
+      downloadingModel = null;
     }
   }
 
   async function triggerDeleteModel(model: string) {
+    if (downloadingModel !== null) return;
+    downloadingModel = model;
     downloadError = null;
     try {
       await invoke("delete_model", {
         modelSize: model,
         modelDir: cfg.engine.whisper_cpp.model_dir,
       });
-      downloadedMap[model] = false;
     } catch (e) {
       downloadError = `${e}`;
+    } finally {
+      downloadingModel = null;
     }
+    downloadedMap[model] = await whisperPresence(model);
   }
 
   async function onModelChanged() {
     markDirty();
+    downloadedMap[cfg.engine.whisper_cpp.model_size] = await whisperPresence(
+      cfg.engine.whisper_cpp.model_size,
+    );
   }
 
   async function validateModelDir() {
@@ -498,33 +630,13 @@
         <CustomSelect bind:value={cfg.engine.whisper_cpp.model_size} options={whisperModelSizeOptions} onchange={onModelChanged} />
       </label>
 
-      <div class="model-status-container">
-        {#if checking}
-          <span class="status-checking">... Checking local model files...</span>
-        {:else if downloading}
-          <span class="status-downloading"
-            >... Downloading {cfg.engine.whisper_cpp.model_size} (GGUF format)...</span
-          >
-        {:else if downloadedMap[cfg.engine.whisper_cpp.model_size]}
-          <div class="status-missing-wrapper">
-            <span class="status-downloaded">+ Model downloaded and ready</span>
-            <button class="btn-delete" onclick={() => triggerDeleteModel(cfg.engine.whisper_cpp.model_size)}>Delete model</button>
-          </div>
-        {:else}
-          <div class="status-missing-wrapper">
-            <span class="status-missing">x Model file missing</span>
-            <button
-              class="btn-download"
-              onclick={() => triggerDownload(cfg.engine.whisper_cpp.model_size)}
-            >
-               Download Model
-            </button>
-          </div>
-          {#if downloadError}
-            <span class="status-error">{downloadError}</span>
-          {/if}
-        {/if}
-      </div>
+      <ModelStatusRow
+        state={whisperRowState}
+        busy={checking || downloadingModel !== null}
+        error={downloadError}
+        onDownload={() => triggerDownload(cfg.engine.whisper_cpp.model_size)}
+        onDelete={() => triggerDeleteModel(cfg.engine.whisper_cpp.model_size)}
+      />
 
       <label class="field">
         <span>Device</span>
@@ -623,33 +735,13 @@
       </label>
 
       {#if moonshineAvailable}
-        <div class="model-status-container">
-          {#if moonshineChecking}
-            <span class="status-checking">... Checking local model files...</span>
-          {:else if moonshineDownloading}
-            <span class="status-downloading"
-              >... Downloading Moonshine {cfg.engine.moonshine.model_size} (ONNX)...</span
-            >
-          {:else if moonshineDownloadedMap[cfg.engine.moonshine.model_size]}
-            <div class="status-missing-wrapper">
-              <span class="status-downloaded">+ Model downloaded</span>
-              <button class="btn-delete" onclick={() => triggerDeleteMoonshine(cfg.engine.moonshine.model_size)}>Delete model</button>
-            </div>
-          {:else}
-            <div class="status-missing-wrapper">
-              <span class="status-missing">Model not downloaded</span>
-              <button
-                class="btn-download"
-                onclick={() => triggerMoonshineDownload(cfg.engine.moonshine.model_size)}
-              >
-                Download {cfg.engine.moonshine.model_size}
-              </button>
-            </div>
-            {#if moonshineDownloadError}
-              <span class="status-error">{moonshineDownloadError}</span>
-            {/if}
-          {/if}
-        </div>
+        <ModelStatusRow
+          state={moonshineRowState}
+          busy={moonshineChecking || moonshineDownloadingModel !== null}
+          error={moonshineDownloadError}
+          onDownload={() => triggerMoonshineDownload(cfg.engine.moonshine.model_size)}
+          onDelete={() => triggerDeleteMoonshine(cfg.engine.moonshine.model_size)}
+        />
       {/if}
 
       <label class="field">
@@ -688,36 +780,16 @@
       </label>
 
       {#if parakeetAvailable}
-        <div class="model-status-container">
-          {#if parakeetChecking}
-            <span class="status-checking">... Checking local model files...</span>
-          {:else if parakeetDownloading}
-            <span class="status-downloading"
-              >... Downloading Parakeet {cfg.engine.parakeet.model_size} (ONNX)...</span
-            >
-          {:else if parakeetDownloadedMap[cfg.engine.parakeet.model_size]}
-            <div class="status-missing-wrapper">
-              <span class="status-downloaded">+ Model downloaded and ready</span>
-              <button class="btn-delete" onclick={() => triggerDeleteParakeet(cfg.engine.parakeet.model_size)}>Delete model</button>
-            </div>
-          {:else}
-            <div class="status-missing-wrapper">
-              <span class="status-missing">Model not downloaded</span>
-              <button
-                class="btn-download"
-                onclick={() => triggerParakeetDownload(cfg.engine.parakeet.model_size)}
-              >
-                Download {cfg.engine.parakeet.model_size}
-              </button>
-            </div>
-            {#if parakeetDownloadError}
-              <span class="status-error">{parakeetDownloadError}</span>
-            {/if}
-            <p class="hint" style="margin-top: 6px;">
-              Model source: <a class="credit-name-link" href="https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx" target="_blank" rel="noreferrer">istupakov/parakeet-tdt-0.6b-v3-onnx</a>
-            </p>
-          {/if}
-        </div>
+        <ModelStatusRow
+          state={parakeetRowState}
+          busy={parakeetChecking || parakeetDownloadingModel !== null}
+          error={parakeetDownloadError}
+          onDownload={() => triggerParakeetDownload(cfg.engine.parakeet.model_size)}
+          onDelete={() => triggerDeleteParakeet(cfg.engine.parakeet.model_size)}
+        />
+        <p class="hint" style="margin-top: 6px;">
+          Model source: <a class="credit-name-link" href="https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx" target="_blank" rel="noreferrer">istupakov/parakeet-tdt-0.6b-v3-onnx</a>
+        </p>
       {/if}
 
       <label class="field">
@@ -783,36 +855,18 @@
       </label>
 
       {#if nemotronAvailable}
-        <div class="model-status-container">
-          {#if nemotronChecking}
-            <span class="status-checking">... Checking local model files...</span>
-          {:else if nemotronDownloading}
-            <span class="status-downloading"
-              >... Downloading Nemotron streaming {cfg.engine.nemotron_streaming.model_size} (ONNX)...</span
-            >
-          {:else if nemotronDownloadedMap[cfg.engine.nemotron_streaming.model_size]}
-            <div class="status-missing-wrapper">
-              <span class="status-downloaded">+ Model downloaded and ready</span>
-              <button class="btn-delete" onclick={() => triggerDeleteNemotron(cfg.engine.nemotron_streaming.model_size)}>Delete model</button>
-            </div>
-          {:else}
-            <div class="status-missing-wrapper">
-              <span class="status-missing">Model not downloaded</span>
-              <button
-                class="btn-download"
-                onclick={() => triggerNemotronDownload(cfg.engine.nemotron_streaming.model_size)}
-              >
-                Download {cfg.engine.nemotron_streaming.model_size}
-              </button>
-            </div>
-            {#if nemotronDownloadError}
-              <span class="status-error">{nemotronDownloadError}</span>
-            {/if}
-            <p class="hint" style="margin-top: 6px;">
-              Model source: <a class="credit-name-link" href="https://huggingface.co/danielbodart/nemotron-speech-600m-onnx" target="_blank" rel="noreferrer">danielbodart/nemotron-speech-600m-onnx</a>
-            </p>
-          {/if}
-        </div>
+        <ModelStatusRow
+          state={nemotronRowState}
+          busy={nemotronChecking || nemotronDownloadingModel !== null}
+          error={nemotronDownloadError}
+          onDownload={() =>
+            triggerNemotronDownload(cfg.engine.nemotron_streaming.model_size)}
+          onDelete={() =>
+            triggerDeleteNemotron(cfg.engine.nemotron_streaming.model_size)}
+        />
+        <p class="hint" style="margin-top: 6px;">
+          Model source: <a class="credit-name-link" href="https://huggingface.co/danielbodart/nemotron-speech-600m-onnx" target="_blank" rel="noreferrer">danielbodart/nemotron-speech-600m-onnx</a>
+        </p>
       {/if}
 
       <label class="field">
@@ -967,39 +1021,6 @@
 <style>
   @reference "../../app.css";
 
-  .model-status-container {
-    @apply flex items-center bg-[var(--bg)] border border-[var(--border)] rounded-[var(--radius)] p-2.5 px-3.5 text-[13px] min-h-[42px] mb-3;
-  }
-  .status-downloaded {
-    @apply text-emerald-400 font-semibold;
-  }
-  .status-downloading {
-    @apply text-[var(--accent2)];
-  }
-  .status-checking {
-    @apply text-[var(--text-muted)];
-  }
-  .status-missing-wrapper {
-    @apply flex items-center justify-between w-full;
-  }
-  .status-missing {
-    @apply text-red-400;
-  }
-  .status-error {
-    @apply mt-1 text-xs leading-5 text-red-400 w-full;
-  }
-  .btn-download {
-    @apply bg-[var(--accent)] border-none text-white rounded-[var(--radius)] p-1.5 px-3 text-xs cursor-pointer font-semibold transition-colors duration-200;
-  }
-  .btn-download:hover {
-    @apply bg-[var(--accent2)];
-  }
-  .btn-delete {
-    @apply bg-red-500/10 border border-red-500/30 text-red-300 rounded-[var(--radius)] p-1.5 px-3 text-xs cursor-pointer font-semibold transition-colors duration-200;
-  }
-  .btn-delete:hover {
-    @apply bg-red-500/25 text-red-200;
-  }
   .field-input-error {
     @apply border-red-500!;
   }
