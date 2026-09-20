@@ -202,7 +202,7 @@ pub fn spawn_status_ticker(
         // What the last emitted payload said, so a tick that changes nothing
         // costs a few atomic loads instead of building a payload, two JSON
         // encodes, a webview event and a message to the overlay process.
-        let mut last_flags: Option<(bool, bool, bool, bool, bool, u32)> = None;
+        let mut last_flags: Option<(bool, bool, bool, bool, bool, u32, bool)> = None;
         let mut last_emit = tokio::time::Instant::now() - HEARTBEAT;
         // The label is derived from three rarely-changing strings; caching it
         // keeps the common tick from rebuilding and re-joining it.
@@ -402,6 +402,7 @@ pub fn spawn_status_ticker(
                 state_for_ticker.is_mcp_recording(),
                 state_for_ticker.is_audio_ready(),
                 state_for_ticker.total_words(),
+                state_for_ticker.hotkey_health.is_active(),
             );
             let now = tokio::time::Instant::now();
             let unchanged = last_flags == Some(flags) && !label_changed;
@@ -418,6 +419,7 @@ pub fn spawn_status_ticker(
                 "mcp_recording": flags.3,
                 "audio_ready": flags.4,
                 "word_count": flags.5,
+                "hotkeys_active": flags.6,
                 "active_target_id": &active_target_id,
                 "active_target_label": &cached_label,
             });

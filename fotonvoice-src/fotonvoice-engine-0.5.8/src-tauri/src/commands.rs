@@ -35,6 +35,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusPayload
         word_count: state.total_words(),
         active_target_id,
         active_target_label: target_label,
+        hotkeys_active: state.hotkey_health.is_active(),
     })
 }
 
@@ -48,6 +49,11 @@ pub struct StatusPayload {
     pub word_count: u32,
     pub active_target_id: String,
     pub active_target_label: String,
+    /// True when the global-shortcut listener can actually deliver a key right
+    /// now. False while an elevated window has the hook blinded (Windows) or
+    /// no backend is available, so a running dictation cannot be stopped with
+    /// its keybind and a new one cannot be started either.
+    pub hotkeys_active: bool,
 }
 
 // -- Recording control ---------------------------------------------------------

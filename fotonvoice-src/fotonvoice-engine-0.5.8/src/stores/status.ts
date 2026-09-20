@@ -11,6 +11,7 @@ export interface AppStatus {
   word_count: number;
   active_target_id?: string;
   active_target_label?: string;
+  hotkeys_active?: boolean;
 }
 
 export const status = writable<AppStatus>({
@@ -22,6 +23,7 @@ export const status = writable<AppStatus>({
   word_count: 0,
   active_target_id: "default",
   active_target_label: "Focused Window",
+  hotkeys_active: true,
 });
 
 export const recording = derived(status, ($s) => $s.recording);

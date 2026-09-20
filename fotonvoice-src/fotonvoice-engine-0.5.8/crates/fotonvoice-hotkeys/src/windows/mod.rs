@@ -59,8 +59,12 @@ use fotonvoice_winput::INJECTED_TAG;
 /// simply is not typing does not churn the hook.
 const WATCHDOG_SILENCE: Duration = Duration::from_secs(180);
 
-/// How often the watchdog wakes to check that silence.
-const WATCHDOG_TICK: Duration = Duration::from_secs(30);
+/// How often the watchdog wakes. Besides checking hook silence, this tick
+/// refreshes the elevated-foreground-window flag, which blinds the hook (UIPI)
+/// and must reach the UI quickly - the dictation overlay warns "shortcuts
+/// dead" off it while a dictation runs. `GetForegroundWindow` plus two token
+/// queries is cheap, so 5s keeps the warning honest without measurable cost.
+const WATCHDOG_TICK: Duration = Duration::from_secs(5);
 
 /// One key transition as the hook saw it.
 struct RawKey {
