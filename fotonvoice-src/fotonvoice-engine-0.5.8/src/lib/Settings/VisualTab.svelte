@@ -73,18 +73,6 @@
         />
       </label>
     {/if}
-    
-    <label class="field">
-      <span>Retro Terminal overlay</span>
-      <input
-        type="checkbox"
-        checked={cfg.ui.overlay_style !== "none"}
-        onchange={(e) => {
-          cfg.ui.overlay_style = e.currentTarget.checked ? "terminal" : "none";
-          markDirty();
-        }}
-      />
-    </label>
 
     <label class="field">
       <span>Overlay position</span>

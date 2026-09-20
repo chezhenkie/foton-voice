@@ -197,7 +197,7 @@ pub fn spawn_status_ticker(
         let mut last_recording = false;
         let mut was_animating = false;
         let mut frame_idx = 0;
-        let mut last_pos: Option<(String, String, String)> = None;
+        let mut last_pos: Option<(String, String)> = None;
         let mut startup_tick_count: u32 = 0;
         // What the last emitted payload said, so a tick that changes nothing
         // costs a few atomic loads instead of building a payload, two JSON
@@ -268,14 +268,13 @@ pub fn spawn_status_ticker(
             {
                 let cfg = state_for_ticker.config.lock().await;
                 let ui = &cfg.data.ui;
-                let unchanged = last_pos.as_ref().is_some_and(|(pos, mon, style)| {
-                    pos == &ui.overlay_position && mon == &ui.overlay_monitor && style == &ui.overlay_style
+                let unchanged = last_pos.as_ref().is_some_and(|(pos, mon)| {
+                    pos == &ui.overlay_position && mon == &ui.overlay_monitor
                 });
                 if !unchanged {
                     last_pos = Some((
                         ui.overlay_position.clone(),
                         ui.overlay_monitor.clone(),
-                        ui.overlay_style.clone(),
                     ));
                     position_changed = true;
                 }
@@ -285,7 +284,7 @@ pub fn spawn_status_ticker(
                 // coordinates itself using its own display scale.
                 let (position, monitor) = last_pos
                     .as_ref()
-                    .map(|(pos, mon, _)| (pos.as_str(), mon.as_str()))
+                    .map(|(pos, mon)| (pos.as_str(), mon.as_str()))
                     .expect("set above");
                 let pos_msg = serde_json::json!({
                     "type": "position",
@@ -316,7 +315,7 @@ pub fn spawn_status_ticker(
             if should_show_overlay && !overlay_built {
                 let (position, monitor) = last_pos
                     .as_ref()
-                    .map(|(pos, mon, _)| (pos.as_str(), mon.as_str()))
+                    .map(|(pos, mon)| (pos.as_str(), mon.as_str()))
                     .unwrap_or(("center", "primary"));
                 match crate::window::open_overlay_window(&handle, position, monitor) {
                     Ok(_) => overlay_built = true,

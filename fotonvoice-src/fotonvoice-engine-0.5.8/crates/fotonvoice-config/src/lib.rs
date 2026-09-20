@@ -278,7 +278,6 @@ fn default_command_overlay_duration_secs() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiConfig {
     pub show_overlay: bool,
-    pub overlay_style: String,
     #[serde(default = "default_overlay_position")]
     pub overlay_position: String,
     #[serde(default = "default_overlay_monitor")]
@@ -305,7 +304,6 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             show_overlay: true,
-            overlay_style: "terminal".into(),
             overlay_position: "center".into(),
             overlay_monitor: "primary".into(),
             auto_show_settings: false,
@@ -1414,7 +1412,6 @@ mod tests {
         // Kept.
         assert_eq!(cfg.audio.gain, 1.6);
         assert!(cfg.audio.noise_suppression);
-        assert_eq!(cfg.ui.overlay_style, "pulse");
         assert!(!cfg.ui.show_overlay);
 
         // Lost, because it is the section that would not read.
@@ -1642,7 +1639,6 @@ mod tests {
         let cfg = AppConfig::default();
         assert!(!cfg.ui.auto_show_settings);
         assert!(!cfg.ui.show_notification);
-        assert_eq!(cfg.ui.overlay_style, "terminal");
         assert_eq!(cfg.ui.overlay_position, "center");
         assert_eq!(cfg.ui.overlay_monitor, "primary");
         assert!(cfg.features.show_notification.is_none());

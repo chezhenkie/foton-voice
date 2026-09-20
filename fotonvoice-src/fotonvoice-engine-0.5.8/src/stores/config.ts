@@ -71,7 +71,6 @@ export interface AudioConfig {
 
 export interface UiConfig {
   show_overlay: boolean;
-  overlay_style: string;
   overlay_position: string;
   overlay_monitor: string;
   auto_show_settings: boolean;
@@ -215,7 +214,6 @@ const defaultConfig: AppConfig = {
   },
   ui: {
     show_overlay: true,
-    overlay_style: "terminal",
     overlay_position: "center",
     overlay_monitor: "primary",
     auto_show_settings: false,

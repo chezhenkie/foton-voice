@@ -110,9 +110,8 @@
   });
 
   $effect(() => {
-    // Whenever the overlay style changes, temporarily unmount the visualizer for 1 tick
-    // to force the WebKitGTK transparent compositor to completely wipe and flush the old frame buffer
-    $config.ui.overlay_style;
+    // On mount, unmount the visualizer for 1 tick to force the WebKitGTK
+    // transparent compositor to completely wipe and flush the old frame buffer.
     visible = false;
     const timer = setTimeout(() => {
       visible = true;
@@ -194,9 +193,7 @@
 
 <div class="overlay-root" data-recording={$recording} data-speaking={$speaking} data-processing={$status.processing}>
   {#if renderOverlay && visible}
-    {#if $config.ui.overlay_style !== "none"}
-      <Terminal recording={$recording} active={animateActive} />
-    {/if}
+    <Terminal recording={$recording} active={animateActive} />
 
     {#if $speaking}
       <div class="system-response-box speaking" class:on={animateActive}>
