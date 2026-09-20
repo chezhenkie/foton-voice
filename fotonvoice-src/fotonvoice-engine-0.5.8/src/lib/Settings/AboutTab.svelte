@@ -5,7 +5,6 @@
   import appIcon from "../../assets/fotonvoice-engine.gif";
 
   let version = $state("0.1.0");
-  let customOverlaysDir = $state("");
   let clonedTtsVoicesDir = $state("");
 
   onMount(async () => {
@@ -13,11 +12,6 @@
       version = await getVersion();
     } catch (e) {
       console.error("Failed to fetch app version:", e);
-    }
-    try {
-      customOverlaysDir = await invoke<string>("get_custom_overlays_dir");
-    } catch (e) {
-      console.error("Failed to fetch custom overlays directory:", e);
     }
     try {
       clonedTtsVoicesDir = await invoke<string>("get_cloned_tts_voices_dir");
@@ -52,9 +46,6 @@
     <div class="kv"><span>Inference</span><span>whisper.cpp, Moonshine, Parakeet TDT & Nemotron Streaming</span></div>
     <div class="kv"><span>Config</span><span><code>~/.config/fotonvoice-engine/</code></span></div>
     <div class="kv"><span>Models</span><span><code>~/.local/share/fotonvoice-engine/models/</code></span></div>
-    {#if customOverlaysDir}
-      <div class="kv"><span>Custom overlays</span><span><code>{customOverlaysDir}</code></span></div>
-    {/if}
     {#if clonedTtsVoicesDir}
       <div class="kv"><span>Cloned TTS voices</span><span><code>{clonedTtsVoicesDir}</code></span></div>
     {/if}

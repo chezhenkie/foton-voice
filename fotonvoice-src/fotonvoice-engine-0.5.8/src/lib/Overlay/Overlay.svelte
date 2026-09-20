@@ -4,32 +4,10 @@
   import { listen } from "@tauri-apps/api/event";
   import { recording, speaking, mcpRecording, status } from "../../stores/status";
   import { config } from "../../stores/config";
-  import VoiceCard from "./VoiceCard.svelte";
-  import Waveform from "./Waveform.svelte";
-  import Pulse from "./Pulse.svelte";
-  import BlueWave from "./BlueWave.svelte";
-  import MonoBars from "./MonoBars.svelte";
-  import Spectrum from "./Spectrum.svelte";
   import Terminal from "./Terminal.svelte";
-  import Vinyl from "./Vinyl.svelte";
-
-  interface CustomOverlay {
-    name: string;
-    html: string;
-    css: string;
-  }
-
-  // Names of the built-in styles Overlay.svelte itself renders (see the
-  // {#if overlay-style === ...} chain in the markup below), plus "none" -
-  // anything outside this set is looked up as a custom overlay folder.
-  const BUILTIN_STYLES = new Set([
-    "waveform", "pulse", "blue_wave", "mono_bars", "spectrum", "terminal", "vinyl", "voice_card", "none",
-  ]);
 
   let visible = $state(true);
-  let activeCustomOverlay = $state<CustomOverlay | undefined>(undefined);
 
-  const triggerLabel = $derived($status.active_target_label || "Focused Window");
   const targetLabel = $derived($status.active_target_label || "Focused Window");
 
   let commandOverlayActive = $state(false);
@@ -37,7 +15,6 @@
   let commandOverlayText = $state("");
   let commandTimerId: any = null;
   let unlistenCommandExecuted: (() => void) | null = null;
-  let unlistenOverlayStyleSelected: (() => void) | null = null;
 
   // Delay unmounting the visualizer when recording/speaking/command stops to allow CSS outro animation to finish
   let isRecordingOrSpeaking = $derived(
@@ -67,11 +44,6 @@
       animateTimeoutId = setTimeout(() => {
         animateActive = true;
       }, 25);
-      // See loadActiveCustomOverlay's doc comment below: this is the
-      // trigger that actually matters for "I edited the file, does the
-      // next activation show it" - re-read on every activation, not just
-      // when the style value itself happens to change.
-      loadActiveCustomOverlay($config.ui.overlay_style);
     } else {
       animateActive = false;
       timeoutId = setTimeout(() => {
@@ -82,13 +54,6 @@
       if (timeoutId) clearTimeout(timeoutId);
       if (animateTimeoutId) clearTimeout(animateTimeoutId);
     };
-  });
-
-  let processedHtml = $derived.by(() => {
-    if (!activeCustomOverlay) return "";
-    return activeCustomOverlay.html
-      .replace(/\{\{trigger\}\}/g, triggerLabel)
-      .replace(/\{\{target\}\}/g, targetLabel);
   });
 
   let targetVolume = 0;
@@ -120,18 +85,16 @@
     if (currentVolume < 0.0005) currentVolume = 0;
 
     // Dispatch high-performance window-level custom events
-    if (activeCustomOverlay) {
-      window.dispatchEvent(new CustomEvent("fotonvoice-status", {
-        detail: {
-          recording: $recording,
-          processing: $status.processing,
-          speaking: $speaking,
-          audio_ready: $status.audio_ready !== false,
-          active_target_label: $status.active_target_label || "Focused Window",
-          audio_level: currentVolume,
-        }
-      }));
-    }
+    window.dispatchEvent(new CustomEvent("fotonvoice-status", {
+      detail: {
+        recording: $recording,
+        processing: $status.processing,
+        speaking: $speaking,
+        audio_ready: $status.audio_ready !== false,
+        active_target_label: $status.active_target_label || "Focused Window",
+        audio_level: currentVolume,
+      }
+    }));
 
     if (currentVolume === 0 && targetVolume === 0 && !renderOverlay) {
       animationFrameId = null;
@@ -141,64 +104,19 @@
   }
 
   // Anything that puts the overlay on screen also needs the loop running, even
-  // before the first level arrives (a custom overlay reads its status from the
-  // events the loop dispatches).
+  // before the first level arrives.
   $effect(() => {
     if (renderOverlay) startAnimation();
   });
 
-  // A custom overlay's files are read fresh from disk right here - both
-  // index.html and style.css together, in one call - not once at app
-  // startup, and not cached in between, so editing either file always
-  // shows up on the very next read with no app restart needed. This
-  // window is created once and stays alive for the app's whole session
-  // (see window::open_overlay_window), so without re-reading on demand
-  // like this, whatever was on disk at startup is all it would ever show.
-  //
-  // Reading it again is triggered three different ways:
-  //   1. The "overlay-style-selected" listener below, fired directly by
-  //      Settings on every selection in the Overlay style dropdown -
-  //      including re-selecting the style that's already active. This is
-  //      the reliable one for "I edited the file, does picking this style
-  //      show it right now": it bypasses the config store entirely, so it
-  //      isn't subject to point 3 below.
-  //   2. The isRecordingOrSpeaking effect above, on every activation (a
-  //      dictation starts) - the guarantee for "will the next dictation
-  //      show my edit", independent of anything Settings did.
-  //   3. The style-change effect further down, which reacts to
-  //      config.ui.overlay_style itself changing. Kept as a fallback for
-  //      config changes that don't originate from that dropdown (e.g. a
-  //      config file edited by hand), but not relied on alone: this
-  //      window's copy of that value only updates when it *receives* a
-  //      config-changed event with a different value than it already had,
-  //      and Settings auto-saves on a debounce - two quick changes can
-  //      collapse into one save equal to the original value, which this
-  //      window never sees as a change at all.
-  function loadActiveCustomOverlay(style: string) {
-    if (BUILTIN_STYLES.has(style)) {
-      activeCustomOverlay = undefined;
-      return;
-    }
-    invoke<CustomOverlay | null>("get_custom_overlay", { name: style })
-      .then((res) => {
-        activeCustomOverlay = res ?? undefined;
-      })
-      .catch((e) => {
-        console.error(`Failed to load custom overlay "${style}":`, e);
-        activeCustomOverlay = undefined;
-      });
-  }
-
   $effect(() => {
     // Whenever the overlay style changes, temporarily unmount the visualizer for 1 tick
     // to force the WebKitGTK transparent compositor to completely wipe and flush the old frame buffer
-    const style = $config.ui.overlay_style;
+    $config.ui.overlay_style;
     visible = false;
     const timer = setTimeout(() => {
       visible = true;
     }, 25); // 25ms ensures a full repaint frame ticks in WebKitGTK
-
-    loadActiveCustomOverlay(style);
 
     return () => clearTimeout(timer);
   });
@@ -240,19 +158,6 @@
       appEl.style.setProperty("background", "transparent", "important");
     }
 
-    // Custom overlays are fetched in the $effect above, which also runs once
-    // on mount (and again on every style switch, so on-disk edits show up
-    // without an app restart).
-
-    // Fired directly by Settings (VisualTab.svelte) on every Overlay style
-    // dropdown selection - see loadActiveCustomOverlay's doc comment above
-    // for why this exists alongside the config-driven effect.
-    listen<string>("overlay-style-selected", (event) => {
-      loadActiveCustomOverlay(event.payload);
-    }).then((unlisten) => {
-      unlistenOverlayStyleSelected = unlisten;
-    });
-
     // Listen to real-time audio levels from Rust backend
     listen<number>("audio-level", (event) => {
       targetVolume = Math.min(1.0, event.payload * 100.0);
@@ -281,57 +186,16 @@
       document.body.classList.remove("overlay-window");
       if (unlistenAudioLevel) unlistenAudioLevel();
       if (unlistenCommandExecuted) unlistenCommandExecuted();
-      if (unlistenOverlayStyleSelected) unlistenOverlayStyleSelected();
       if (commandTimerId) clearTimeout(commandTimerId);
       if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
     };
   });
-
-  // Action to execute scripts dynamically in inserted html
-  function executeScripts(node: HTMLElement) {
-    const scripts = node.querySelectorAll("script");
-    scripts.forEach((oldScript) => {
-      const newScript = document.createElement("script");
-      Array.from(oldScript.attributes).forEach((attr) => {
-        newScript.setAttribute(attr.name, attr.value);
-      });
-      newScript.appendChild(document.createTextNode(oldScript.innerHTML));
-      if (oldScript.parentNode) {
-        oldScript.parentNode.replaceChild(newScript, oldScript);
-      }
-    });
-
-    return {
-      destroy() {
-        window.dispatchEvent(new CustomEvent("fotonvoice-cleanup"));
-      }
-    };
-  }
 </script>
 
 <div class="overlay-root" data-recording={$recording} data-speaking={$speaking} data-processing={$status.processing}>
   {#if renderOverlay && visible}
-    {#if $config.ui.overlay_style === "waveform"}
-      <Waveform recording={$recording} active={animateActive} />
-    {:else if $config.ui.overlay_style === "pulse"}
-      <Pulse recording={$recording} active={animateActive} />
-    {:else if $config.ui.overlay_style === "blue_wave"}
-      <BlueWave recording={$recording} speaking={$speaking} active={animateActive} />
-    {:else if $config.ui.overlay_style === "mono_bars"}
-      <MonoBars recording={$recording} active={animateActive} />
-    {:else if $config.ui.overlay_style === "spectrum"}
-      <Spectrum recording={$recording} active={animateActive} />
-    {:else if $config.ui.overlay_style === "terminal"}
+    {#if $config.ui.overlay_style !== "none"}
       <Terminal recording={$recording} active={animateActive} />
-    {:else if $config.ui.overlay_style === "vinyl"}
-      <Vinyl recording={$recording} active={animateActive} />
-    {:else if activeCustomOverlay}
-      {@html `<style>${activeCustomOverlay.css}</style>`}
-      <div class="custom-overlay-content" class:active={animateActive} use:executeScripts>
-        {@html processedHtml}
-      </div>
-    {:else if $config.ui.overlay_style !== "none"}
-      <VoiceCard recording={$recording} speaking={$speaking} active={animateActive} />
     {/if}
 
     {#if $speaking}

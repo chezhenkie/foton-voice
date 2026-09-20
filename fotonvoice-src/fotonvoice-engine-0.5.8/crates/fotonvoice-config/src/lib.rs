@@ -305,7 +305,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             show_overlay: true,
-            overlay_style: "mono_bars".into(),
+            overlay_style: "terminal".into(),
             overlay_position: "center".into(),
             overlay_monitor: "primary".into(),
             auto_show_settings: false,
@@ -1642,7 +1642,7 @@ mod tests {
         let cfg = AppConfig::default();
         assert!(!cfg.ui.auto_show_settings);
         assert!(!cfg.ui.show_notification);
-        assert_eq!(cfg.ui.overlay_style, "mono_bars");
+        assert_eq!(cfg.ui.overlay_style, "terminal");
         assert_eq!(cfg.ui.overlay_position, "center");
         assert_eq!(cfg.ui.overlay_monitor, "primary");
         assert!(cfg.features.show_notification.is_none());

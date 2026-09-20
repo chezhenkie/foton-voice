@@ -67,20 +67,18 @@ pub fn open_settings_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWind
 
 /// Label of the dictation overlay window.
 pub const OVERLAY_WINDOW: &str = "overlay";
-// The overlay's actual content (the widest built-in style, the 440px-wide
-// Neon Spectrum panel) is centered via flex inside this window with real
-// margin to spare, so it stays comfortably clear of the window edges. On
-// Linux this has to absorb the rendered size sometimes coming out a few px
-// smaller than requested: forcing GDK_BACKEND=x11 (see lib.rs) makes GDK
-// approximate the display's real scale factor - often fractional under
-// Wayland - by rounding to an integer X11 scale, which showed up as the
-// window edge clipping into the Voice Card style's rounded corners before
-// this was widened.
+// The overlay's actual content (the Retro Terminal panel) is centered via
+// flex inside this window with real margin to spare, so it stays comfortably
+// clear of the window edges. On Linux this has to absorb the rendered size
+// sometimes coming out a few px smaller than requested: forcing
+// GDK_BACKEND=x11 (see lib.rs) makes GDK approximate the display's real
+// scale factor - often fractional under Wayland - by rounding to an integer
+// X11 scale, which showed up as the window edge clipping into rounded
+// corners before this was widened.
 //
 // On Linux the window is doubled (upstream 0.5.9, kept): the larger surface
-// gives the visualizer styles - custom ones especially - more room to render
-// their load/outro animations into. Windows keeps the original size, since
-// its layout is verified-good.
+// gives the overlay room to render its load/outro animations into. Windows
+// keeps the original size, since its layout is verified-good.
 #[cfg(target_os = "linux")]
 const OVERLAY_WIDTH: f64 = 1184.0;
 #[cfg(target_os = "linux")]
@@ -93,9 +91,8 @@ const OVERLAY_HEIGHT: f64 = 222.0;
 /// Build (or fetch) the dictation overlay: a transparent, frameless,
 /// always-on-top, click-through `WebviewWindow` rendering the `/overlay`
 /// Svelte route (`src/lib/Overlay/Overlay.svelte`) - the same component tree
-/// that renders every built-in visualizer style, the user's custom overlays,
-/// and the speaking/command/MCP pills, already wired to the app-wide
-/// `status-tick` / `audio-level` events.
+/// that renders the Retro Terminal panel and the speaking/command/MCP
+/// pills, already wired to the app-wide `status-tick` / `audio-level` events.
 ///
 /// `anchor` / `monitor_pref` are `config.ui.overlay_position` /
 /// `overlay_monitor`.

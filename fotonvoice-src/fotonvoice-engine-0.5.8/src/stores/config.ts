@@ -215,7 +215,7 @@ const defaultConfig: AppConfig = {
   },
   ui: {
     show_overlay: true,
-    overlay_style: "mono_bars",
+    overlay_style: "terminal",
     overlay_position: "center",
     overlay_monitor: "primary",
     auto_show_settings: false,

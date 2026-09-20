@@ -13,7 +13,6 @@ use crate::commands::*;
  use crate::state::AppState;
 
 mod commands;
-mod custom_overlays;
 mod installer;
 mod host_env;
 mod mint_shortcuts;
@@ -167,12 +166,6 @@ pub fn run() {
 
     // First line in every log: which build this is.
     tracing::info!("{}", version_string());
-
-    // Make sure the documented Custom/ overlay example exists - see
-    // refresh_bundled_example's doc comment: it never touches Custom/ once
-    // it exists, edited or not, only recreating it if the folder is deleted.
-    // Nothing else in the overlays folder is touched.
-    custom_overlays::refresh_bundled_example();
 
     let config = Config::load();
 
@@ -549,10 +542,7 @@ pub fn run() {
             get_bindings,
             save_bindings,
             speak_text,
-            get_custom_overlays,
-            get_custom_overlay,
             overlay_content_ready,
-            get_custom_overlays_dir,
             get_cloned_tts_voices_dir,
             list_audio_devices,
             start_monitoring_audio,
