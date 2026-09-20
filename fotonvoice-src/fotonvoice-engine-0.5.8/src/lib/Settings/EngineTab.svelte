@@ -25,7 +25,6 @@
     "small.en-q8",
     "medium-q8",
     "medium.en-q8",
-    "large-v3-q8",
     "large-v3-turbo-q8",
   ];
 

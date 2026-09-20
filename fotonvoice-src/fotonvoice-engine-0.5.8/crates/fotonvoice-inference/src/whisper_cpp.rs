@@ -30,7 +30,6 @@ static GGUF_MAP: &[(&str, &str)] = &[
     ("small.en-q8",       "ggml-small.en-q8_0.bin"),
     ("medium-q8",         "ggml-medium-q8_0.bin"),
     ("medium.en-q8",      "ggml-medium.en-q8_0.bin"),
-    ("large-v3-q8",       "ggml-large-v3-q8_0.bin"),
     ("large-v3-turbo-q8", "ggml-large-v3-turbo-q8_0.bin"),
 ];
 
@@ -693,7 +692,6 @@ mod tests {
             ("small.en-q8", "ggml-small.en-q8_0.bin"),
             ("medium-q8", "ggml-medium-q8_0.bin"),
             ("medium.en-q8", "ggml-medium.en-q8_0.bin"),
-            ("large-v3-q8", "ggml-large-v3-q8_0.bin"),
             ("large-v3-turbo-q8", "ggml-large-v3-turbo-q8_0.bin"),
         ] {
             let (_, mapped) = GGUF_MAP
