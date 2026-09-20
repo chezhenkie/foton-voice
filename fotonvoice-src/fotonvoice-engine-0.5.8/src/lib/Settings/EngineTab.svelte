@@ -19,7 +19,6 @@
     "small.en",
     "medium",
     "medium.en",
-    "large-v2",
     "large-v3",
     "large-v3-turbo",
     "small-q8",

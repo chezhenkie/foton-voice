@@ -23,7 +23,6 @@ static GGUF_MAP: &[(&str, &str)] = &[
     ("small.en",          "ggml-small.en-q5_1.bin"),
     ("medium",            "ggml-medium-q5_0.bin"),
     ("medium.en",         "ggml-medium.en-q5_0.bin"),
-    ("large-v2",          "ggml-large-v2-q5_0.bin"),
     ("large-v3",          "ggml-large-v3-q5_0.bin"),
     ("large-v3-turbo",    "ggml-large-v3-turbo-q5_0.bin"),
     // Q8_0 variants: near-lossless int8, preferred on GPU builds.
@@ -460,7 +459,7 @@ mod tests {
 
     #[test]
     fn test_is_small_auto_downloadable_rejects_larger_models() {
-        for size in ["small", "medium", "large-v2", "large-v3", "large-v3-turbo", "small-q8", "small.en-q8"] {
+        for size in ["small", "medium", "large-v3", "large-v3-turbo", "small-q8", "small.en-q8"] {
             assert!(!is_small_auto_downloadable(size), "{size} must not auto-download silently");
         }
     }
