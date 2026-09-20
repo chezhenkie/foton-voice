@@ -73,7 +73,7 @@
   let whisperModelSizeOptions = $derived(
     MODEL_SIZES.map(s => ({
       value: s,
-      label: `${s}${whisperModels.downloaded[s] ? " +" : ""}`
+      label: `${s}${s.endsWith("-q8") ? "" : " q5"}${whisperModels.downloaded[s] ? " +" : ""}`
     }))
   );
 
