@@ -24,6 +24,11 @@
     "large-v2",
     "large-v3",
     "large-v3-turbo",
+    "small-q8",
+    "base-q8",
+    "medium-q8",
+    "large-v3-q8",
+    "large-v3-turbo-q8",
   ];
 
   // GPU support is decided when the binary is compiled, per engine, and the two

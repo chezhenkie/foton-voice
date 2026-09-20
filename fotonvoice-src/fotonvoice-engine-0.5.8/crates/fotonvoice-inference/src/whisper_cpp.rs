@@ -24,6 +24,13 @@ static GGUF_MAP: &[(&str, &[&str])] = &[
     ("large-v2",       &["ggml-large-v2-q5_0.bin",       "ggml-large-v2.bin"]),
     ("large-v3",       &["ggml-large-v3-q5_0.bin",       "ggml-large-v3.bin"]),
     ("large-v3-turbo", &["ggml-large-v3-turbo-q5_0.bin", "ggml-large-v3-turbo.bin"]),
+    // Q8_0 variants (q8_0 first): near-lossless int8, preferred on GPU builds;
+    // fall back to the quant/plain files so a config survives a partial dir.
+    ("small-q8",          &["ggml-small-q8_0.bin",          "ggml-small-q5_1.bin",          "ggml-small.bin"]),
+    ("base-q8",           &["ggml-base-q8_0.bin",           "ggml-base-q5_1.bin",           "ggml-base.bin"]),
+    ("medium-q8",         &["ggml-medium-q8_0.bin",         "ggml-medium-q5_0.bin",         "ggml-medium.bin"]),
+    ("large-v3-q8",       &["ggml-large-v3-q8_0.bin",       "ggml-large-v3-q5_0.bin",       "ggml-large-v3.bin"]),
+    ("large-v3-turbo-q8", &["ggml-large-v3-turbo-q8_0.bin", "ggml-large-v3-turbo-q5_0.bin", "ggml-large-v3-turbo.bin"]),
 ];
 
 const GGUF_BASE_URL: &str =
@@ -549,6 +556,62 @@ mod tests {
         // Unknown model size always returns false regardless of dir.
         assert!(!is_model_downloaded("unknown-size", ""));
         assert!(!is_model_downloaded("unknown-size", "/tmp"));
+    }
+
+    // -- Q8_0 variants --------------------------------------------------------
+
+    #[test]
+    fn test_q8_entries_exist_and_point_at_q8_0_first() {
+        for (name, files) in [
+            ("small-q8", "ggml-small-q8_0.bin"),
+            ("base-q8", "ggml-base-q8_0.bin"),
+            ("medium-q8", "ggml-medium-q8_0.bin"),
+            ("large-v3-q8", "ggml-large-v3-q8_0.bin"),
+            ("large-v3-turbo-q8", "ggml-large-v3-turbo-q8_0.bin"),
+        ] {
+            let (_, files_list) = GGUF_MAP
+                .iter()
+                .find(|(n, _)| *n == name)
+                .expect("q8 entry registered");
+            assert_eq!(files_list[0], files, "{name} download target");
+        }
+    }
+
+    #[test]
+    fn test_q8_recognized_and_preferred_over_quant() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        for f in ["ggml-small-q8_0.bin", "ggml-small-q5_1.bin"] {
+            std::fs::File::create(dir.path().join(f))
+                .unwrap()
+                .write_all(b"fake")
+                .unwrap();
+        }
+        let cfg = WhisperCppConfig {
+            model_dir: dir.path().to_str().unwrap().to_string(),
+            model_size: "small-q8".to_string(),
+            device: "cpu".to_string(),
+            threads: 0,
+            language: "auto".to_string(),
+        };
+        let backend = WhisperCppBackend::new(cfg);
+        let resolved = backend.resolve_model_path().expect("should resolve");
+        assert_eq!(
+            resolved,
+            dir.path().join("ggml-small-q8_0.bin"),
+            "q8_0 must win over the q5_1 fallback"
+        );
+    }
+
+    #[test]
+    fn test_q8_not_downloaded_in_empty_dir() {
+        assert!(!is_model_downloaded("small-q8", "/nonexistent/path/for/q8"));
+    }
+
+    #[test]
+    fn test_delete_model_removes_unknown_size_refused() {
+        assert!(delete_model("unknown-size", "").is_err());
+        assert!(delete_model("small-q8", "/nonexistent/path/that/does/not/exist").is_ok());
     }
 
     #[test]
