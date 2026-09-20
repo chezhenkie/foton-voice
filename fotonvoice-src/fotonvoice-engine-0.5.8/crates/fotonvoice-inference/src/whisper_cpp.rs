@@ -40,11 +40,12 @@ const GGUF_BASE_URL: &str =
 const MODEL_FILE_MIN_BYTES: u64 = 1024 * 1024;
 
 /// True when `path` is a usable Whisper model file: it exists, is large enough
-/// to be real, and begins with the "GGUF" magic whisper.cpp validates when the
-/// model loads (whisper-rs-sys bundles that ggml code). Existence-only checks
-/// would report a zero-byte or half-written file as "downloaded", which then
-/// fails at load time - the UI shows green "ready" for a model that will not
-/// run.
+/// to be real, and begins with a magic whisper.cpp accepts at load time. Both
+/// on-disk variants seen here: the ggml binary format (bytes "lmgg", i.e.
+/// little-endian "ggml" - measured on this machine's q5_0/q5_1/q8_0 files) and
+/// GGUF ("GGUF" ASCII, per gguf.h). Existence-only checks would report a
+/// zero-byte or half-written file as "downloaded", which then fails at load
+/// time - the UI shows green "ready" for a model that will not run.
 pub fn is_valid_model_file(path: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
@@ -54,7 +55,7 @@ pub fn is_valid_model_file(path: &Path) -> bool {
     }
     let mut magic = [0u8; 4];
     match std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)) {
-        Ok(()) => &magic == b"GGUF",
+        Ok(()) => &magic == b"lmgg" || &magic == b"GGUF",
         Err(_) => false,
     }
 }
@@ -557,13 +558,13 @@ mod tests {
 
     // -- model_dir tests -------------------------------------------------------
 
-    /// Write a file that passes `is_valid_model_file`: real GGUF magic plus
-    /// enough zero padding to clear the size floor.
+    /// Write a file that passes `is_valid_model_file`: the ggml format magic
+/// (bytes "lmgg") plus enough zero padding to clear the size floor.
     fn write_valid_model(dir: &Path, name: &str) {
         use std::io::Write;
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(b"GGUF").unwrap();
+        f.write_all(b"lmgg").unwrap();
         let padding = vec![0u8; MODEL_FILE_MIN_BYTES as usize];
         f.write_all(&padding).unwrap();
     }
@@ -646,12 +647,29 @@ mod tests {
 
         let too_small_with_magic = dir.path().join("small-magic.bin");
         let mut f = std::fs::File::create(&too_small_with_magic).unwrap();
-        f.write_all(b"GGUF").unwrap();
+        f.write_all(b"lmgg").unwrap();
         assert!(!is_valid_model_file(&too_small_with_magic));
 
         let good = dir.path().join("good.bin");
         write_valid_model(dir.path(), "good.bin");
         assert!(is_valid_model_file(&good));
+
+        // GGUF-format files (ASCII "GGUF" header) must also pass.
+        let gguf = dir.path().join("gguf.bin");
+        let mut f = std::fs::File::create(&gguf).unwrap();
+        f.write_all(b"GGUF").unwrap();
+        let padding = vec![0u8; MODEL_FILE_MIN_BYTES as usize];
+        f.write_all(&padding).unwrap();
+        assert!(is_valid_model_file(&gguf));
+
+        // The real files on this machine's disk use the ggml magic; reject a
+        // wrong-magic file of full size to prove the magic is actually read.
+        let wrong_magic = dir.path().join("wrong.bin");
+        std::fs::File::create(&wrong_magic)
+            .unwrap()
+            .set_len(MODEL_FILE_MIN_BYTES)
+            .unwrap();
+        assert!(!is_valid_model_file(&wrong_magic));
     }
 
     #[test]
