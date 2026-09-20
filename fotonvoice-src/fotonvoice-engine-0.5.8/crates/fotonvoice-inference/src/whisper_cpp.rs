@@ -13,10 +13,6 @@ use crate::backend::{TranscribeRequest, TranscriptionBackend, TranscriptionResul
 // -- GGUF model resolution -----------------------------------------------------
 
 static GGUF_MAP: &[(&str, &[&str])] = &[
-    ("tiny",           &["ggml-tiny-q5_1.bin",           "ggml-tiny.bin"]),
-    ("tiny.en",        &["ggml-tiny.en-q5_1.bin",        "ggml-tiny.en.bin"]),
-    ("base",           &["ggml-base-q5_1.bin",           "ggml-base.bin"]),
-    ("base.en",        &["ggml-base.en-q5_1.bin",        "ggml-base.en.bin"]),
     ("small",          &["ggml-small-q5_1.bin",          "ggml-small.bin"]),
     ("small.en",       &["ggml-small.en-q5_1.bin",       "ggml-small.en.bin"]),
     ("medium",         &["ggml-medium-q5_0.bin",         "ggml-medium.bin"]),
@@ -27,8 +23,9 @@ static GGUF_MAP: &[(&str, &[&str])] = &[
     // Q8_0 variants (q8_0 first): near-lossless int8, preferred on GPU builds;
     // fall back to the quant/plain files so a config survives a partial dir.
     ("small-q8",          &["ggml-small-q8_0.bin",          "ggml-small-q5_1.bin",          "ggml-small.bin"]),
-    ("base-q8",           &["ggml-base-q8_0.bin",           "ggml-base-q5_1.bin",           "ggml-base.bin"]),
+    ("small.en-q8",       &["ggml-small.en-q8_0.bin",       "ggml-small.en-q5_1.bin",       "ggml-small.en.bin"]),
     ("medium-q8",         &["ggml-medium-q8_0.bin",         "ggml-medium-q5_0.bin",         "ggml-medium.bin"]),
+    ("medium.en-q8",      &["ggml-medium.en-q8_0.bin",      "ggml-medium.en-q5_0.bin",      "ggml-medium.en.bin"]),
     ("large-v3-q8",       &["ggml-large-v3-q8_0.bin",       "ggml-large-v3-q5_0.bin",       "ggml-large-v3.bin"]),
     ("large-v3-turbo-q8", &["ggml-large-v3-turbo-q8_0.bin", "ggml-large-v3-turbo-q5_0.bin", "ggml-large-v3-turbo.bin"]),
 ];
@@ -36,13 +33,11 @@ static GGUF_MAP: &[(&str, &[&str])] = &[
 const GGUF_BASE_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
-/// Model sizes small enough (~75MB or less) to auto-download silently in the
-/// background at first launch, so the app transcribes out of the box with no
-/// manual step. Anything larger stays an explicit, user-initiated download -
-/// pulling hundreds of MB to a few GB without asking would be a bad surprise
-/// on a metered or slow connection.
-pub fn is_small_auto_downloadable(size: &str) -> bool {
-    matches!(size, "tiny" | "tiny.en")
+/// Retired: the tiny/base sizes this auto-downloaded silently no longer ship,
+/// and every remaining model is large enough that pulling it without asking
+/// would be a bad surprise. All model downloads are explicit now.
+pub fn is_small_auto_downloadable(_size: &str) -> bool {
+    false
 }
 
 /// What a configured `device` actually resolves to in this build.
@@ -315,9 +310,8 @@ pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
 }
 
 /// Serializes calls to `download_model`. Guards against two independent
-/// triggers racing on the same file - e.g. the silent startup auto-download of
-/// the default "tiny" model firing at the same time the user clicks "Download"
-/// in Settings before it has finished.
+/// triggers racing on the same file - e.g. a download trigger in Settings and
+/// a retry from the transcription worker firing at the same time.
 static DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
@@ -404,14 +398,16 @@ mod tests {
     // -- is_small_auto_downloadable --------------------------------------------
 
     #[test]
-    fn test_is_small_auto_downloadable_tiny_variants() {
-        assert!(is_small_auto_downloadable("tiny"));
-        assert!(is_small_auto_downloadable("tiny.en"));
+    fn test_small_auto_downloadable_retired() {
+        assert!(!is_small_auto_downloadable("small.en"));
+        assert!(!is_small_auto_downloadable("small.en-q8"));
+        assert!(!is_small_auto_downloadable("large-v3"));
+        assert!(!is_small_auto_downloadable("anything"));
     }
 
     #[test]
     fn test_is_small_auto_downloadable_rejects_larger_models() {
-        for size in ["base", "base.en", "small", "medium", "large-v2", "large-v3", "large-v3-turbo"] {
+        for size in ["small", "medium", "large-v2", "large-v3", "large-v3-turbo", "small-q8", "small.en-q8"] {
             assert!(!is_small_auto_downloadable(size), "{size} must not auto-download silently");
         }
     }
@@ -426,7 +422,7 @@ mod tests {
     fn test_new_backend() {
         let cfg = WhisperCppConfig {
             model_dir: "/tmp".to_string(),
-            model_size: "tiny".to_string(),
+            model_size: "small.en".to_string(),
             device: "cpu".to_string(),
             threads: 4,
             language: "auto".to_string(),
@@ -441,7 +437,7 @@ mod tests {
         // Explicit threads count
         let cfg = WhisperCppConfig {
             model_dir: "".to_string(),
-            model_size: "tiny".to_string(),
+            model_size: "small.en".to_string(),
             device: "cpu".to_string(),
             threads: 5,
             language: "auto".to_string(),
@@ -452,7 +448,7 @@ mod tests {
         // Auto threads count (0)
         let cfg_auto = WhisperCppConfig {
             model_dir: "".to_string(),
-            model_size: "tiny".to_string(),
+            model_size: "small.en".to_string(),
             device: "cpu".to_string(),
             threads: 0,
             language: "auto".to_string(),
@@ -492,7 +488,7 @@ mod tests {
     fn test_transcribe_unloaded_error() {
         let cfg = WhisperCppConfig {
             model_dir: "".to_string(),
-            model_size: "tiny".to_string(),
+            model_size: "small.en".to_string(),
             device: "cpu".to_string(),
             threads: 0,
             language: "auto".to_string(),
@@ -518,7 +514,7 @@ mod tests {
         let home = temp_home.path().to_path_buf();
         std::env::set_var("HOME", &home);
 
-        let result = is_model_downloaded("tiny", "");
+        let result = is_model_downloaded("small.en", "");
 
         if let Some(old) = old_home {
             std::env::set_var("HOME", old);
@@ -533,14 +529,14 @@ mod tests {
     fn test_is_model_downloaded_custom_dir_with_file() {
         use std::io::Write;
         let dir = tempfile::tempdir().expect("tempdir");
-        let model_path = dir.path().join("ggml-tiny-q5_1.bin");
+        let model_path = dir.path().join("ggml-small.en-q5_1.bin");
         std::fs::File::create(&model_path)
             .unwrap()
             .write_all(b"fake")
             .unwrap();
 
         assert!(is_model_downloaded(
-            "tiny",
+            "small.en",
             dir.path().to_str().unwrap()
         ));
     }
@@ -548,7 +544,7 @@ mod tests {
     #[test]
     fn test_is_model_downloaded_nonexistent_path() {
         // A path that does not exist on disk: no models found there.
-        assert!(!is_model_downloaded("tiny", "/nonexistent/path/that/does/not/exist"));
+        assert!(!is_model_downloaded("small.en", "/nonexistent/path/that/does/not/exist"));
     }
 
     #[test]
@@ -564,8 +560,9 @@ mod tests {
     fn test_q8_entries_exist_and_point_at_q8_0_first() {
         for (name, files) in [
             ("small-q8", "ggml-small-q8_0.bin"),
-            ("base-q8", "ggml-base-q8_0.bin"),
+            ("small.en-q8", "ggml-small.en-q8_0.bin"),
             ("medium-q8", "ggml-medium-q8_0.bin"),
+            ("medium.en-q8", "ggml-medium.en-q8_0.bin"),
             ("large-v3-q8", "ggml-large-v3-q8_0.bin"),
             ("large-v3-turbo-q8", "ggml-large-v3-turbo-q8_0.bin"),
         ] {
@@ -618,7 +615,7 @@ mod tests {
     fn test_resolve_model_path_uses_custom_dir() {
         use std::io::Write;
         let dir = tempfile::tempdir().expect("tempdir");
-        let model_path = dir.path().join("ggml-tiny-q5_1.bin");
+        let model_path = dir.path().join("ggml-small.en-q5_1.bin");
         std::fs::File::create(&model_path)
             .unwrap()
             .write_all(b"fake")
@@ -626,7 +623,7 @@ mod tests {
 
         let cfg = WhisperCppConfig {
             model_dir: dir.path().to_str().unwrap().to_string(),
-            model_size: "tiny".to_string(),
+            model_size: "small.en".to_string(),
             device: "cpu".to_string(),
             threads: 0,
             language: "auto".to_string(),
@@ -644,7 +641,7 @@ mod tests {
         // custom one.
         let cfg = WhisperCppConfig {
             model_dir: "".to_string(),
-            model_size: "tiny".to_string(),
+            model_size: "small.en".to_string(),
             device: "cpu".to_string(),
             threads: 0,
             language: "auto".to_string(),
@@ -676,7 +673,7 @@ mod tests {
         std::env::set_var("HOME", &home);
 
         let dir = tempfile::tempdir_in(&home).expect("tempdir in home");
-        let model_path = dir.path().join("ggml-tiny-q5_1.bin");
+        let model_path = dir.path().join("ggml-small.en-q5_1.bin");
         std::fs::File::create(&model_path)
             .unwrap()
             .write_all(b"fake")
@@ -686,7 +683,7 @@ mod tests {
         let rel = dir.path().strip_prefix(&home).unwrap();
         let tilde_path = format!("~/{}", rel.display());
 
-        let result = is_model_downloaded("tiny", &tilde_path);
+        let result = is_model_downloaded("small.en", &tilde_path);
 
         if let Some(old) = old_home {
             std::env::set_var("HOME", old);

@@ -13,10 +13,6 @@
   }
 
   const MODEL_SIZES = [
-    "tiny",
-    "tiny.en",
-    "base",
-    "base.en",
     "small",
     "small.en",
     "medium",
@@ -25,8 +21,9 @@
     "large-v3",
     "large-v3-turbo",
     "small-q8",
-    "base-q8",
+    "small.en-q8",
     "medium-q8",
+    "medium.en-q8",
     "large-v3-q8",
     "large-v3-turbo-q8",
   ];

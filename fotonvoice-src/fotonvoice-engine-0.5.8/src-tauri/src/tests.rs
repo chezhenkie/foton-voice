@@ -734,9 +734,9 @@ async fn test_setup_blocker_flags_a_missing_model_at_keypress() {
 }
 
 #[tokio::test]
-async fn test_setup_blocker_stays_quiet_for_the_auto_downloading_default() {
-    // "tiny" downloads itself in the background with its own notifications;
-    // a second "go to Settings" toast mid-download is pure noise.
+async fn test_setup_blocker_reports_a_missing_model() {
+    // Small sizes no longer auto-download, so a configured but undownloaded
+    // model must be reported by the setup blocker instead of skipped.
     if crate::commands::missing_injection_tool().is_some() {
         return; // host lacks wtype/xdotool; that blocker legitimately wins
     }
@@ -744,11 +744,13 @@ async fn test_setup_blocker_stays_quiet_for_the_auto_downloading_default() {
     {
         let mut cfg = state.config.lock().await;
         cfg.data.engine.backend = fotonvoice_config::BackendChoice::WhisperCpp;
-        cfg.data.engine.whisper_cpp.model_size = "tiny".to_string();
+        cfg.data.engine.whisper_cpp.model_size = "small.en".to_string();
         cfg.data.engine.whisper_cpp.model_dir =
             tempfile::tempdir().unwrap().path().to_string_lossy().to_string();
     }
-    assert!(setup_blocker(&state).await.is_none());
+    let blocker = setup_blocker(&state).await;
+    assert!(blocker.is_some(), "missing model must block");
+    assert!(blocker.unwrap().contains("small.en"));
 }
 
 #[tokio::test]

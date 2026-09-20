@@ -309,38 +309,8 @@ pub fn auto_download_speech_model_if_needed(
         let model_size = cfg_data.engine.whisper_cpp.model_size.clone();
         let model_dir = cfg_data.engine.whisper_cpp.model_dir.clone();
         if !fotonvoice_inference::whisper_cpp::is_model_downloaded(&model_size, &model_dir) {
-            if fotonvoice_inference::whisper_cpp::is_small_auto_downloadable(&model_size) {
-                // The inference worker independently retries loading
-                // the model on every dictation request (see
-                // fotonvoice-inference::run_worker), so transcription
-                // starts working the moment this finishes - no app
-                // restart needed.
-                tauri::async_runtime::spawn(async move {
-                    fotonvoice_inject::show_notification(
-                        "FotonVoice Engine",
-                        &format!("Downloading the default speech model ({model_size})..."),
-                    );
-                    match fotonvoice_inference::whisper_cpp::download_model(&model_size, &model_dir)
-                        .await
-                    {
-                        Ok(()) => {
-                            fotonvoice_inject::show_notification(
-                                "FotonVoice Engine",
-                                "Speech model ready - dictation is now available.",
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!("Auto-download of default speech model failed: {e:#}");
-                            fotonvoice_inject::show_notification(
-                                "FotonVoice Engine",
-                                &format!(
-                                    "Could not download the default speech model: {e:#}. Open Settings -> Engine to retry."
-                                ),
-                            );
-                        }
-                    }
-                });
-            } else if !show_settings {
+            // All downloads are explicit now; point the user at Settings.
+            if !show_settings {
                 fotonvoice_inject::show_notification(
                     "FotonVoice Engine",
                     &format!(

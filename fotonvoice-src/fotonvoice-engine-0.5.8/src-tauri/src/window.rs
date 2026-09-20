@@ -458,12 +458,6 @@ pub async fn setup_blocker(state: &Arc<AppState>) -> Option<String> {
     if !uses_whisper_model {
         return None;
     }
-    // Skip small models the startup hook auto-downloads in the background -
-    // that flow has its own "downloading.../ready/failed" notifications, so this
-    // would only add a confusing "go to Settings" message mid-download.
-    if fotonvoice_inference::whisper_cpp::is_small_auto_downloadable(&eng.whisper_cpp.model_size) {
-        return None;
-    }
     if fotonvoice_inference::whisper_cpp::is_model_downloaded(
         &eng.whisper_cpp.model_size,
         &eng.whisper_cpp.model_dir,

@@ -22,7 +22,7 @@ pub enum ConfigError {
 pub struct WhisperCppConfig {
     /// Directory containing GGUF model files. Empty = platform default.
     pub model_dir: String,
-    /// Model size name: "tiny", "base", "small", "medium", "large-v3", etc.
+    /// Model size name: "small", "medium", "large-v3", plus -q8 variants, etc.
     pub model_size: String,
     /// "auto" | "cuda" | "vulkan" | "cpu"
     pub device: String,
@@ -41,11 +41,11 @@ impl Default for WhisperCppConfig {
     fn default() -> Self {
         Self {
             model_dir: String::new(),
-            // "tiny" (~75MB) is small enough to auto-download silently at
-            // first launch (see src-tauri/src/lib.rs startup hook) so the app
-            // transcribes out of the box with no manual download step. Users
-            // who want more accuracy can pick a larger model in Settings.
-            model_size: "tiny".into(),
+            // Reasonable default for dictation; smaller sizes no longer ship.
+            // No silent auto-download - first use shows the "model not
+            // downloaded" banner in Settings -> Engine until the user clicks
+            // Download.
+            model_size: "small.en".into(),
             device: "auto".into(),
             threads: 0,
             language: "auto".into(),
@@ -1264,8 +1264,8 @@ pub fn find_in_path(name: &str) -> Option<PathBuf> {
 // -- Validation ----------------------------------------------------------------
 
 static VALID_MODEL_SIZES: &[&str] = &[
-    "tiny", "tiny.en", "base", "base.en", "small", "small.en",
-    "medium", "medium.en", "large-v2", "large-v3", "large-v3-turbo",
+    "small", "small.en", "medium", "medium.en", "large-v2", "large-v3", "large-v3-turbo",
+    "small-q8", "small.en-q8", "medium-q8", "medium.en-q8", "large-v3-q8", "large-v3-turbo-q8",
 ];
 
 pub fn validate(cfg: &AppConfig) -> Vec<String> {
