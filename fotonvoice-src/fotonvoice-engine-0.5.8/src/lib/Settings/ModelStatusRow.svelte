@@ -1,38 +1,31 @@
 <script lang="ts">
+  import type { ModelManager } from "./models.svelte";
+
   let {
-    state = "missing",
-    busy = false,
-    error = null,
-    onDownload = () => {},
-    onDelete = () => {},
+    mgr,
+    size,
   }: {
-    state: "checking" | "downloading" | "present" | "missing";
-    busy?: boolean;
-    error?: string | null;
-    onDownload?: () => void;
-    onDelete?: () => void;
+    mgr: ModelManager;
+    size: string;
   } = $props();
 
-  const present = state === "present";
-  const downloading = state === "downloading";
-  const checking = state === "checking";
-  const missing = state === "missing";
-  const disabled = busy || checking;
+  const rowState = $derived(mgr.state(size));
+  const disabled = $derived(mgr.busy);
 </script>
 
 <div class="model-status-container">
   <span
     class="status"
-    class:present
-    class:downloading
-    class:missing
-    class:checking
+    class:present={rowState === "present"}
+    class:downloading={rowState === "downloading"}
+    class:missing={rowState === "missing"}
+    class:checking={rowState === "checking"}
   >
-    {#if checking}
+    {#if rowState === "checking"}
       checking...
-    {:else if downloading}
+    {:else if rowState === "downloading"}
       model downloading
-    {:else if present}
+    {:else if rowState === "present"}
       model present
     {:else}
       model not installed
@@ -42,23 +35,23 @@
     <button
       class="btn btn-download"
       type="button"
-      onclick={onDownload}
-      disabled={disabled || present}
+      onclick={() => mgr.download(size)}
+      disabled={disabled || rowState === "present"}
     >
       Download
     </button>
     <button
       class="btn btn-delete"
       type="button"
-      onclick={onDelete}
-      disabled={disabled || !present}
+      onclick={() => mgr.remove(size)}
+      disabled={disabled || rowState !== "present"}
     >
       Delete
     </button>
   </div>
 </div>
-{#if error}
-  <span class="status-error">{error}</span>
+{#if mgr.error}
+  <span class="status-error">{mgr.error}</span>
 {/if}
 
 <style>

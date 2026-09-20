@@ -6,6 +6,7 @@
 
   import CustomSelect from "./CustomSelect.svelte";
   import ModelStatusRow from "./ModelStatusRow.svelte";
+  import { createModelManager } from "./models.svelte";
 
   let { cfg = $bindable() } = $props<{ cfg: AppConfig }>();
   function markDirty() {
@@ -74,7 +75,7 @@
   let whisperModelSizeOptions = $derived(
     MODEL_SIZES.map(s => ({
       value: s,
-      label: `${s}${downloadedMap[s] ? " +" : ""}`
+      label: `${s}${whisperModels.downloaded[s] ? " +" : ""}`
     }))
   );
 
@@ -107,209 +108,59 @@
     { value: "int8-static", label: "INT8 static (~876 MB, CUDA / CPU)" }
   ];
 
-  let nemotronAvailable = $state(true);
-  let nemotronGpuPresent = $state(true);
-  let nemotronDownloadedMap = $state<Record<string, boolean>>({});
-  let nemotronChecking = $state(false);
-  let nemotronDownloadingModel = $state<string | null>(null);
-  let nemotronDownloadError = $state<string | null>(null);
+  // -- Model managers -----------------------------------------------------------
+  // One state machine per backend, defined in models.svelte.ts. Each one owns
+  // its presence map, its single download/delete lock, and its error string;
+  // nothing below re-implements any of that.
+  const whisperModels = createModelManager({
+    sizes: MODEL_SIZES,
+    check: (size) =>
+      invoke<boolean>("check_model_downloaded", {
+        modelSize: size,
+        modelDir: cfg.engine.whisper_cpp.model_dir,
+      }),
+    download: (size) =>
+      invoke("download_model", { modelSize: size, modelDir: cfg.engine.whisper_cpp.model_dir }),
+    remove: (size) =>
+      invoke("delete_model", { modelSize: size, modelDir: cfg.engine.whisper_cpp.model_dir }),
+  });
 
-  const nemotronRowState = $derived(
-    nemotronChecking
-      ? "checking"
-      : nemotronDownloadingModel !== null &&
-          nemotronDownloadingModel === cfg.engine.nemotron_streaming.model_size
-        ? "downloading"
-        : nemotronDownloadedMap[cfg.engine.nemotron_streaming.model_size]
-          ? "present"
-          : "missing",
-  );
-
-  async function checkNemotronDownloaded() {
-    nemotronChecking = true;
-    const newMap: Record<string, boolean> = {};
-    for (const m of nemotronModelSizeOptions) {
-      try {
-        newMap[m.value] = await invoke<boolean>("check_nemotron_streaming_downloaded", {
-          modelSize: m.value,
-        });
-      } catch (e) {
-        console.error("Failed to check Nemotron streaming download status for " + m.value, e);
-        newMap[m.value] = false;
-      }
-    }
-    nemotronDownloadedMap = newMap;
-    nemotronChecking = false;
-  }
-
-  async function nemotronPresence(model: string): Promise<boolean> {
-    try {
-      return await invoke<boolean>("check_nemotron_streaming_downloaded", {
-        modelSize: model,
-      });
-    } catch {
-      return false;
-    }
-  }
-
-  async function triggerNemotronDownload(model: string) {
-    if (nemotronDownloadingModel !== null) return;
-    nemotronDownloadingModel = model;
-    nemotronDownloadError = null;
-    try {
-      await invoke("download_nemotron_streaming_model", { modelSize: model });
-      nemotronDownloadedMap[model] = await nemotronPresence(model);
-      if (!nemotronDownloadedMap[model]) {
-        nemotronDownloadError =
-          "Download finished but the model file failed its on-disk check. Please try again.";
-      }
-    } catch (e) {
-      nemotronDownloadError = `${e}`;
-      nemotronDownloadedMap[model] = await nemotronPresence(model);
-    } finally {
-      nemotronDownloadingModel = null;
-    }
-  }
-
-  async function triggerDeleteNemotron(model: string) {
-    if (nemotronDownloadingModel !== null) return;
-    nemotronDownloadingModel = model;
-    nemotronDownloadError = null;
-    try {
-      await invoke("delete_nemotron_streaming_model", { modelSize: model });
-    } catch (e) {
-      nemotronDownloadError = `${e}`;
-    } finally {
-      nemotronDownloadingModel = null;
-    }
-    nemotronDownloadedMap[model] = await nemotronPresence(model);
-  }
-
-  async function onNemotronModelChanged() {
-    markDirty();
-    nemotronDownloadedMap[cfg.engine.nemotron_streaming.model_size] = await nemotronPresence(
-      cfg.engine.nemotron_streaming.model_size,
-    );
-  }
-
-  let downloadedMap = $state<Record<string, boolean>>({});
-  let checking = $state(false);
-  let downloadingModel = $state<string | null>(null);
   let modelDirError = $state<string | null>(null);
-  let downloadError = $state<string | null>(null);
-
-  const whisperRowState = $derived(
-    checking
-      ? "checking"
-      : downloadingModel !== null && downloadingModel === cfg.engine.whisper_cpp.model_size
-        ? "downloading"
-        : downloadedMap[cfg.engine.whisper_cpp.model_size]
-          ? "present"
-          : "missing",
-  );
 
   // -- Moonshine ------------------------------------------------------------
   // Whether the app was built with the Moonshine backend. When false, choosing
   // Moonshine silently runs whisper-cpp, so we surface that to the user.
   let moonshineAvailable = $state(true);
-  let moonshineDownloadedMap = $state<Record<string, boolean>>({});
-  let moonshineChecking = $state(false);
-  let moonshineDownloadingModel = $state<string | null>(null);
-  let moonshineDownloadError = $state<string | null>(null);
-
-  const moonshineRowState = $derived(
-    moonshineChecking
-      ? "checking"
-      : moonshineDownloadingModel !== null &&
-          moonshineDownloadingModel === cfg.engine.moonshine.model_size
-        ? "downloading"
-        : moonshineDownloadedMap[cfg.engine.moonshine.model_size]
-          ? "present"
-          : "missing",
-  );
+  const moonshineModels = createModelManager({
+    sizes: moonshineModelSizeOptions.map((o) => o.value),
+    check: (size) => invoke<boolean>("check_moonshine_downloaded", { modelSize: size }),
+    download: (size) => invoke("download_moonshine_model", { modelSize: size }),
+    remove: (size) => invoke("delete_moonshine_model", { modelSize: size }),
+  });
 
   // -- Parakeet -------------------------------------------------------------
   let parakeetAvailable = $state(true);
   let parakeetGpuPresent = $state(true);
-  let parakeetDownloadedMap = $state<Record<string, boolean>>({});
-  let parakeetChecking = $state(false);
-  let parakeetDownloadingModel = $state<string | null>(null);
-  let parakeetDownloadError = $state<string | null>(null);
+  const parakeetModels = createModelManager({
+    sizes: parakeetModelSizeOptions.map((o) => o.value),
+    check: (size) => invoke<boolean>("check_parakeet_downloaded", { modelSize: size }),
+    download: (size) => invoke("download_parakeet_model", { modelSize: size }),
+    remove: (size) => invoke("delete_parakeet_model", { modelSize: size }),
+  });
 
-  const parakeetRowState = $derived(
-    parakeetChecking
-      ? "checking"
-      : parakeetDownloadingModel !== null &&
-          parakeetDownloadingModel === cfg.engine.parakeet.model_size
-        ? "downloading"
-        : parakeetDownloadedMap[cfg.engine.parakeet.model_size]
-          ? "present"
-          : "missing",
-  );
-
-  async function checkParakeetDownloaded() {
-    parakeetChecking = true;
-    const newMap: Record<string, boolean> = {};
-    for (const m of parakeetModelSizeOptions) {
-      try {
-        newMap[m.value] = await invoke<boolean>("check_parakeet_downloaded", {
-          modelSize: m.value,
-        });
-      } catch (e) {
-        console.error("Failed to check Parakeet download status for " + m.value, e);
-        newMap[m.value] = false;
-      }
-    }
-    parakeetDownloadedMap = newMap;
-    parakeetChecking = false;
-  }
-
-  async function parakeetPresence(model: string): Promise<boolean> {
-    try {
-      return await invoke<boolean>("check_parakeet_downloaded", { modelSize: model });
-    } catch {
-      return false;
-    }
-  }
-
-  async function triggerParakeetDownload(model: string) {
-    if (parakeetDownloadingModel !== null) return;
-    parakeetDownloadingModel = model;
-    parakeetDownloadError = null;
-    try {
-      await invoke("download_parakeet_model", { modelSize: model });
-      parakeetDownloadedMap[model] = await parakeetPresence(model);
-      if (!parakeetDownloadedMap[model]) {
-        parakeetDownloadError =
-          "Download finished but the model file failed its on-disk check. Please try again.";
-      }
-    } catch (e) {
-      parakeetDownloadError = `${e}`;
-      parakeetDownloadedMap[model] = await parakeetPresence(model);
-    } finally {
-      parakeetDownloadingModel = null;
-    }
-  }
-
-  async function triggerDeleteParakeet(model: string) {
-    if (parakeetDownloadingModel !== null) return;
-    parakeetDownloadingModel = model;
-    parakeetDownloadError = null;
-    try {
-      await invoke("delete_parakeet_model", { modelSize: model });
-    } catch (e) {
-      parakeetDownloadError = `${e}`;
-    } finally {
-      parakeetDownloadingModel = null;
-    }
-    parakeetDownloadedMap[model] = await parakeetPresence(model);
-  }
+  // -- Nemotron streaming ----------------------------------------------------
+  let nemotronAvailable = $state(true);
+  let nemotronGpuPresent = $state(true);
+  const nemotronModels = createModelManager({
+    sizes: nemotronModelSizeOptions.map((o) => o.value),
+    check: (size) => invoke<boolean>("check_nemotron_streaming_downloaded", { modelSize: size }),
+    download: (size) => invoke("download_nemotron_streaming_model", { modelSize: size }),
+    remove: (size) => invoke("delete_nemotron_streaming_model", { modelSize: size }),
+  });
 
   async function onParakeetModelChanged() {
     markDirty();
-    parakeetDownloadedMap[cfg.engine.parakeet.model_size] = await parakeetPresence(
-      cfg.engine.parakeet.model_size,
-    );
+    await parakeetModels.verify(cfg.engine.parakeet.model_size);
   }
 
   // -- Remote Speech Engine (OpenAI API) ------------------------------------
@@ -362,147 +213,19 @@
     }
   }
 
-  async function checkMoonshineDownloaded() {
-    moonshineChecking = true;
-    const newMap: Record<string, boolean> = {};
-    for (const m of moonshineModelSizeOptions) {
-      try {
-        newMap[m.value] = await invoke<boolean>("check_moonshine_downloaded", {
-          modelSize: m.value,
-        });
-      } catch (e) {
-        console.error("Failed to check Moonshine download status for " + m.value, e);
-        newMap[m.value] = false;
-      }
-    }
-    moonshineDownloadedMap = newMap;
-    moonshineChecking = false;
-  }
-
-  async function moonshinePresence(model: string): Promise<boolean> {
-    try {
-      return await invoke<boolean>("check_moonshine_downloaded", { modelSize: model });
-    } catch {
-      return false;
-    }
-  }
-
-  async function triggerMoonshineDownload(model: string) {
-    if (moonshineDownloadingModel !== null) return;
-    moonshineDownloadingModel = model;
-    moonshineDownloadError = null;
-    try {
-      await invoke("download_moonshine_model", { modelSize: model });
-      moonshineDownloadedMap[model] = await moonshinePresence(model);
-      if (!moonshineDownloadedMap[model]) {
-        moonshineDownloadError =
-          "Download finished but the model file failed its on-disk check. Please try again.";
-      }
-    } catch (e) {
-      moonshineDownloadError = `${e}`;
-      moonshineDownloadedMap[model] = await moonshinePresence(model);
-    } finally {
-      moonshineDownloadingModel = null;
-    }
-  }
-
-  async function triggerDeleteMoonshine(model: string) {
-    if (moonshineDownloadingModel !== null) return;
-    moonshineDownloadingModel = model;
-    moonshineDownloadError = null;
-    try {
-      await invoke("delete_moonshine_model", { modelSize: model });
-    } catch (e) {
-      moonshineDownloadError = `${e}`;
-    } finally {
-      moonshineDownloadingModel = null;
-    }
-    moonshineDownloadedMap[model] = await moonshinePresence(model);
-  }
-
   async function onMoonshineModelChanged() {
     markDirty();
-    moonshineDownloadedMap[cfg.engine.moonshine.model_size] = await moonshinePresence(
-      cfg.engine.moonshine.model_size,
-    );
+    await moonshineModels.verify(cfg.engine.moonshine.model_size);
   }
 
-  async function checkAllModelsDownloaded() {
-    checking = true;
-    const newMap: Record<string, boolean> = {};
-    for (const m of MODEL_SIZES) {
-      try {
-        newMap[m] = await invoke<boolean>("check_model_downloaded", {
-          modelSize: m,
-          modelDir: cfg.engine.whisper_cpp.model_dir,
-        });
-      } catch (e) {
-        console.error("Failed to check download status for model " + m, e);
-        newMap[m] = false;
-      }
-    }
-    downloadedMap = newMap;
-    checking = false;
-  }
-
-  async function whisperPresence(model: string): Promise<boolean> {
-    try {
-      return await invoke<boolean>("check_model_downloaded", {
-        modelSize: model,
-        modelDir: cfg.engine.whisper_cpp.model_dir,
-      });
-    } catch {
-      return false;
-    }
-  }
-
-  async function triggerDownload(model: string) {
-    if (downloadingModel !== null) return;
-    downloadingModel = model;
-    downloadError = null;
-    try {
-      await invoke("download_model", {
-        modelSize: model,
-        modelDir: cfg.engine.whisper_cpp.model_dir,
-      });
-      // Never trust a successful invoke alone: the file must pass the same
-      // on-disk check the UI uses, so a broken partial download can never be
-      // reported as present.
-      downloadedMap[model] = await whisperPresence(model);
-      if (!downloadedMap[model]) {
-        downloadError =
-          "Download finished but the model file failed its on-disk check. Please try again.";
-      }
-    } catch (e) {
-      downloadError = `${e}`;
-      downloadedMap[model] = await whisperPresence(model);
-    } finally {
-      downloadingModel = null;
-    }
-  }
-
-  async function triggerDeleteModel(model: string) {
-    if (downloadingModel !== null) return;
-    downloadingModel = model;
-    downloadError = null;
-    try {
-      await invoke("delete_model", {
-        modelSize: model,
-        modelDir: cfg.engine.whisper_cpp.model_dir,
-      });
-    } catch (e) {
-      downloadError = `${e}`;
-    } finally {
-      downloadingModel = null;
-    }
-    downloadedMap[model] = await whisperPresence(model);
+  async function onNemotronModelChanged() {
+    markDirty();
+    await nemotronModels.verify(cfg.engine.nemotron_streaming.model_size);
   }
 
   async function onModelChanged() {
     markDirty();
-    downloadedMap[cfg.engine.whisper_cpp.model_size] = await whisperPresence(
-      cfg.engine.whisper_cpp.model_size,
-    );
+    await whisperModels.verify(cfg.engine.whisper_cpp.model_size);
   }
 
   async function validateModelDir() {
@@ -516,7 +239,7 @@
       ? null
       : "This folder does not exist. Please create it first or leave blank for the default location.";
     if (!modelDirError) {
-      await checkAllModelsDownloaded();
+      await whisperModels.refreshAll();
     }
   }
 
@@ -531,25 +254,25 @@
   }
 
   onMount(async () => {
-    checkAllModelsDownloaded();
+    whisperModels.refreshAll();
     try {
       moonshineAvailable = await invoke<boolean>("moonshine_available");
     } catch (e) {
       console.error("Failed to query Moonshine availability", e);
     }
-    checkMoonshineDownloaded();
+    moonshineModels.refreshAll();
     try {
       parakeetAvailable = await invoke<boolean>("parakeet_available");
     } catch (e) {
       console.error("Failed to query Parakeet availability", e);
     }
-    checkParakeetDownloaded();
+    parakeetModels.refreshAll();
     try {
       nemotronAvailable = await invoke<boolean>("nemotron_streaming_available");
     } catch (e) {
       console.error("Failed to query Nemotron streaming availability", e);
     }
-    checkNemotronDownloaded();
+    nemotronModels.refreshAll();
     try {
       const support = await invoke<{
         whisper_gpu: string | null;
@@ -592,28 +315,6 @@
 <section>
   <h2>Inference Engine</h2>
 
-  {#if cfg.engine.backend === "whisper-cpp" && !checking && !downloadedMap[cfg.engine.whisper_cpp.model_size]}
-    <div
-      class="flex items-center gap-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-6 mb-5 animate-in fade-in slide-in-from-top-1 duration-300"
-    >
-      <span
-        class="text-2xl leading-none text-yellow-500 drop-shadow-[0_0_6px_rgba(234,179,8,0.3)]"
-        >!</span
-      >
-      <div class="flex-1">
-        <strong class="block text-yellow-200 font-semibold text-sm mb-1"
-          >Voice Model Not Downloaded</strong
-        >
-        <p class="m-0 text-slate-200 text-xs leading-relaxed">
-          The configuration specifies a voice model (<strong
-            >{cfg.engine.whisper_cpp.model_size}</strong
-          >) that is not currently downloaded. Please select the model size to
-          use and download it below, or choose another model.
-        </p>
-      </div>
-    </div>
-  {/if}
-
   <div class="field-group">
     <h3>Backend</h3>
     <label class="field">
@@ -631,11 +332,8 @@
       </label>
 
       <ModelStatusRow
-        state={whisperRowState}
-        busy={checking || downloadingModel !== null}
-        error={downloadError}
-        onDownload={() => triggerDownload(cfg.engine.whisper_cpp.model_size)}
-        onDelete={() => triggerDeleteModel(cfg.engine.whisper_cpp.model_size)}
+        mgr={whisperModels}
+        size={cfg.engine.whisper_cpp.model_size}
       />
 
       <label class="field">
@@ -736,11 +434,8 @@
 
       {#if moonshineAvailable}
         <ModelStatusRow
-          state={moonshineRowState}
-          busy={moonshineChecking || moonshineDownloadingModel !== null}
-          error={moonshineDownloadError}
-          onDownload={() => triggerMoonshineDownload(cfg.engine.moonshine.model_size)}
-          onDelete={() => triggerDeleteMoonshine(cfg.engine.moonshine.model_size)}
+          mgr={moonshineModels}
+          size={cfg.engine.moonshine.model_size}
         />
       {/if}
 
@@ -781,11 +476,8 @@
 
       {#if parakeetAvailable}
         <ModelStatusRow
-          state={parakeetRowState}
-          busy={parakeetChecking || parakeetDownloadingModel !== null}
-          error={parakeetDownloadError}
-          onDownload={() => triggerParakeetDownload(cfg.engine.parakeet.model_size)}
-          onDelete={() => triggerDeleteParakeet(cfg.engine.parakeet.model_size)}
+          mgr={parakeetModels}
+          size={cfg.engine.parakeet.model_size}
         />
         <p class="hint" style="margin-top: 6px;">
           Model source: <a class="credit-name-link" href="https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx" target="_blank" rel="noreferrer">istupakov/parakeet-tdt-0.6b-v3-onnx</a>
@@ -856,13 +548,8 @@
 
       {#if nemotronAvailable}
         <ModelStatusRow
-          state={nemotronRowState}
-          busy={nemotronChecking || nemotronDownloadingModel !== null}
-          error={nemotronDownloadError}
-          onDownload={() =>
-            triggerNemotronDownload(cfg.engine.nemotron_streaming.model_size)}
-          onDelete={() =>
-            triggerDeleteNemotron(cfg.engine.nemotron_streaming.model_size)}
+          mgr={nemotronModels}
+          size={cfg.engine.nemotron_streaming.model_size}
         />
         <p class="hint" style="margin-top: 6px;">
           Model source: <a class="credit-name-link" href="https://huggingface.co/danielbodart/nemotron-speech-600m-onnx" target="_blank" rel="noreferrer">danielbodart/nemotron-speech-600m-onnx</a>
