@@ -12,23 +12,27 @@ use fotonvoice_config::WhisperCppConfig;
 use crate::backend::{TranscribeRequest, TranscriptionBackend, TranscriptionResult};
 
 // -- GGUF model resolution -----------------------------------------------------
+//
+// One size, one file. Presence, download, delete, and load all use the same
+// single filename; there is no fallback chain. A configured size whose file
+// is missing or fails the sanity check is an error the user sees, never a
+// silent switch to another quant.
 
-static GGUF_MAP: &[(&str, &[&str])] = &[
-    ("small",          &["ggml-small-q5_1.bin",          "ggml-small.bin"]),
-    ("small.en",       &["ggml-small.en-q5_1.bin",       "ggml-small.en.bin"]),
-    ("medium",         &["ggml-medium-q5_0.bin",         "ggml-medium.bin"]),
-    ("medium.en",      &["ggml-medium.en-q5_0.bin",      "ggml-medium.en.bin"]),
-    ("large-v2",       &["ggml-large-v2-q5_0.bin",       "ggml-large-v2.bin"]),
-    ("large-v3",       &["ggml-large-v3-q5_0.bin",       "ggml-large-v3.bin"]),
-    ("large-v3-turbo", &["ggml-large-v3-turbo-q5_0.bin", "ggml-large-v3-turbo.bin"]),
-    // Q8_0 variants (q8_0 first): near-lossless int8, preferred on GPU builds;
-    // fall back to the quant/plain files so a config survives a partial dir.
-    ("small-q8",          &["ggml-small-q8_0.bin",          "ggml-small-q5_1.bin",          "ggml-small.bin"]),
-    ("small.en-q8",       &["ggml-small.en-q8_0.bin",       "ggml-small.en-q5_1.bin",       "ggml-small.en.bin"]),
-    ("medium-q8",         &["ggml-medium-q8_0.bin",         "ggml-medium-q5_0.bin",         "ggml-medium.bin"]),
-    ("medium.en-q8",      &["ggml-medium.en-q8_0.bin",      "ggml-medium.en-q5_0.bin",      "ggml-medium.en.bin"]),
-    ("large-v3-q8",       &["ggml-large-v3-q8_0.bin",       "ggml-large-v3-q5_0.bin",       "ggml-large-v3.bin"]),
-    ("large-v3-turbo-q8", &["ggml-large-v3-turbo-q8_0.bin", "ggml-large-v3-turbo-q5_0.bin", "ggml-large-v3-turbo.bin"]),
+static GGUF_MAP: &[(&str, &str)] = &[
+    ("small",             "ggml-small-q5_1.bin"),
+    ("small.en",          "ggml-small.en-q5_1.bin"),
+    ("medium",            "ggml-medium-q5_0.bin"),
+    ("medium.en",         "ggml-medium.en-q5_0.bin"),
+    ("large-v2",          "ggml-large-v2-q5_0.bin"),
+    ("large-v3",          "ggml-large-v3-q5_0.bin"),
+    ("large-v3-turbo",    "ggml-large-v3-turbo-q5_0.bin"),
+    // Q8_0 variants: near-lossless int8, preferred on GPU builds.
+    ("small-q8",          "ggml-small-q8_0.bin"),
+    ("small.en-q8",       "ggml-small.en-q8_0.bin"),
+    ("medium-q8",         "ggml-medium-q8_0.bin"),
+    ("medium.en-q8",      "ggml-medium.en-q8_0.bin"),
+    ("large-v3-q8",       "ggml-large-v3-q8_0.bin"),
+    ("large-v3-turbo-q8", "ggml-large-v3-turbo-q8_0.bin"),
 ];
 
 const GGUF_BASE_URL: &str =
@@ -167,22 +171,20 @@ impl WhisperCppBackend {
             crate::util::expand_tilde(&self.cfg.model_dir)
         };
 
-        let candidates = GGUF_MAP
+        let filename = GGUF_MAP
             .iter()
             .find(|(name, _)| *name == size.as_str())
-            .map(|(_, files)| *files)
+            .map(|(_, file)| *file)
             .ok_or_else(|| anyhow::anyhow!("Unknown model size '{size}'"))?;
 
-        for filename in candidates {
-            let path = model_dir.join(filename);
-            if is_valid_model_file(&path) {
-                return Ok(path);
-            }
+        let path = model_dir.join(filename);
+        if is_valid_model_file(&path) {
+            return Ok(path);
         }
 
         bail!(
-            "Whisper model '{size}' is not downloaded (looked in {}). \
-             Open Settings -> Engine and click Download next to the model.",
+            "Whisper model '{size}' is not usable in {} (missing or not a valid GGUF/ggml file). \
+             Open Settings -> Engine and download it.",
             model_dir.display()
         )
     }
@@ -299,9 +301,11 @@ fn transcribe_with_state(
     })
 }
 
+/// Presence is keyed to the size's single file - the same file the download
+/// fetches, the delete removes, and the loader opens.
 pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
-    let candidates = match GGUF_MAP.iter().find(|(name, _)| *name == size) {
-        Some((_, files)) => *files,
+    let filename = match GGUF_MAP.iter().find(|(name, _)| *name == size) {
+        Some((_, file)) => *file,
         None => return false,
     };
     let dir = if model_dir.is_empty() {
@@ -309,17 +313,16 @@ pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
     } else {
         crate::util::expand_tilde(model_dir)
     };
-    candidates
-        .iter()
-        .any(|filename| is_valid_model_file(&dir.join(filename)))
+    is_valid_model_file(&dir.join(filename))
 }
 
-/// Remove the GGUF file(s) for `size` from `model_dir`. Refuses to run for
-/// unknown sizes so a mistyped size can never point the removal at an
-/// unexpected path.
+/// Remove the GGUF file for `size` from `model_dir` - the same single file the
+/// presence check and download use, so "installed" and "deleted" can never
+/// disagree. Refuses to run for unknown sizes so a mistyped size can never
+/// point the removal at an unexpected path.
 pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
-    let candidates = match GGUF_MAP.iter().find(|(name, _)| *name == size) {
-        Some((_, files)) => *files,
+    let filename = match GGUF_MAP.iter().find(|(name, _)| *name == size) {
+        Some((_, file)) => *file,
         None => bail!("Unknown whisper.cpp model size '{size}'"),
     };
     let dir = if model_dir.is_empty() {
@@ -327,13 +330,11 @@ pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
     } else {
         crate::util::expand_tilde(model_dir)
     };
-    for filename in candidates {
-        let path = dir.join(filename);
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("Failed to delete {}", path.display())),
-        }
+    let path = dir.join(filename);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("Failed to delete {}", path.display())),
     }
     Ok(())
 }
@@ -344,10 +345,10 @@ pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
 static DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
-    let candidates = GGUF_MAP
+    let filename = GGUF_MAP
         .iter()
         .find(|(name, _)| *name == size)
-        .map(|(_, files)| *files)
+        .map(|(_, file)| *file)
         .ok_or_else(|| anyhow::anyhow!("Unknown model size '{size}'"))?;
 
     let model_dir = if model_dir.is_empty() {
@@ -357,7 +358,6 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
     };
     tokio::fs::create_dir_all(&model_dir).await?;
 
-    let filename = candidates[0];
     let path = model_dir.join(filename);
 
     // An existing file that fails the sanity check is a broken download, not a
@@ -688,8 +688,8 @@ mod tests {
     // -- Q8_0 variants --------------------------------------------------------
 
     #[test]
-    fn test_q8_entries_exist_and_point_at_q8_0_first() {
-        for (name, files) in [
+    fn test_q8_entries_point_at_their_own_q8_0_file() {
+        for (name, file) in [
             ("small-q8", "ggml-small-q8_0.bin"),
             ("small.en-q8", "ggml-small.en-q8_0.bin"),
             ("medium-q8", "ggml-medium-q8_0.bin"),
@@ -697,20 +697,38 @@ mod tests {
             ("large-v3-q8", "ggml-large-v3-q8_0.bin"),
             ("large-v3-turbo-q8", "ggml-large-v3-turbo-q8_0.bin"),
         ] {
-            let (_, files_list) = GGUF_MAP
+            let (_, mapped) = GGUF_MAP
                 .iter()
                 .find(|(n, _)| *n == name)
                 .expect("q8 entry registered");
-            assert_eq!(files_list[0], files, "{name} download target");
+            assert_eq!(*mapped, file, "{name} single target");
         }
     }
 
+    /// No fallbacks: a q8 size resolves to - and only to - its own q8_0 file.
+    /// A q5 file on disk must not satisfy presence or loading for a q8 size.
     #[test]
-    fn test_q8_recognized_and_preferred_over_quant() {
+    fn test_q8_size_ignores_a_q5_file_on_disk() {
         let dir = tempfile::tempdir().expect("tempdir");
-        for f in ["ggml-small-q8_0.bin", "ggml-small-q5_1.bin"] {
-            write_valid_model(dir.path(), f);
-        }
+        write_valid_model(dir.path(), "ggml-small-q5_1.bin");
+
+        assert!(!is_model_downloaded("small-q8", dir.path().to_str().unwrap()));
+
+        let cfg = WhisperCppConfig {
+            model_dir: dir.path().to_str().unwrap().to_string(),
+            model_size: "small-q8".to_string(),
+            device: "cpu".to_string(),
+            threads: 0,
+            language: "auto".to_string(),
+        };
+        let backend = WhisperCppBackend::new(cfg);
+        assert!(backend.resolve_model_path().is_err());
+    }
+
+    #[test]
+    fn test_q8_resolves_its_own_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_valid_model(dir.path(), "ggml-small-q8_0.bin");
         let cfg = WhisperCppConfig {
             model_dir: dir.path().to_str().unwrap().to_string(),
             model_size: "small-q8".to_string(),
@@ -720,11 +738,7 @@ mod tests {
         };
         let backend = WhisperCppBackend::new(cfg);
         let resolved = backend.resolve_model_path().expect("should resolve");
-        assert_eq!(
-            resolved,
-            dir.path().join("ggml-small-q8_0.bin"),
-            "q8_0 must win over the q5_1 fallback"
-        );
+        assert_eq!(resolved, dir.path().join("ggml-small-q8_0.bin"));
     }
 
     #[test]

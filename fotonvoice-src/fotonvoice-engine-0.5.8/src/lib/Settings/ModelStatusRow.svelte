@@ -26,7 +26,7 @@
     {:else if rowState === "downloading"}
       model downloading
     {:else if rowState === "present"}
-      model present
+      model installed
     {:else}
       model not installed
     {/if}
@@ -79,6 +79,9 @@
   .btn {
     @apply rounded-[var(--radius)] p-1.5 px-3 text-xs font-semibold transition-colors duration-200 border;
   }
+  .btn:not(:disabled) {
+    @apply shadow-[0_0_8px_rgba(255,255,255,0.25)];
+  }
   .btn-download {
     @apply bg-[var(--accent)] border-transparent text-white;
   }
@@ -92,7 +95,7 @@
     @apply bg-red-500/25 text-red-200;
   }
   .btn:disabled {
-    @apply opacity-40 cursor-not-allowed;
+    @apply opacity-25 cursor-not-allowed saturate-50;
   }
   .status-error {
     @apply mt-1 text-xs leading-5 text-red-400 w-full;
