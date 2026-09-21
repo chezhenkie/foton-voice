@@ -86,17 +86,21 @@ describe("EngineTab.svelte Backend selector", () => {
       .filter(Boolean);
   }
 
-  test("offers only the concrete backends, with no auto-detect entry", async () => {
+  test("offers only the selectable backends: whisper.cpp is dormant, no auto-detect entry", async () => {
     const labels = await backendOptionLabels({ ...mockConfig });
 
-    expect(labels).toContain("Whisper.cpp");
+    expect(labels).not.toContain("Whisper.cpp");
     expect(labels.some(l => /auto/i.test(l!))).toBe(false);
   });
 
   test("shows the selected backend in the trigger", async () => {
-    const { container } = render(EngineTab, { cfg: { ...mockConfig } });
+    const parakeetConfig = {
+      ...mockConfig,
+      engine: { ...mockConfig.engine, backend: "parakeet" },
+    };
+    const { container } = render(EngineTab, { cfg: parakeetConfig });
     const trigger = container.querySelector(".custom-select-trigger") as HTMLElement;
-    expect(trigger.textContent).toContain("Whisper.cpp");
+    expect(trigger.textContent).toContain("Parakeet");
   });
 });
 

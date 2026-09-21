@@ -181,7 +181,7 @@ export interface McpConfig {
 
 const defaultConfig: AppConfig = {
   engine: {
-    backend: "whisper-cpp",
+    backend: "parakeet",
     whisper_cpp: {
       model_dir: "",
       model_size: "tiny",

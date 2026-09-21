@@ -47,8 +47,10 @@
   };
   const gpuLabel = (id: string) => GPU_LABELS[id] ?? id;
 
+  // Whisper.cpp is UI-dormant (2026-09-21): not selectable here, backend crate
+  // stays intact. An old saved config that still says "whisper-cpp" keeps its
+  // settings block below so the user can see and switch away from it.
   let backendOptions = $derived([
-    { value: "whisper-cpp", label: "Whisper.cpp" },
     {
       value: "moonshine",
       label: moonshineGpu

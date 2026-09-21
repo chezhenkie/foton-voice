@@ -165,8 +165,12 @@ pub enum BackendChoice {
 }
 
 impl Default for BackendChoice {
+    /// Whisper.cpp is UI-dormant since 2026-09-21 (measured: NVIDIA transducers
+    /// beat it on accuracy at a fraction of the size, and it is the slow lane);
+    /// its crate stays compiled in as the non-European-language fallback. New
+    /// configs start on Parakeet.
     fn default() -> Self {
-        Self::WhisperCpp
+        Self::Parakeet
     }
 }
 
@@ -1600,14 +1604,16 @@ mod tests {
 
 
     /// Configs written before the Backend dropdown lost its "Auto-detect"
-    /// entry still say `"auto"`. They must keep loading, on whisper.cpp -
+    /// entry still say `"auto"`. They must keep loading - on whisper.cpp,
     /// which is what auto-selection resolved to in every case - rather than
-    /// failing the whole config back to defaults.
+    /// failing the whole config back to defaults. (The DEFAULT for fresh
+    /// configs is Parakeet since 2026-09-21; the legacy alias keeps its
+    /// historical meaning.)
     #[test]
     fn legacy_auto_backend_loads_as_whisper_cpp() {
         let parsed: BackendChoice = serde_json::from_str(r#""auto""#).unwrap();
         assert_eq!(parsed, BackendChoice::WhisperCpp);
-        assert_eq!(BackendChoice::default(), BackendChoice::WhisperCpp);
+        assert_eq!(BackendChoice::default(), BackendChoice::Parakeet);
     }
 
     #[test]
