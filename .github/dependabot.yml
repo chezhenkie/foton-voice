@@ -1,0 +1,10 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/fotonvoice-src/fotonvoice-engine-0.5.8"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "cargo"
+    directory: "/fotonvoice-src/fotonvoice-engine-0.5.8"
+    schedule:
+      interval: "weekly"
