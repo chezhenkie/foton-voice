@@ -169,6 +169,12 @@
       Removes steady background noise (fans, hiss, hum) from the microphone before
       transcription, keeping speech intact. Takes effect on the next recording - no restart needed.
     </p>
+    {#if cfg.audio.noise_suppression}
+      <p class="noise-warning">
+        Research says speech-enhancement before STT is measurably harmful to accuracy.
+        Modern STT models are quite good at suppressing noise themselves.
+      </p>
+    {/if}
     <label class="field">
       <span>Input gain</span>
       <input type="range" min="0.5" max="4.0" step="0.1"
@@ -233,5 +239,9 @@
 
   .vu-peak-marker {
     @apply absolute -top-0.5 -bottom-0.5 w-[2px] bg-[#ffab00] shadow-[0_0_6px_#ffab00] pointer-events-none transition-[left] duration-[50ms] ease-linear;
+  }
+
+  .noise-warning {
+    @apply text-[11px] leading-[1.45] max-w-[480px] text-[#ff5a5a] border border-[#ff5a5a]/40 bg-[#ff5a5a]/10 px-3 py-2;
   }
 </style>
