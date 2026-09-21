@@ -112,7 +112,7 @@ default-features = false
 features = ["load-dynamic", "std", "api-24"]
 
 [dependencies.tokenizers]
-version = "0.21"
+version = "0.23"
 default-features = false
 features = ["onig"]
 
