@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tauri::{
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Emitter,
+    Emitter, Manager,
 };
 use crate::state::AppState;
 
@@ -143,6 +143,27 @@ pub fn create_tray(app: &tauri::App) -> Result<tauri::tray::TrayIcon, tauri::Err
                     // a hanging audio/ORT session shutdown would block
                     // app.exit(0) and leave a zombie process in the tray.
                     // The worker processes are reaped by the OS on exit.
+                    //
+                    // Failsafe (2026-09-21): a kernel-stuck thread (cpal WASAPI
+                    // stream release or the WebGPU/D3D12 teardown path) can keep
+                    // the process alive after exit. Two mitigations, both
+                    // fire-and-forget so the Tray Quit Law stays synchronous:
+                    // 1. release the capture streams now (drop happens on the
+                    //    audio thread, not awaited here);
+                    // 2. a detached watchdog thread force-exits 2s later if the
+                    //    graceful exit has not completed by then.
+                    if let Some(state) = app.try_state::<AppState>() {
+                        state.recording.store(false, std::sync::atomic::Ordering::SeqCst);
+                        state.monitoring.store(false, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    std::thread::Builder::new()
+                        .name("quit-watchdog".into())
+                        .spawn(|| {
+                            std::thread::sleep(Duration::from_secs(2));
+                            tracing::warn!("quit watchdog fired: graceful exit did not complete in 2s");
+                            std::process::exit(0);
+                        })
+                        .ok();
                     app.exit(0);
                 }
                 _ => {}
