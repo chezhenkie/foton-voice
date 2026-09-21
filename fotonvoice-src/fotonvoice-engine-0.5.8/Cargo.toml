@@ -45,7 +45,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 dirs = "5"
 
 # Audio
-cpal = "0.15"
+cpal = "0.17"
 rubato = "0.15"
 rodio = "0.17"
 # FFT for the LuxTTS mel frontend and the Linkwitz-Riley crossover merge
