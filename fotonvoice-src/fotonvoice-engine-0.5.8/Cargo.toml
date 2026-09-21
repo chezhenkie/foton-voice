@@ -46,7 +46,7 @@ dirs = "5"
 
 # Audio
 cpal = "0.15"
-rubato = "0.15"
+rubato = "5.0"
 rodio = "0.17"
 # FFT for the LuxTTS mel frontend and the Linkwitz-Riley crossover merge
 rustfft = "6"
