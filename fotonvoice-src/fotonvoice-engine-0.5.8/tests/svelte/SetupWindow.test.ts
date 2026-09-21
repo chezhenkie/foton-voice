@@ -120,7 +120,7 @@ describe("Setup window", () => {
 
     render(UdevWarning);
 
-    expect(await screen.findByText(/every keystroke passes through fotonvoice-engine/i)).toBeTruthy();
+    expect(await screen.findByText(/every keystroke passes through fotonvoice engine/i)).toBeTruthy();
     expect(await screen.findByText(/neither requested nor configured/i)).toBeTruthy();
   });
 

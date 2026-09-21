@@ -123,17 +123,35 @@ describe("CustomSelect dropdown placement", () => {
       } as CSSStyleDeclaration;
     });
 
-    vi.spyOn(container, "getBoundingClientRect").mockReturnValue({
-      top: 40,
-      bottom: 600,
-      left: 10,
-      right: 500,
-      width: 490,
-      height: 560,
-      x: 10,
-      y: 40,
-      toJSON: () => ({}),
-    } as DOMRect);
+    // vitest 4 installs an instance spy by replacing the method on the
+    // prototype, which would bleed the containing-block rect into every
+    // element. Assert both boxes through one context-aware prototype stub.
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      if (this === container) {
+        return {
+          top: 40,
+          bottom: 600,
+          left: 10,
+          right: 500,
+          width: 490,
+          height: 560,
+          x: 10,
+          y: 40,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return {
+        top: 100,
+        bottom: 136,
+        left: 20,
+        right: 320,
+        width: 300,
+        height: 36,
+        x: 20,
+        y: 100,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
 
     const menu = await openMenu(container);
 

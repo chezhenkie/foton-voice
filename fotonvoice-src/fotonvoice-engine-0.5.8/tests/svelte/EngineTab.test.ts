@@ -39,16 +39,14 @@ const mockConfig = {
   },
 } as any;
 
-describe("EngineTab.svelte Warning Banner", () => {
-  test("shows warning banner if Whisper voice model is not downloaded", async () => {
+describe("EngineTab.svelte model status", () => {
+  test("marks the Whisper voice model as missing in the status row", async () => {
     render(EngineTab, { cfg: mockConfig });
-    
-    // Check if warning title is in document
-    const title = await screen.findByText("Voice Model Not Downloaded");
-    expect(title).not.toBeNull();
+
+    expect(await screen.findByText("model not installed")).not.toBeNull();
   });
 
-  test("does not show warning banner if Moonshine backend is selected", async () => {
+  test("shows the Moonshine model as installed when the backend is Moonshine", async () => {
     const moonshineConfig = {
       ...mockConfig,
       engine: {
@@ -57,13 +55,11 @@ describe("EngineTab.svelte Warning Banner", () => {
       },
     };
     render(EngineTab, { cfg: moonshineConfig });
-    
-    // Warning banner should NOT be in the document
-    const title = screen.queryByText("Voice Model Not Downloaded");
-    expect(title).toBeNull();
+
+    expect(await screen.findByText("model installed")).not.toBeNull();
   });
 
-  test("does not show warning banner if Parakeet backend is selected", async () => {
+  test("shows the Parakeet model as installed when the backend is Parakeet", async () => {
     const parakeetConfig = {
       ...mockConfig,
       engine: {
@@ -72,10 +68,8 @@ describe("EngineTab.svelte Warning Banner", () => {
       },
     };
     render(EngineTab, { cfg: parakeetConfig });
-    
-    // Warning banner should NOT be in the document
-    const title = screen.queryByText("Voice Model Not Downloaded");
-    expect(title).toBeNull();
+
+    expect(await screen.findByText("model installed")).not.toBeNull();
   });
 });
 
