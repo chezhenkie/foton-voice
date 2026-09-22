@@ -13,6 +13,9 @@ on:
   # PR exists, and was never compiled.
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_HTTP_MULTIPLEXING: false
   CARGO_HTTP_HTTP2: false

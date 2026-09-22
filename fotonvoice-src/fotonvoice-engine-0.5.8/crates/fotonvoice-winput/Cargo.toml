@@ -2,6 +2,7 @@
 name = "fotonvoice-winput"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 # Synthesised keyboard input on Windows, and the marker that identifies it.
 #

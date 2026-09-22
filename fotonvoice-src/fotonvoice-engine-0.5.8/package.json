@@ -2,6 +2,7 @@
   "name": "fotonvoice-engine",
   "private": true,
   "version": "0.2.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "predev": "pkill -x fotonvoice-engine 2>/dev/null || true; fuser -k 5173/tcp 2>/dev/null || true",

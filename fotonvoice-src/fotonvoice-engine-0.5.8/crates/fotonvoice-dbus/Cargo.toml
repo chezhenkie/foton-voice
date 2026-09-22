@@ -2,6 +2,7 @@
 name = "fotonvoice-dbus"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 # DBus only exists on Linux; this crate is a no-op on Windows but still compiles.
 [dependencies]

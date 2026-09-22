@@ -22,6 +22,9 @@ version = "0.2.0"
 edition = "2021"
 authors = ["FotonVoice Engine Contributors"]
 license = "MIT"
+rust-version = "1.98"
+repository = "https://github.com/chezhenkie/foton-voice"
+description = "High-performance on-device voice-to-text dictation and voice input broker built with Rust, Tauri 2 and Svelte 5"
 
 [workspace.dependencies]
 # Async runtime
