@@ -81,6 +81,18 @@ jobs:
           npm ci
           npm run build
 
+      # appimagetool.bin is no longer committed to the repo (it is a binary
+      # blob, kept gitignored locally), so CI fetches the pinned release.
+      - name: Fetch appimagetool
+        run: |
+          set -euo pipefail
+          if [ ! -x ./appimagetool.bin ]; then
+            wget -q -O ./appimagetool.bin \
+              https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+            chmod +x ./appimagetool.bin
+          fi
+          ./appimagetool.bin --version
+
       # APPIMAGE_EXTRACT_AND_RUN=1 tells linuxdeploy/appimagetool to extract
       # and run without FUSE (uses unsquashfs from squashfs-tools instead).
       # QT_QPA_PLATFORM=offscreen prevents Qt platform errors in headless CI.
