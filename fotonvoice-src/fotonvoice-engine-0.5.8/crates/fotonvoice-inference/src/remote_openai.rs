@@ -132,7 +132,6 @@ pub fn parse_transcription_response(
         }
     }
 
-    // Some servers return plain text
     let text = String::from_utf8_lossy(bytes).trim().to_string();
     if !text.is_empty() {
         return Ok(TranscriptionResult {
@@ -158,11 +157,8 @@ fn attach_auth(req: reqwest::RequestBuilder, api_key: Option<&str>) -> reqwest::
     }
 }
 
-// -- Streaming Session ---------------------------------------------------------
 
 /// An active streaming transcription session.
-/// Uploads audio chunks to the remote OpenAI STT endpoint over HTTP chunked streaming
-/// while recording is active, minimizing end-of-speech turnaround time.
 pub struct RemoteStreamingSession {
     chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<f32>>>,
     result_rx: tokio::sync::oneshot::Receiver<Result<TranscriptionResult>>,
@@ -171,7 +167,6 @@ pub struct RemoteStreamingSession {
 
 impl RemoteStreamingSession {
     /// Start a new streaming session. Connects to the remote endpoint and starts streaming
-    /// multipart body immediately.
     pub fn start(
         config: RemoteOpenAiConfig,
         initial_prompt: Option<String>,
@@ -191,20 +186,16 @@ impl RemoteStreamingSession {
             let start_inst = Instant::now();
             let boundary = format!("----FotonVoiceBoundary{:016x}", rand_u64());
 
-            // 1. Build multipart preamble
             let mut preamble = Vec::new();
 
-            // model field
             preamble.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
             preamble.extend_from_slice(b"Content-Disposition: form-data; name=\"model\"\r\n\r\n");
             preamble.extend_from_slice(cfg_clone.model.as_bytes());
             preamble.extend_from_slice(b"\r\n");
 
-            // response_format field
             preamble.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
             preamble.extend_from_slice(b"Content-Disposition: form-data; name=\"response_format\"\r\n\r\njson\r\n");
 
-            // language field (if set)
             if !cfg_clone.language.trim().is_empty() && cfg_clone.language.trim() != "auto" {
                 preamble.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
                 preamble.extend_from_slice(b"Content-Disposition: form-data; name=\"language\"\r\n\r\n");
@@ -212,7 +203,6 @@ impl RemoteStreamingSession {
                 preamble.extend_from_slice(b"\r\n");
             }
 
-            // prompt field (if provided)
             if let Some(ref p) = prompt_clone {
                 if !p.trim().is_empty() {
                     preamble.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -222,18 +212,15 @@ impl RemoteStreamingSession {
                 }
             }
 
-            // file header
             preamble.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
             preamble.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n");
             preamble.extend_from_slice(b"Content-Type: audio/wav\r\n\r\n");
 
-            // 44-byte streaming WAV header
             let wav_header = create_streaming_wav_header();
             preamble.extend_from_slice(&wav_header);
 
             let trailing_boundary = format!("\r\n--{boundary}--\r\n");
 
-            // Stream construction
             let initial_bytes = Some(Bytes::from(preamble));
             let trailing_bytes = Some(Bytes::from(trailing_boundary));
 
@@ -264,7 +251,6 @@ impl RemoteStreamingSession {
                                 std::task::Poll::Ready(Some(Ok(Bytes::from(pcm))))
                             }
                             std::task::Poll::Ready(None) => {
-                                // Channel closed -> emit trailing boundary
                                 if let Some(trailing) = trailing_bytes.clone() {
                                     state = StreamState::Trailing(trailing);
                                     if let StreamState::Trailing(b) = &mut state {
@@ -327,9 +313,6 @@ impl RemoteStreamingSession {
                     let _ = result_tx.send(result);
                 }
                 err => {
-                    // Fallback path: If the streaming upload failed (e.g. server doesn't support
-                    // chunked multipart or HTTP 411 Length Required), retry with standard
-                    // buffered multipart upload.
                     warn!(
                         "Streaming upload failed or rejected ({:?}), retrying with standard multipart",
                         err.as_ref().map(|r| r.status())
@@ -370,7 +353,6 @@ impl RemoteStreamingSession {
 
     /// Complete recording, signal EOF on the upload stream, and await the transcription response.
     pub async fn finish(mut self) -> Result<TranscriptionResult> {
-        // Drop the channel sender to signal end of stream
         drop(self.chunk_tx.take());
 
         self.result_rx
@@ -386,6 +368,11 @@ impl RemoteStreamingSession {
     /// Access the accumulated samples for noise-gate / RMS checks.
     pub fn buffered_samples(&self) -> Vec<f32> {
         self.buffered_samples.lock().unwrap().clone()
+    }
+
+    /// Take the accumulated samples out of the session buffer without a copy
+    pub fn take_buffered_samples(&self) -> Vec<f32> {
+        std::mem::take(&mut self.buffered_samples.lock().unwrap())
     }
 }
 
@@ -443,7 +430,6 @@ async fn execute_multipart_transcribe(
     parse_transcription_response(&body_bytes, duration_ms, inference_ms)
 }
 
-// -- Backend Implementation ---------------------------------------------------
 
 /// TranscriptionBackend implementation for remote OpenAI-compatible STT.
 pub struct RemoteOpenAiBackend {
@@ -505,10 +491,8 @@ impl TranscriptionBackend for RemoteOpenAiBackend {
     }
 }
 
-// -- Connection Testing --------------------------------------------------------
 
 /// Probes a remote speech engine by sending a minimal test audio chunk to `/v1/audio/transcriptions`
-/// and querying `/v1/models` for available models.
 pub async fn test_remote_speech_engine(
     endpoint: &str,
     api_key: Option<&str>,
@@ -522,7 +506,6 @@ pub async fn test_remote_speech_engine(
 
     let trans_url = normalize_transcription_url(endpoint);
 
-    // 1. Probe `/v1/audio/transcriptions` with a tiny 0.2s silence WAV (3200 samples)
     let silence = vec![0.0f32; 3200];
     let wav_bytes = encode_wav(&silence);
 
@@ -541,7 +524,6 @@ pub async fn test_remote_speech_engine(
 
     let trans_res = trans_req.send().await;
 
-    // 2. Concurrently or additionally probe `/v1/models` to discover model choices
     let models_url = normalize_models_url(endpoint);
     let mut models_req = client.get(&models_url);
     models_req = attach_auth(models_req, api_key);

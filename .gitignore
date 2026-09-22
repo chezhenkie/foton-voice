@@ -10,3 +10,14 @@ fotonvoice-src/*.tar.gz
 fotonvoice-src/*.zip
 fotonvoice-src/*.txt
 fotonvoice-src/ort-probe/target/
+
+# Local-only assets (never pushed to GitHub)
+WebView2runtime zip/
+scratch-*/
+_upstream-voxctrl.bare/
+voice testing samples/
+Granite 4.0 Micro Dutch TTS Calibrated GGUF Quants TTS NL-SPECIAL/
+INDEX TTS2 2.5 klein snel emoties TTS EN/
+LuksTTS erg klein met voice cloning 48khz TTS EN/
+pr3.txt
+agents.md

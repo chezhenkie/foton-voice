@@ -1,18 +1,4 @@
 //! Parakeet speech-to-text backend (ONNX Runtime).
-//!
-//! NVIDIA Parakeet TDT 0.6B (<https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>)
-//! is a multilingual FastConformer-TDT automatic speech recognition model.
-//! Converted to ONNX by Ilya Stupakov (`istupakov/parakeet-tdt-0.6b-v3-onnx`).
-//!
-//! Unlike autoregressive sequence-to-sequence models (Whisper/Moonshine),
-//! Parakeet uses a Token-and-Duration Transducer (TDT). The TDT decoder jointly
-//! predicts the next token and how many encoder audio frames to advance, allowing
-//! it to skip silence and non-speech in leaps without hallucination loops.
-//!
-//! The pipeline uses three ONNX graphs:
-//! 1. `nemo128.onnx`                - raw 16 kHz audio `[1, samples]` -> 128-mel features `[1, 128, T]`
-//! 2. `encoder-model.int8.onnx`     - mel features `[1, 128, T]` -> hidden states `[1, 1024, T']`
-//! 3. `decoder_joint-model.int8.onnx` - TDT greedy transducer loop over frames `T'`
 
 use std::{
     fs::File,
@@ -28,14 +14,13 @@ use ort::{
         builder::{GraphOptimizationLevel, SessionBuilder},
         Session, SessionInputValue,
     },
-    value::Tensor,
+    value::TensorRef,
 };
 use tracing::info;
 use fotonvoice_config::ParakeetConfig;
 
 use crate::backend::{TranscribeRequest, TranscriptionBackend, TranscriptionResult};
 
-// -- Model constants -----------------------------------------------------------
 
 pub const SAMPLE_RATE: usize = 16_000;
 pub const BLANK_TOKEN_ID: usize = 8192;
@@ -57,7 +42,6 @@ pub const DECODER_FP32_FILE: &str = "decoder_joint-model.onnx";
 pub const HF_BASE_URL: &str =
     "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main";
 
-// -- Filesystem layout ---------------------------------------------------------
 
 /// Default parent directory for Parakeet models: `<models_base_dir>/parakeet/`.
 pub fn default_model_dir() -> PathBuf {
@@ -82,9 +66,6 @@ pub fn valid_model_size(size: &str) -> bool {
 }
 
 /// Files a model size needs on disk. The default and `-int8` sizes share the
-/// int8 graphs; `-fp32` swaps in the full-precision graphs plus their external
-/// weight file. The three shared files (config, vocab, preprocessor) are the
-/// same exports in both variants.
 pub fn model_files(size: &str) -> Vec<&'static str> {
     match size {
         "tdt-0.6b-v3-fp32" => vec![
@@ -115,7 +96,6 @@ pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
 }
 
 /// Remove the whole `<model_dir>/<size>/` folder. Refuses to run for unknown
-/// sizes so a mistyped size can never point the removal at an unexpected path.
 pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
     if !valid_model_size(size) {
         bail!("Unknown Parakeet model size '{size}'");
@@ -129,7 +109,6 @@ pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
     Ok(())
 }
 
-// -- Download ------------------------------------------------------------------
 
 static DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -172,7 +151,6 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
     Ok(())
 }
 
-// -- Vocabulary ----------------------------------------------------------------
 
 fn load_vocab(path: &Path) -> Result<Vec<String>> {
     let file = File::open(path).with_context(|| format!("open vocab file {}", path.display()))?;
@@ -186,7 +164,6 @@ fn load_vocab(path: &Path) -> Result<Vec<String>> {
         if trimmed.is_empty() {
             continue;
         }
-        // Format can be "<token> <id>" or simply "<token>" (index = line_idx)
         if let Some(pos) = trimmed.rfind(' ') {
             let (token, id_str) = trimmed.split_at(pos);
             if let Ok(id) = id_str.trim().parse::<usize>() {
@@ -224,7 +201,6 @@ fn detokenize(tokens: &[usize], vocab: &[String]) -> String {
     converted.trim().to_string()
 }
 
-// -- Loaded State --------------------------------------------------------------
 
 struct Loaded {
     preprocessor: Session,
@@ -238,7 +214,6 @@ struct Loaded {
     state_2_idx: usize,
 }
 
-// -- Backend -------------------------------------------------------------------
 
 pub struct ParakeetBackend {
     cfg: ParakeetConfig,
@@ -277,10 +252,6 @@ impl ParakeetBackend {
             feature = "parakeet-webgpu"
         ))]
         {
-            // WebGPU is a plugin EP in ORT >= 1.24.4: it lives in
-            // onnxruntime_providers_webgpu.dll beside the runtime and is
-            // registered once per environment, then its devices attached per
-            // session. `ort::ep::WebGPU` cannot reach it.
             #[cfg(all(
                 feature = "parakeet-webgpu",
                 not(any(feature = "parakeet-cuda", feature = "parakeet-coreml"))
@@ -371,7 +342,7 @@ impl TranscriptionBackend for ParakeetBackend {
             "tdt-0.6b-v3-fp32" => (ENCODER_FP32_FILE, DECODER_FP32_FILE),
             _ => (ENCODER_INT8_FILE, DECODER_INT8_FILE),
         };
-        let preprocessor = Self::build_session(&dir.join(PREPROCESSOR_FILE), self.cfg.gpu)?;
+        let preprocessor = Self::build_session(&dir.join(PREPROCESSOR_FILE), false)?;
         let encoder = Self::build_session(&dir.join(encoder_file), self.cfg.gpu)?;
         let decoder = Self::build_session(&dir.join(decoder_file), self.cfg.gpu)?;
 
@@ -489,17 +460,13 @@ fn argmax(slice: &[f32]) -> usize {
     best_idx
 }
 
-fn dims(shape: &[i64]) -> Vec<usize> {
-    shape.iter().map(|&d| d as usize).collect()
-}
-
 fn run_inference(state: &mut Loaded, audio: &[f32]) -> Result<String> {
     let n_samples = audio.len();
 
-    // -- 1. Preprocessor: Waveform -> 128-channel Mel Spectrogram --------------
-    let wave_tensor = Tensor::from_array(([1_usize, n_samples], audio.to_vec()))
-        .context("build audio waveform tensor")?;
-    let wave_lens_tensor = Tensor::from_array(([1_usize], vec![n_samples as i64]))
+    let wave_lens = [n_samples as i64];
+    let wave_tensor =
+        TensorRef::from_array_view(([1_usize, n_samples], audio)).context("build audio waveform tensor")?;
+    let wave_lens_tensor = TensorRef::from_array_view(([1_usize], wave_lens.as_slice()))
         .context("build audio waveform_lens tensor")?;
 
     let prep_feed: Vec<(&str, SessionInputValue)> = vec![
@@ -512,7 +479,6 @@ fn run_inference(state: &mut Loaded, audio: &[f32]) -> Result<String> {
         .try_extract_tensor::<f32>()
         .context("extract mel features")?;
     let feat_shape_vec = feat_shape.to_vec();
-    let feat_data_vec = feat_data.to_vec();
 
     let num_mel_frames = if feat_shape_vec.len() >= 3 {
         feat_shape_vec[2] as i64
@@ -529,13 +495,11 @@ fn run_inference(state: &mut Loaded, audio: &[f32]) -> Result<String> {
         vec![num_mel_frames]
     };
 
-    // -- 2. Encoder: Mel Spectrogram -> Conformer Acoustic Features ------------
     let audio_signal_tensor =
-        Tensor::from_array((dims(&feat_shape_vec), feat_data_vec))
-            .context("build audio_signal tensor")?;
-    let length_tensor =
-        Tensor::from_array(([1_usize], feat_lens_vec))
-            .context("build length tensor")?;
+        TensorRef::from_array_view((feat_shape_vec.as_slice(), feat_data))
+            .context("build audio_signal tensor view")?;
+    let length_tensor = TensorRef::from_array_view(([1_usize], feat_lens_vec.as_slice()))
+        .context("build length tensor view")?;
 
     let enc_feed: Vec<(&str, SessionInputValue)> = vec![
         ("audio_signal", audio_signal_tensor.into()),
@@ -547,8 +511,6 @@ fn run_inference(state: &mut Loaded, audio: &[f32]) -> Result<String> {
         .try_extract_tensor::<f32>()
         .context("extract encoder outputs")?;
 
-    // Determine time dimension T'
-    // enc_shape can be [1, 1024, T'] (channels first) or [1, T', 1024] (time first)
     let channels_first = enc_shape.len() >= 3 && enc_shape[1] == ENCODER_DIM as i64;
     let t_prime = if channels_first {
         enc_shape[2] as usize
@@ -562,7 +524,6 @@ fn run_inference(state: &mut Loaded, audio: &[f32]) -> Result<String> {
         return Ok(String::new());
     }
 
-    // -- 3. Decoder: TDT Greedy Search Loop -----------------------------------
     let vocab_size = state.vocab.len();
     let output_dim = vocab_size + NUM_DURATION_CLASSES;
     let blank_idx = BLANK_TOKEN_ID;
@@ -574,16 +535,15 @@ fn run_inference(state: &mut Loaded, audio: &[f32]) -> Result<String> {
     let mut emitted_tokens: Vec<usize> = Vec::new();
     let mut t = 0;
 
-    let enc_slice_shape = if state.decoder_enc_shape_time_first {
-        vec![1_usize, 1, ENCODER_DIM]
+    let enc_slice_shape: [usize; 3] = if state.decoder_enc_shape_time_first {
+        [1, 1, ENCODER_DIM]
     } else {
-        vec![1_usize, ENCODER_DIM, 1]
+        [1, ENCODER_DIM, 1]
     };
 
     let mut enc_frame = vec![0.0f32; ENCODER_DIM];
 
     while t < t_prime {
-        // Extract encoder frame slice for time index t
         if channels_first {
             for c in 0..ENCODER_DIM {
                 enc_frame[c] = enc_data[c * t_prime + t];
@@ -596,46 +556,49 @@ fn run_inference(state: &mut Loaded, audio: &[f32]) -> Result<String> {
         let mut tokens_in_frame = 0;
 
         loop {
-            let enc_tensor = Tensor::from_array((enc_slice_shape.clone(), enc_frame.clone()))
+            let enc_view = TensorRef::from_array_view((enc_slice_shape, enc_frame.as_slice()))
                 .context("build decoder encoder_outputs tensor")?;
-            let s1_tensor = Tensor::from_array((
+            let s1_view = TensorRef::from_array_view((
                 [DECODER_NUM_LAYERS, 1_usize, DECODER_STATE_DIM],
-                state_1.clone(),
+                state_1.as_slice(),
             ))
             .context("build decoder state_1 tensor")?;
-            let s2_tensor = Tensor::from_array((
+            let s2_view = TensorRef::from_array_view((
                 [DECODER_NUM_LAYERS, 1_usize, DECODER_STATE_DIM],
-                state_2.clone(),
+                state_2.as_slice(),
             ))
             .context("build decoder state_2 tensor")?;
 
-            let (target_input, target_len_input) = if state.targets_is_i32 {
-                (
-                    Tensor::from_array(([1_usize, 1], vec![current_token as i32]))
-                        .context("build targets tensor")?
-                        .into(),
-                    Tensor::from_array(([1_usize], vec![1_i32]))
-                        .context("build target_length tensor")?
-                        .into(),
-                )
-            } else {
-                (
-                    Tensor::from_array(([1_usize, 1], vec![current_token as i64]))
-                        .context("build targets tensor")?
-                        .into(),
-                    Tensor::from_array(([1_usize], vec![1_i64]))
-                        .context("build target_length tensor")?
-                        .into(),
-                )
-            };
+            let targets32 = [current_token as i32];
+            let targets64 = [current_token as i64];
+            let tl32 = [1_i32];
+            let tl64 = [1_i64];
 
-            let dec_feed: Vec<(&str, SessionInputValue)> = vec![
-                ("encoder_outputs", enc_tensor.into()),
-                ("targets", target_input),
-                ("target_length", target_len_input),
-                ("input_states_1", s1_tensor.into()),
-                ("input_states_2", s2_tensor.into()),
-            ];
+            let dec_feed: Vec<(&str, SessionInputValue)> = if state.targets_is_i32 {
+                let targets_view = TensorRef::from_array_view(([1_usize, 1], targets32.as_slice()))
+                    .context("build targets tensor")?;
+                let target_len_view = TensorRef::from_array_view(([1_usize], tl32.as_slice()))
+                    .context("build target_length tensor")?;
+                vec![
+                    ("encoder_outputs", enc_view.into()),
+                    ("targets", targets_view.into()),
+                    ("target_length", target_len_view.into()),
+                    ("input_states_1", s1_view.into()),
+                    ("input_states_2", s2_view.into()),
+                ]
+            } else {
+                let targets_view = TensorRef::from_array_view(([1_usize, 1], targets64.as_slice()))
+                    .context("build targets tensor")?;
+                let target_len_view = TensorRef::from_array_view(([1_usize], tl64.as_slice()))
+                    .context("build target_length tensor")?;
+                vec![
+                    ("encoder_outputs", enc_view.into()),
+                    ("targets", targets_view.into()),
+                    ("target_length", target_len_view.into()),
+                    ("input_states_1", s1_view.into()),
+                    ("input_states_2", s2_view.into()),
+                ]
+            };
 
             let dec_out = state.decoder.run(dec_feed).context("decoder step run")?;
             let (_, ldata) = dec_out[state.logits_idx]
@@ -664,8 +627,8 @@ fn run_inference(state: &mut Loaded, audio: &[f32]) -> Result<String> {
                 let (_, next_s2) = dec_out[state.state_2_idx]
                     .try_extract_tensor::<f32>()
                     .context("extract next state_2")?;
-                state_1 = next_s1.to_vec();
-                state_2 = next_s2.to_vec();
+                state_1.copy_from_slice(next_s1);
+                state_2.copy_from_slice(next_s2);
 
                 tokens_in_frame += 1;
                 if best_duration > 0 || tokens_in_frame >= MAX_TOKENS_PER_STEP {

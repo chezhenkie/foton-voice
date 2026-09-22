@@ -1,8 +1,5 @@
 //! The utterance queue, worker thread, and Piper/eSpeak synthesis. Pocket-TTS
-//! synthesis lives in `pocket.rs` (called from [`TtsEngineWorker::run`]) since
-//! it needs no access to this module's private fields.
 
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,24 +18,19 @@ use crate::pocket::{ensure_pocket_tts_loaded, speak_pocket_tts};
 use crate::voxcpm::{ensure_vox_cpm_2_loaded, speak_vox_cpm_2};
 
 /// How long the worker parks in `recv_timeout` when there is nothing to expire.
-/// Only a wake-up interval - the channel still wakes it immediately on a command.
 const IDLE_PARK: Duration = Duration::from_secs(3600);
 
 /// The worker's cached Inflect-Micro-v2 sessions. Without the `inflect-micro`
-/// feature there is no model type to cache, so the slot degenerates to `()` and
-/// `speak_inflect_micro` reports that the engine wasn't compiled in.
 #[cfg(feature = "inflect-micro")]
 type InflectModelSlot = Option<crate::inflect::model::InflectModel>;
 #[cfg(not(feature = "inflect-micro"))]
 type InflectModelSlot = Option<()>;
 
-// The worker's cached LuxTTS sessions, same contract as the Inflect slot.
 #[cfg(feature = "luxtts")]
 type LuxModelSlot = Option<crate::luxtts::model::LuxTTSModel>;
 #[cfg(not(feature = "luxtts"))]
 type LuxModelSlot = Option<()>;
 
-// -- Utterance queue -----------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Utterance {
@@ -54,12 +46,8 @@ pub enum TtsCommand {
         generation: u32,
     },
     /// Live config swap - also how the memory policy reaches a running worker,
-    /// so the tray toggle never has to tear down the engine (and its audio
-    /// device) just to change it.
     UpdateConfig(TtsConfig),
     /// Load the model now (and restart the idle countdown) without speaking.
-    /// Sent as soon as FotonVoice Engine knows speech is likely - e.g. the moment a
-    /// recording starts - so the load overlaps with the user still talking.
     Preload,
     Shutdown,
 }
@@ -79,7 +67,6 @@ pub struct TtsEngineHandle {
     tx: Sender<TtsCommand>,
     generation: Arc<AtomicU32>,
     /// Mirrors whether the worker currently holds a model in memory, so the UI
-    /// and tray can show the state without interrogating the worker thread.
     model_loaded: Arc<AtomicBool>,
 }
 
@@ -105,7 +92,6 @@ impl TtsEngineHandle {
     }
 
     /// Ask the worker to load the model now. Cheap and idempotent when the model
-    /// is already resident - it just restarts the idle countdown.
     pub fn preload(&self) {
         let _ = self.tx.try_send(TtsCommand::Preload);
     }
@@ -129,11 +115,9 @@ impl TtsEngineHandle {
     }
 }
 
-// -- TTS engine worker ---------------------------------------------------------
 
 pub type PlaybackCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 /// Called with a human-readable message whenever an utterance fails to play
-/// (engine missing, voice not downloaded, audio device unavailable, ...).
 pub type ErrorCallback = Arc<dyn Fn(String) + Send + Sync + 'static>;
 
 pub struct TtsEngineWorker {
@@ -172,10 +156,6 @@ impl TtsEngineWorker {
             TtsEngine::LuxTts => config.lux_tts.prewarm,
             _ => false,
         };
-        // Pre-warming loads the model at startup and keeps it there, which is
-        // exactly what the on-demand memory mode exists to avoid - so the two
-        // settings do not fight: on-demand wins and the model waits for its
-        // first real use (or a `preload()`).
         if prewarm && !config.unloads_when_idle() {
             let _ = handle.tx.send(TtsCommand::Play {
                 utterance: Utterance {
@@ -212,18 +192,14 @@ impl TtsEngineWorker {
         );
         let mut current_config = self.config.clone();
 
-        // Inflect-Micro-v2 ONNX sessions, cached for the worker's lifetime.
         let mut inflect_model: InflectModelSlot = None;
-        // LuxTTS ONNX sessions, same worker-lifetime caching contract.
         let mut luxtts_model: LuxModelSlot = None;
-        // Resident audio.cpp server session backing whichever of Pocket-TTS,
-        // Breeze-TTS-2, or VoxCPM2 is active - at most one at a time, since
-        // only one engine is selected. `AudioCppSession::ensure` respawns it
-        // when the family/model directory/GPU setting changes underneath it.
         let mut audiocpp_session: Option<AudioCppSession> = None;
+        let mut piper_resident: Option<crate::piper::PiperResident> = None;
 
-        // Persistent Rodio Output Stream - kept alive for the lifetime of this thread!
         let mut audio_context: Option<(rodio::OutputStream, rodio::OutputStreamHandle, Arc<rodio::Sink>)> = None;
+
+        let mut snips_cache: Option<std::collections::HashMap<String, String>> = None;
 
         let init_audio = |ctx: &mut Option<(rodio::OutputStream, rodio::OutputStreamHandle, Arc<rodio::Sink>)>| -> Result<Arc<rodio::Sink>> {
             if let Some((_, _, ref sink)) = ctx {
@@ -237,25 +213,16 @@ impl TtsEngineWorker {
             Ok(sink)
         };
 
-        // -- Idle-unload bookkeeping ------------------------------------------
-        // In on-demand mode a model is loaded when it is first needed (or
-        // pre-loaded via `TtsCommand::Preload`) and dropped again once it has
-        // gone unused for the configured window. Every use - a spoken utterance
-        // or a preload - restarts the countdown, so an active conversation never
-        // pays the reload cost twice. Read from `current_config` each time round
-        // so an `UpdateConfig` takes effect on the next iteration.
         let mut last_used = Instant::now();
 
         loop {
             let unload_when_idle = current_config.unloads_when_idle();
             let idle = current_config.idle_unload_duration();
-            // Piper and eSpeak shell out per utterance and hold nothing;
-            // Inflect-Micro-v2 keeps an in-process model, and the
-            // audio.cpp-backed engines keep a resident server session -
-            // both count as "resident" for the idle-unload countdown.
-            let model_resident = inflect_model.is_some() || audiocpp_session.is_some() || luxtts_model.is_some();
+            let model_resident = inflect_model.is_some()
+                || audiocpp_session.is_some()
+                || luxtts_model.is_some()
+                || piper_resident.is_some();
 
-            // Park until the next command, or until the idle window expires.
             let wait = if unload_when_idle && model_resident {
                 match idle.checked_sub(last_used.elapsed()) {
                     Some(remaining) if !remaining.is_zero() => remaining,
@@ -264,13 +231,10 @@ impl TtsEngineWorker {
                             "Unloading TTS model after {}s idle (memory mode: on-demand)",
                             idle.as_secs()
                         );
-                        // Dropping these is the whole of the resident
-                        // footprint (dropping `audiocpp_session` kills its
-                        // child `audiocpp_server` process); the worker
-                        // thread, its audio device and the queue stay up.
                         inflect_model = None;
                         audiocpp_session = None;
                         luxtts_model = None;
+                        piper_resident = None;
                         self.model_loaded.store(false, Ordering::SeqCst);
                         continue;
                     }
@@ -281,8 +245,6 @@ impl TtsEngineWorker {
 
             let cmd = match self.rx.recv_timeout(wait) {
                 Ok(cmd) => cmd,
-                // Nothing arrived in the window - go round again so the unload
-                // branch above can run.
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => break,
             };
@@ -294,14 +256,10 @@ impl TtsEngineWorker {
                         new_cfg.engine, new_cfg.memory_mode
                     );
                     current_config = new_cfg;
-                    // Switching to on-demand starts the clock now rather than
-                    // dropping a model that may be about to be used again.
+                    snips_cache = None;
                     last_used = Instant::now();
                 }
                 TtsCommand::Play { mut utterance, generation } => {
-                    // Synthesis is about to touch the model; hold off the idle
-                    // unload for the whole utterance and restart the countdown
-                    // when it ends (below).
                     last_used = Instant::now();
                     let current_gen = self.generation.load(std::sync::atomic::Ordering::SeqCst);
                     if generation < current_gen {
@@ -312,15 +270,16 @@ impl TtsEngineWorker {
                     let is_prewarm = utterance.source_label.as_deref() == Some("prewarm");
 
                     if !is_prewarm {
-                        let mut snips = current_config.snippets.clone();
-                        // Guarantee explicit subword phonetic boundaries so Pocket-TTS
-                        // never omits the 'Con' syllable or slurs into 'crol'.
-                        snips.entry("FotonVoice Engine".to_string()).or_insert_with(|| "Foton Voice".to_string());
-                        snips.entry("fotonvoice-engine".to_string()).or_insert_with(|| "Foton Voice".to_string());
-                        snips.entry("Vox Control".to_string()).or_insert_with(|| "Foton Voice".to_string());
-                        snips.entry("vox control".to_string()).or_insert_with(|| "Foton Voice".to_string());
-
-                        utterance.text = expand_snippets(&utterance.text, &snips);
+                        if snips_cache.is_none() {
+                            let mut snips = current_config.snippets.clone();
+                            snips.entry("FotonVoice Engine".to_string()).or_insert_with(|| "Foton Voice".to_string());
+                            snips.entry("fotonvoice-engine".to_string()).or_insert_with(|| "Foton Voice".to_string());
+                            snips.entry("Vox Control".to_string()).or_insert_with(|| "Foton Voice".to_string());
+                            snips.entry("vox control".to_string()).or_insert_with(|| "Foton Voice".to_string());
+                            snips_cache = Some(snips);
+                        }
+                        let snips = snips_cache.as_ref().unwrap();
+                        utterance.text = expand_snippets(&utterance.text, snips);
                         if !self.custom_vocabulary.is_empty() {
                             utterance.text = correct_custom_vocabulary(&utterance.text, &self.custom_vocabulary);
                         }
@@ -337,24 +296,27 @@ impl TtsEngineWorker {
                         continue;
                     }
                     let sink = sink_res.unwrap();
-                    let speed = if current_config.speed <= 0.0 { 1.0 } else { current_config.speed };
-                    sink.set_speed(speed.clamp(0.5, 2.5));
+                    let sink_speed = match current_config.engine {
+                        TtsEngine::Piper
+                        | TtsEngine::InflectMicro
+                        | TtsEngine::LuxTts
+                        | TtsEngine::Espeak => 1.0,
+                        TtsEngine::PocketTts
+                        | TtsEngine::BreezeTts2
+                        | TtsEngine::VoxCpm2 => {
+                            if current_config.speed <= 0.0 { 1.0 } else { current_config.speed }
+                        }
+                    };
+                    sink.set_speed(sink_speed.clamp(0.5, 2.5));
 
                     {
                         let mut guard = ACTIVE_SINK.lock().unwrap();
                         *guard = Some(sink.clone());
                     }
 
-                    // Caught rather than allowed to unwind: a panic here kills the
-                    // worker thread outright, and because the channel sender lives on
-                    // in the handle, every later `speak()` succeeds silently. The UI
-                    // then waits forever for callbacks that can never fire, which
-                    // presents as the app hanging rather than as a failure. ONNX
-                    // Runtime can panic during session creation when its shared
-                    // library cannot be resolved, so this path is reachable.
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         match current_config.engine {
-                        TtsEngine::Piper => self.speak_piper(&utterance, &sink),
+                        TtsEngine::Piper => self.speak_piper(&utterance, &sink, &mut piper_resident),
                         TtsEngine::Espeak => self.speak_espeak(&utterance),
                         TtsEngine::PocketTts => speak_pocket_tts(
                             &current_config,
@@ -436,16 +398,15 @@ impl TtsEngineWorker {
                     }
 
                     self.model_loaded.store(
-                        inflect_model.is_some() || audiocpp_session.is_some() || luxtts_model.is_some(),
+                        inflect_model.is_some()
+                            || audiocpp_session.is_some()
+                            || luxtts_model.is_some()
+                            || piper_resident.is_some(),
                         Ordering::SeqCst,
                     );
-                    // A long utterance must not count against the idle window.
                     last_used = Instant::now();
                 }
                 TtsCommand::Preload => {
-                    // Speculative: failures are logged, not surfaced. The same
-                    // error is reported properly (with a toast) if an utterance
-                    // actually arrives.
                     let outcome = match current_config.engine {
                         TtsEngine::InflectMicro if inflect_model.is_none() => {
                             Some(ensure_inflect_micro_loaded(&current_config, &mut inflect_model))
@@ -462,7 +423,6 @@ impl TtsEngineWorker {
                         TtsEngine::LuxTts if luxtts_model.is_none() => {
                             Some(crate::luxtts::ensure_lux_tts_loaded(&current_config, &mut luxtts_model))
                         }
-                        // Already resident, or an engine that holds no model.
                         _ => None,
                     };
                     match outcome {
@@ -471,7 +431,10 @@ impl TtsEngineWorker {
                         None => {}
                     }
                     self.model_loaded.store(
-                        inflect_model.is_some() || audiocpp_session.is_some() || luxtts_model.is_some(),
+                        inflect_model.is_some()
+                            || audiocpp_session.is_some()
+                            || luxtts_model.is_some()
+                            || piper_resident.is_some(),
                         Ordering::SeqCst,
                     );
                     last_used = Instant::now();
@@ -485,7 +448,12 @@ impl TtsEngineWorker {
         }
     }
 
-    fn speak_piper(&self, u: &Utterance, sink: &rodio::Sink) -> Result<()> {
+    fn speak_piper(
+        &self,
+        u: &Utterance,
+        sink: &rodio::Sink,
+        resident: &mut Option<crate::piper::PiperResident>,
+    ) -> Result<()> {
         let binary = piper_binary().ok_or_else(|| {
             anyhow::anyhow!(
                 "Piper binary not found. Download a voice from TTS settings (this \
@@ -501,60 +469,86 @@ impl TtsEngineWorker {
             })?;
 
         let length_scale = 1.0 / self.config.speed;
-        let mut cmd = std::process::Command::new(&binary);
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        cmd.arg("--model")
-            .arg(&voice_path)
-            .arg("--length-scale")
-            .arg(length_scale.to_string())
-            .arg("--output-raw");
+        let fingerprint = crate::piper::PiperFingerprint {
+            voice_path: voice_path.clone(),
+            gpu: self.config.gpu,
+            length_scale: length_scale.to_string(),
+        };
 
-        if self.config.gpu {
-            cmd.arg("--cuda");
-        }
-
-        let mut piper = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("spawn piper")?;
-
-        use std::io::Write;
-        piper
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(u.text.as_bytes())
-            .context("write to piper stdin")?;
-
-        let output = piper.wait_with_output().context("wait piper")?;
-
-        if !output.status.success() {
-            let err_msg = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "piper process failed with exit code {:?}: {}",
-                output.status.code(),
-                err_msg.trim()
+        let stale = match resident {
+            Some(r) => {
+                r.fingerprint() != &fingerprint
+                    || r.has_exited()
+            }
+            None => true,
+        };
+        if stale {
+            *resident = None;
+            *resident = Some(
+                crate::piper::spawn_piper_resident(&binary, fingerprint)
+                    .context("start resident piper")?,
             );
         }
+        let piper = resident.as_mut().unwrap();
+        piper.drain_pending();
 
-        if output.stdout.is_empty() {
-            anyhow::bail!("piper produced empty stdout");
-        }
+        let line = u.text.replace("\r\n", " ").replace('\n', " ");
+        piper.write_line(&line).context("write to piper stdin")?;
 
-        if u.source_label.as_deref() != Some("prewarm") {
-            if let Some(ref cb) = self.on_playback_start {
-                cb();
+        let current_gen = self.generation.load(Ordering::SeqCst);
+
+        let sample_rate = sample_rate_for_voice_path(voice_name, &voice_path);
+        let mut played_any = false;
+        let quiet_done = Duration::from_millis(300);
+        let mut quiet = Duration::ZERO;
+        let mut first_chunk_deadline = Duration::from_secs(30);
+        loop {
+            match piper.recv_chunk(Duration::from_millis(50)) {
+                Some(bytes) => {
+                    if !played_any {
+                        if u.source_label.as_deref() != Some("prewarm") {
+                            if let Some(ref cb) = self.on_playback_start {
+                                cb();
+                            }
+                        }
+                        played_any = true;
+                    }
+                    if self.generation.load(Ordering::SeqCst) != current_gen {
+                        warn!("Piper utterance cancelled by stop(); restarting resident process");
+                        *resident = None;
+                        stop_current_playback();
+                        return Ok(());
+                    }
+                    let samples: Vec<i16> = bytes
+                        .chunks_exact(2)
+                        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                        .collect();
+                    if !samples.is_empty() {
+                        sink.append(rodio::buffer::SamplesBuffer::new(1, sample_rate, samples));
+                    }
+                    quiet = Duration::ZERO;
+                }
+                None => {
+                    quiet += Duration::from_millis(50);
+                    if !played_any {
+                        if piper.has_exited() {
+                            anyhow::bail!("piper exited before producing audio: {}", piper.stderr_tail());
+                        }
+                        first_chunk_deadline -= Duration::from_millis(50);
+                        if first_chunk_deadline.is_zero() {
+                            anyhow::bail!(
+                                "piper produced no audio within 30s: {}",
+                                piper.stderr_tail()
+                            );
+                        }
+                    } else if quiet >= quiet_done {
+                        break;
+                    }
+                }
             }
         }
 
-        play_raw_audio(sink, &output.stdout, sample_rate_for_voice_path(voice_name, &voice_path))?;
+        sink.sleep_until_end();
         Ok(())
     }
 
@@ -587,31 +581,11 @@ impl TtsEngineWorker {
     }
 }
 
-// -- Audio playback ------------------------------------------------------------
-
-fn play_raw_audio(sink: &rodio::Sink, raw: &[u8], sample_rate: u32) -> Result<()> {
-    let samples: Vec<i16> = raw
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect();
-
-    sink.append(rodio::buffer::SamplesBuffer::new(1, sample_rate, samples));
-    sink.sleep_until_end();
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // -- stop() must bump the generation counter ------------------------------
-    //
-    // Regression test for a bug where the global stop-key hotkey called the raw
-    // `stop_current_playback()` free function instead of `TtsEngineHandle::stop()`.
-    // That stopped the Rodio sink but left the generation counter unchanged, so
-    // Pocket-TTS's frame-by-frame streaming loop (which only checks the counter
-    // between frames) kept appending new audio - and `Sink::append()` resets the
-    // sink's `stopped` flag, so playback silently resumed after the "stop".
 
     #[test]
     fn test_handle_stop_increments_generation_counter() {
@@ -630,9 +604,6 @@ mod tests {
 
     #[test]
     fn test_raw_stop_current_playback_does_not_bump_generation() {
-        // Documents the exact gap that caused the regression: calling the free
-        // function alone never advances any generation counter, since it has no
-        // knowledge of one. Callers MUST go through TtsEngineHandle::stop().
         let generation = Arc::new(std::sync::atomic::AtomicU32::new(0));
         stop_current_playback();
         assert_eq!(generation.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -640,13 +611,6 @@ mod tests {
 
     #[test]
     fn test_streaming_loop_cancellation_check_breaks_on_stale_generation() {
-        // Documents the generation-counter cancellation pattern itself: once
-        // stop() bumps the live counter past a snapshotted generation, a loop
-        // checking it between steps must stop rather than run to completion.
-        // (Pocket-TTS/Breeze-TTS-2/VoxCPM2 now synthesize a whole utterance in
-        // one audio.cpp subprocess call rather than a frame-by-frame Rust
-        // loop, so this pattern no longer applies to them specifically - Piper
-        // has the same one-shot limitation today.)
         let generation_counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let snapshotted_generation = 0u32;
 
@@ -657,7 +621,6 @@ mod tests {
             }
             frames_processed += 1;
             if frames_processed == 2 {
-                // Simulate stop() firing mid-stream.
                 generation_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
         }
@@ -665,7 +628,6 @@ mod tests {
         assert_eq!(frames_processed, 2, "loop must abandon remaining frames after stop()");
     }
 
-    // -- Idle-unload memory mode ----------------------------------------------
 
     fn test_handle() -> (TtsEngineHandle, Receiver<TtsCommand>) {
         let (tx, rx) = bounded(32);
@@ -708,9 +670,6 @@ mod tests {
         assert!(!handle.is_model_loaded());
     }
 
-    // Mirrors the worker's park-duration decision: while the model is resident
-    // the worker must wake exactly when the idle window runs out, and once it
-    // has expired the remaining time is None (which is the unload trigger).
     #[test]
     fn test_idle_window_expiry_arithmetic() {
         let idle = Duration::from_secs(900);
@@ -721,24 +680,18 @@ mod tests {
         let expired = Duration::from_secs(901);
         assert_eq!(idle.checked_sub(expired), None);
 
-        // Exactly at the boundary the remaining window is zero, which the worker
-        // treats as expired rather than parking for 0ns in a tight loop.
         let boundary = idle.checked_sub(idle).unwrap();
         assert!(boundary.is_zero());
     }
 
-    // A use part-way through the window must push the deadline out rather than
-    // letting the original one stand - "the time is reset if it is used again".
     #[test]
     fn test_use_resets_idle_countdown() {
         let idle = Duration::from_secs(900);
         let first_use = Instant::now();
         let elapsed_at_second_use = Duration::from_secs(600);
 
-        // Without a reset the model would have 300s left ...
         assert_eq!(idle.checked_sub(elapsed_at_second_use), Some(Duration::from_secs(300)));
 
-        // ... but the worker stamps `last_used` again, so the full window is back.
         let last_used = first_use + elapsed_at_second_use;
         let remaining = idle.checked_sub(last_used.duration_since(last_used)).unwrap();
         assert_eq!(remaining, idle);
@@ -758,8 +711,6 @@ mod tests {
 
     #[test]
     fn test_config_idle_duration_is_floored() {
-        // A 0 (or 1s) setting would drop the model between two sentences of the
-        // same reply; the config floors it instead of honouring it literally.
         let cfg = TtsConfig { idle_unload_secs: 0, ..TtsConfig::default() };
         assert_eq!(cfg.idle_unload_duration(), Duration::from_secs(30));
     }

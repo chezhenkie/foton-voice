@@ -24,7 +24,6 @@ pub fn config_dir() -> PathBuf {
     fotonvoice_config::portable::app_root()
 }
 
-// -- TOML round-trip via serde ------------------------------------------------
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct TargetsFile {
@@ -40,8 +39,6 @@ struct BindingsFile {
     bindings: Vec<RawBinding>,
 }
 
-// We use intermediate "raw" structs so every field can be Option<> with a
-// serde default, avoiding breakage when new keys are added in the future.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct RawTarget {
     id: String,
@@ -89,7 +86,6 @@ struct RawTarget {
     #[serde(default)]
     pub processing: RawProcessing,
     response_pipe: Option<String>,
-    // Legacy field kept for migration
     post_processing: Option<String>,
 }
 
@@ -141,16 +137,12 @@ fn default_file_mode() -> String {
 }
 use crate::models::{default_chat_max_history, default_chat_reply_mode, default_chat_timeout_secs};
 fn default_tap_ms() -> u32 {
-    // Keep in sync with models::default_tap_ms.
     300
 }
 fn default_hold_ms() -> u32 {
-    // Keep in sync with models::default_hold_threshold_ms - 200ms debounces
-    // accidental taps without making a normal hotkey press feel dead.
     200
 }
 
-// -- Conversion helpers --------------------------------------------------------
 
 fn raw_to_target(r: RawTarget) -> OutputTarget {
     let delivery = match r.delivery.as_str() {
@@ -174,7 +166,6 @@ fn raw_to_target(r: RawTarget) -> OutputTarget {
         || r.processing.auto_format_lists.is_some()
         || r.processing.code_mode.is_some();
 
-    // Migrate legacy post_processing string to processing overrides
     let processing = if !has_any_override {
         migrate_legacy_pp(r.post_processing.as_deref().unwrap_or("default"))
     } else {
@@ -186,7 +177,6 @@ fn raw_to_target(r: RawTarget) -> OutputTarget {
         }
     };
 
-    // Convert toml::Value http/webhook templates to serde_json::Value
     let http_json_template = r
         .http_json_template
         .and_then(|v| serde_json::to_value(v).ok());
@@ -327,11 +317,6 @@ fn raw_to_binding(r: RawBinding) -> HotkeyBinding {
         "toggle" => GestureType::Toggle,
         "double_tap" => GestureType::DoubleTap,
         "double_tap_hold" => GestureType::DoubleTapHold,
-        // `chord` was removed. Its base keys already live in `keys`, and its
-        // start/stop semantics (hold the base combo, release to stop) are what
-        // `hold` does - so an existing binding keeps working instead of
-        // vanishing from the user's config. The `subkey` field is simply
-        // dropped: serde ignores it on read and it is no longer written back.
         "chord" => {
             tracing::info!(
                 binding = %r.id,
@@ -396,7 +381,6 @@ fn binding_to_raw(b: &HotkeyBinding) -> RawBinding {
     }
 }
 
-// -- Default values ------------------------------------------------------------
 
 pub fn default_targets() -> Vec<OutputTarget> {
     vec![OutputTarget::default_inject()]
@@ -444,15 +428,12 @@ pub fn default_bindings() -> Vec<HotkeyBinding> {
     ]
 }
 
-// -- Backup --------------------------------------------------------------------
 
 fn backup(filename: &str, config_dir: &Path) -> std::io::Result<()> {
     let src = config_dir.join(filename);
     if !src.exists() {
         return Ok(());
     }
-    // NOTE: colons are illegal in Windows filenames, so the timestamp uses
-    // hyphens instead of the RFC 3339 `:` separators for the time component.
     let ts = Utc::now().format("%Y-%m-%dT%H-%M-%SZ");
     let backup_dir = config_dir.join("backups");
     std::fs::create_dir_all(&backup_dir)?;
@@ -485,7 +466,6 @@ fn prune_backups(filename: &str, config_dir: &Path) {
     }
 }
 
-// -- Private file write --------------------------------------------------------
 
 fn write_private(path: impl AsRef<std::path::Path>, content: &str) -> std::io::Result<()> {
     #[cfg(unix)]
@@ -507,7 +487,44 @@ fn write_private(path: impl AsRef<std::path::Path>, content: &str) -> std::io::R
     Ok(())
 }
 
-// -- Public API ----------------------------------------------------------------
+
+use std::sync::Arc;
+
+/// Targets parsed once, then re-read only when the file's mtime changes.
+static TARGETS_CACHE: std::sync::Mutex<Option<(Option<std::time::SystemTime>, std::sync::Arc<Vec<OutputTarget>>)>> =
+    std::sync::Mutex::new(None);
+
+pub fn load_targets_cached(config_dir: &Path) -> std::sync::Arc<Vec<OutputTarget>> {
+    let path = config_dir.join("targets.toml");
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mut cache = TARGETS_CACHE.lock().unwrap();
+    if let Some((cached_mtime, ref data)) = *cache {
+        if cached_mtime == mtime {
+            return data.clone();
+        }
+    }
+    let fresh = Arc::new(load_targets(config_dir).unwrap_or_default());
+    *cache = Some((mtime, fresh.clone()));
+    fresh
+}
+
+/// Same mtime-cached access for bindings.toml.
+static BINDINGS_CACHE: std::sync::Mutex<Option<(Option<std::time::SystemTime>, std::sync::Arc<Vec<HotkeyBinding>>)>> =
+    std::sync::Mutex::new(None);
+
+pub fn load_bindings_cached(config_dir: &Path) -> std::sync::Arc<Vec<HotkeyBinding>> {
+    let path = config_dir.join("bindings.toml");
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mut cache = BINDINGS_CACHE.lock().unwrap();
+    if let Some((cached_mtime, ref data)) = *cache {
+        if cached_mtime == mtime {
+            return data.clone();
+        }
+    }
+    let fresh = Arc::new(load_bindings(config_dir).unwrap_or_default());
+    *cache = Some((mtime, fresh.clone()));
+    fresh
+}
 
 pub fn load_targets(config_dir: &Path) -> Result<Vec<OutputTarget>, LoaderError> {
     let path = config_dir.join("targets.toml");

@@ -16,7 +16,6 @@
   let commandTimerId: any = null;
   let unlistenCommandExecuted: (() => void) | null = null;
 
-  // Delay unmounting the visualizer when recording/speaking/command stops to allow CSS outro animation to finish
   let isRecordingOrSpeaking = $derived(
     ($recording && $config.ui.show_overlay) ||
     ($speaking && $config.tts.enabled && $config.tts.response_overlay) ||
@@ -30,14 +29,6 @@
 
   $effect(() => {
     if (isRecordingOrSpeaking) {
-      // The overlay window itself is created/destroyed by the Rust backend
-      // (tray::spawn_status_ticker) on Linux, not requested from here: this
-      // component's own code stops running the instant the window that hosts
-      // it is destroyed, so it can't be the thing that asks for the window to
-      // come back next time - nothing would be left to notice the next
-      // activation. On Windows the window exists from startup and stays
-      // mapped; this effect only drives the *content* inside an
-      // already-live window on either platform.
       if (timeoutId) clearTimeout(timeoutId);
       renderOverlay = true;
       if (animateTimeoutId) clearTimeout(animateTimeoutId);
@@ -76,25 +67,11 @@
   }
 
   function updateAnimation() {
-    // Smooth interpolation for visual reaction
     currentVolume += (targetVolume - currentVolume) * 0.42;
     targetVolume *= 0.82;
-    // Snap the tail of the decay to zero so "settled" is a state the loop can
-    // actually reach instead of an asymptote.
     if (targetVolume < 0.0005) targetVolume = 0;
     if (currentVolume < 0.0005) currentVolume = 0;
 
-    // Dispatch high-performance window-level custom events
-    window.dispatchEvent(new CustomEvent("fotonvoice-status", {
-      detail: {
-        recording: $recording,
-        processing: $status.processing,
-        speaking: $speaking,
-        audio_ready: $status.audio_ready !== false,
-        active_target_label: $status.active_target_label || "Focused Window",
-        audio_level: currentVolume,
-      }
-    }));
 
     if (currentVolume === 0 && targetVolume === 0 && !renderOverlay) {
       animationFrameId = null;
@@ -103,15 +80,11 @@
     animationFrameId = requestAnimationFrame(updateAnimation);
   }
 
-  // Anything that puts the overlay on screen also needs the loop running, even
-  // before the first level arrives.
   $effect(() => {
     if (renderOverlay) startAnimation();
   });
 
   $effect(() => {
-    // On mount, unmount the visualizer for 1 tick to force the WebKitGTK
-    // transparent compositor to completely wipe and flush the old frame buffer.
     visible = false;
     const timer = setTimeout(() => {
       visible = true;
@@ -131,24 +104,15 @@
   });
 
   onMount(() => {
-    // Add transparent overlay class dynamically to html and body
     document.documentElement.classList.add("overlay-window");
     document.body.classList.add("overlay-window");
 
-    // Tell the backend this window has something to show. The window is
-    // created fully transparent (see window::reveal_overlay) because a fresh
-    // webview is on screen well before it has painted anything - a black box
-    // flashing over the overlay's bounds on every keybind press. Two frames:
-    // the first fires before the paint that follows this mount, the second
-    // once that paint has gone out. The backend reveals the window anyway
-    // after a timeout, so an overlay that never gets here still appears.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         invoke("overlay_content_ready").catch(() => {});
       });
     });
 
-    // Force absolute transparency on HTML, body, and App containers to allow Tauri's transparent window to clip correctly
     document.documentElement.style.setProperty("background", "transparent", "important");
     document.body.style.setProperty("background", "transparent", "important");
     
@@ -157,7 +121,6 @@
       appEl.style.setProperty("background", "transparent", "important");
     }
 
-    // Listen to real-time audio levels from Rust backend
     listen<number>("audio-level", (event) => {
       targetVolume = Math.min(1.0, event.payload * 100.0);
       startAnimation();

@@ -1,28 +1,4 @@
 //! Nemotron streaming speech-to-text backend (ONNX Runtime, Phase 2.3).
-//!
-//! nvidia/nemotron-speech-streaming-en-0.6b (Mar 2026 checkpoint): cache-aware
-//! FastConformer-RNNT. Encoder carries self-attention + conv caches for every
-//! layer across chunks (strictly non-overlapping frames, no left-context
-//! re-encode), so streaming partials come from true incremental decoding.
-//!
-//! Pipeline (two graphs, danielbodart 560ms export):
-//! 1. mel in Rust (this file)     - 16 kHz audio -> 128-mel log-spectrogram
-//!    (preemph 0.97, STFT 512/hop 160/win 400 Hann, Slaney filterbank,
-//!    ln(x + 2^-24), NO per-feature normalization - preprocessor.config
-//!    says normalize=NA)
-//! 2. encoder_model.onnx          - mel chunk [1, 128, 65] (9 pre-encode cache
-//!    + 56 chunk frames) -> [1, 1024, 7] + cache round-trip
-//! 3. decoder_model.onnx          - decoder+joint combined; greedy RNN-T loop,
-//!    blank id 1024, max 10 symbols per frame, LSTM states [2, 1, 640]
-//!
-//! Streaming pattern ported from altunenes/parakeet-rs (MIT), src/nemotron.rs,
-//! adapted to this crate's ort session style (load-dynamic, external
-//! onnxruntime.dll 1.30). Cache shapes verified against the actual graphs
-//! with nemotron-probe-fp16.py (plan doc section 4b).
-//!
-//! Chunk size note (G2b, revised 2026-09-18): the fp16/int8-static lane is
-//! locked to the single 560ms-chunk export - partial cadence is a non-goal
-//! for dictation; final-text accuracy is the requirement.
 
 use std::{
     fs::File,
@@ -39,14 +15,13 @@ use ort::{
         builder::{GraphOptimizationLevel, SessionBuilder},
         Session,
     },
-    value::Tensor,
+    value::{Tensor, TensorRef},
 };
-use tracing::info;
+use tracing::{debug, info};
 use fotonvoice_config::NemotronStreamingConfig;
 
 use crate::backend::{StreamingBackend, TranscribeRequest, TranscriptionBackend, TranscriptionResult};
 
-// -- Model constants -----------------------------------------------------------
 
 pub const SAMPLE_RATE: usize = 16_000;
 pub const N_FFT: usize = 512;
@@ -58,7 +33,6 @@ pub const PREEMPH: f32 = 0.97;
 pub const LOG_ZERO_GUARD: f32 = 5.960_464_5e-8;
 
 /// FastConformer subsamples mel frames by 8x: one encoder output frame spans
-/// 80 ms at 16 kHz.
 pub const SUBSAMPLING_FACTOR: usize = 8;
 
 /// Mel frames of main chunk per 560ms export (56 = 7 output frames x 8).
@@ -78,7 +52,6 @@ pub const VOCAB_SIZE: usize = 1024;
 pub const BLANK_TOKEN_ID: usize = VOCAB_SIZE;
 pub const MAX_TOKENS_PER_STEP: usize = 10;
 
-// Input tensor sizes per chunk: 9 cache + 56 main = 65 frames.
 pub const CHUNK_INPUT_FRAMES: usize = PRE_ENCODE_CACHE + CHUNK_SIZE_MEL;
 
 pub const TOKENS_FILE: &str = "tokens.txt";
@@ -93,7 +66,6 @@ pub const DECODER_DATA_FILE: &str = "decoder_model.onnx.data";
 pub const HF_BASE_URL: &str =
     "https://huggingface.co/danielbodart/nemotron-speech-600m-onnx/resolve/main";
 
-// -- Filesystem layout ---------------------------------------------------------
 
 /// Default parent directory: `<models_base_dir>/nemotron-streaming/<size>/`.
 pub fn default_model_dir() -> PathBuf {
@@ -114,9 +86,6 @@ pub fn valid_model_size(size: &str) -> bool {
 }
 
 /// Files a precision variant needs on disk. Both variants are danielbodart
-/// exports sharing the same graph structure (fp16: fp16 weights + fp32 I/O;
-/// int8-static: QDQ quantized MatMuls, fp32 decoder). The three shared files
-/// (tokens, filterbank, preprocessor config) come from the repo's shared/.
 pub fn model_files(size: &str) -> Vec<&'static str> {
     match size {
         "int8-static" => vec![
@@ -150,8 +119,6 @@ pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
 }
 
 /// Remove every file the `size` variant downloaded, i.e. the whole
-/// `<model_dir>/<size>/` folder. Refuses to run for unknown sizes so a
-/// mistyped size can never point the removal at an unexpected path.
 pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
     if !valid_model_size(size) {
         bail!("Unknown Nemotron streaming model size '{size}' (expected 'fp16' or 'int8-static')");
@@ -165,7 +132,6 @@ pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
     Ok(())
 }
 
-// -- Download ------------------------------------------------------------------
 
 static DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -215,10 +181,8 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
     Ok(())
 }
 
-// -- Vocabulary ----------------------------------------------------------------
 
 /// Load danielbodart tokens.txt: lines of "<piece> <id>", 1024 SentencePiece
-/// pieces, blank id = 1024 = vocab size.
 fn load_vocab(path: &Path) -> Result<Vec<String>> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let reader = BufReader::new(file);
@@ -252,7 +216,6 @@ fn load_vocab(path: &Path) -> Result<Vec<String>> {
 }
 
 /// Decode SentencePiece ids to text (U+2581 -> space). Empty pieces and the
-/// blank id are skipped by the caller (only non-blank ids are accumulated).
 fn detokenize(tokens: &[usize], vocab: &[String]) -> String {
     let mut raw = String::new();
     for &tok_id in tokens {
@@ -265,11 +228,8 @@ fn detokenize(tokens: &[usize], vocab: &[String]) -> String {
     converted.trim_start().to_string()
 }
 
-// -- Mel features (pure Rust; port of parakeet-rs audio.rs, MIT) ----------------
 
 /// Reusable mel filterbank + FFT plan, built once at model load. Both are
-/// deterministic from the fixed NeMo feature config, so caching avoids
-/// rebuilding them per request.
 pub struct FeatureCache {
     mel_basis: Array2<f32>,
     fft_plan: std::sync::Arc<dyn realfft::RealToComplex<f32>>,
@@ -282,9 +242,6 @@ fn hann_window(window_length: usize) -> Vec<f32> {
 }
 
 /// STFT power spectrogram [n_fft/2+1, audio.len()/hop], NeMo frame math:
-/// center padding n_fft/2 on both sides, window centered in the FFT buffer,
-/// valid frames = floor(audio_len / hop) (NeMo masks torch.stft's extra
-/// trailing frame).
 fn stft(
     audio: &[f32],
     plan: &std::sync::Arc<dyn realfft::RealToComplex<f32>>,
@@ -319,7 +276,6 @@ fn stft(
     Ok(spectrogram)
 }
 
-// Slaney mel scale (librosa semantics).
 const F_SP: f64 = 200.0 / 3.0;
 const MIN_LOG_HZ: f64 = 1000.0;
 const MIN_LOG_MEL: f64 = MIN_LOG_HZ / F_SP;
@@ -397,8 +353,6 @@ impl FeatureCache {
     }
 
     /// 128-band log-mel spectrogram, band-major [128, T]. NO per-feature
-    /// normalization (preprocessor.config: normalize=NA; NeMo feeds raw
-    /// dB log-mel to the encoder).
     fn compute_mel(&self, audio: &[f32]) -> Result<Array2<f32>> {
         if audio.is_empty() {
             return Ok(Array2::zeros((N_MELS, 0)));
@@ -410,10 +364,8 @@ impl FeatureCache {
     }
 }
 
-// -- Loaded State --------------------------------------------------------------
 
 /// Output positions, resolved once from the graphs at load time (same
-/// defensive pattern as parakeet.rs).
 struct OutputIndex {
     enc_out: usize,
     enc_len: usize,
@@ -462,7 +414,6 @@ struct Loaded {
     index: OutputIndex,
 }
 
-// -- Backend -------------------------------------------------------------------
 
 pub struct NemotronStreamingBackend {
     cfg: NemotronStreamingConfig,
@@ -503,10 +454,6 @@ impl NemotronStreamingBackend {
             feature = "nemotron-streaming-webgpu"
         ))]
         {
-            // WebGPU is a plugin EP in ORT >= 1.24.4: it lives in
-            // onnxruntime_providers_webgpu.dll beside the runtime and is
-            // registered once per environment, then its devices attached per
-            // session. Same road parakeet takes (see parakeet.rs).
             #[cfg(all(
                 feature = "nemotron-streaming-webgpu",
                 not(any(feature = "nemotron-streaming-cuda", feature = "nemotron-streaming-coreml"))
@@ -595,8 +542,6 @@ impl NemotronStreamingBackend {
         let encoder = Self::build_session(&dir.join(ENCODER_FILE), self.cfg.gpu)?;
         let decoder = Self::build_session(&dir.join(DECODER_FILE), self.cfg.gpu)?;
 
-        // Shape sanity: fail fast on a wrong/foreign graph instead of
-        // producing garbage transcripts later.
         for name in ["audio_signal", "length", "cache_last_channel", "cache_last_time", "cache_last_channel_len"] {
             if !encoder.inputs().iter().any(|i| i.name() == name) {
                 bail!("encoder graph missing input '{name}' (unexpected export?)");
@@ -630,7 +575,6 @@ impl NemotronStreamingBackend {
     }
 }
 
-// -- Streaming decode ------------------------------------------------------------
 
 /// Per-utterance streaming state (cache + decoder state + buffers).
 #[derive(Clone)]
@@ -678,27 +622,31 @@ impl StreamState {
 }
 
 /// Run one encoder chunk forward: mel [1, 128, input_frames] + cache in ->
-/// encoded [1, 1024, T'] + cache out. Graph names probe-verified (plan 4b).
-/// `input_frames` = PRE_ENCODE_CACHE + main_len (65 for a full chunk; the
-/// last offline chunk can be shorter - the T axis is dynamic).
 fn run_encoder_chunk(
     encoder: &mut Session,
     index: &OutputIndex,
-    mel_chunk: Vec<f32>, // N_MELS * input_frames, band-major
+    mel_chunk: &[f32], // N_MELS * input_frames, band-major
     input_frames: usize,
     chunk_length: i64,
     cache: &mut StreamState,
-) -> Result<(Vec<f32>, usize)> {
-    let mel_tensor = Tensor::from_array(([1_usize, N_MELS, input_frames], mel_chunk))
+    enc_out_scratch: &mut Vec<f32>,
+) -> Result<usize> {
+    let mel_tensor = TensorRef::from_array_view(([1_usize, N_MELS, input_frames], mel_chunk))
         .context("build audio_signal tensor")?;
     let length_tensor =
         Tensor::from_array(([1_usize], vec![chunk_length])).context("build length tensor")?;
-    let cch_tensor = Tensor::from_array(
-        ([1_usize, NUM_ENCODER_LAYERS, CACHE_LEFT_CONTEXT, ENCODER_DIM], cache.cache_last_channel.clone()),
+    let cch_tensor = TensorRef::from_array_view(
+        (
+            [1_usize, NUM_ENCODER_LAYERS, CACHE_LEFT_CONTEXT, ENCODER_DIM],
+            cache.cache_last_channel.as_slice(),
+        ),
     )
     .context("build cache_last_channel tensor")?;
-    let cti_tensor = Tensor::from_array(
-        ([1_usize, NUM_ENCODER_LAYERS, ENCODER_DIM, CACHE_CONV_CONTEXT], cache.cache_last_time.clone()),
+    let cti_tensor = TensorRef::from_array_view(
+        (
+            [1_usize, NUM_ENCODER_LAYERS, ENCODER_DIM, CACHE_CONV_CONTEXT],
+            cache.cache_last_time.as_slice(),
+        ),
     )
     .context("build cache_last_time tensor")?;
     let cll_tensor = Tensor::from_array(([1_usize], vec![cache.cache_len]))
@@ -717,7 +665,8 @@ fn run_encoder_chunk(
     let (_, enc_data) = outs[index.enc_out]
         .try_extract_tensor::<f32>()
         .context("extract encoder outputs")?;
-    let enc_data_vec = enc_data.to_vec();
+    enc_out_scratch.clear();
+    enc_out_scratch.extend_from_slice(enc_data);
 
     let (_, enc_len) = outs[index.enc_len]
         .try_extract_tensor::<i64>()
@@ -732,15 +681,14 @@ fn run_encoder_chunk(
     let (_, cll_next) = outs[index.cll_next]
         .try_extract_tensor::<i64>()
         .context("extract cache_last_channel_next_len")?;
-    cache.cache_last_channel = cch_next.to_vec();
-    cache.cache_last_time = cti_next.to_vec();
+    cache.cache_last_channel.copy_from_slice(cch_next);
+    cache.cache_last_time.copy_from_slice(cti_next);
     cache.cache_len = cll_next[0];
 
-    Ok((enc_data_vec, enc_len[0] as usize))
+    Ok(enc_len[0] as usize)
 }
 
 /// Greedy RNN-T decode over one chunk's encoder frames. Appends non-blank ids
-/// to `accumulated` and returns the count emitted.
 fn decode_chunk(
     decoder: &mut Session,
     index: &OutputIndex,
@@ -749,22 +697,33 @@ fn decode_chunk(
     stream: &mut StreamState,
 ) -> Result<usize> {
     let mut emitted = 0;
+    let mut frame = vec![0.0f32; ENCODER_DIM];
     for t in 0..enc_frames {
-        let frame: Vec<f32> = (0..ENCODER_DIM).map(|c| enc_data[c * enc_frames + t]).collect();
+        for c in 0..ENCODER_DIM {
+            frame[c] = enc_data[c * enc_frames + t];
+        }
 
         for _ in 0..MAX_TOKENS_PER_STEP {
-            let enc_in = Tensor::from_array(([1_usize, ENCODER_DIM, 1_usize], frame.clone()))
+            let targets_in = [stream.last_token as i32];
+            let target_len_in = [1_i32];
+            let enc_in = TensorRef::from_array_view(([1_usize, ENCODER_DIM, 1_usize], frame.as_slice()))
                 .context("build decoder encoder_outputs tensor")?;
-            let targets = Tensor::from_array(([1_usize, 1_usize], vec![stream.last_token as i32]))
+            let targets = TensorRef::from_array_view(([1_usize, 1_usize], targets_in.as_slice()))
                 .context("build targets tensor")?;
-            let target_length = Tensor::from_array(([1_usize], vec![1_i32]))
+            let target_length = TensorRef::from_array_view(([1_usize], target_len_in.as_slice()))
                 .context("build target_length tensor")?;
-            let s1 = Tensor::from_array(
-                ([DECODER_NUM_LAYERS, 1_usize, DECODER_STATE_DIM], stream.state_1.clone()),
+            let s1 = TensorRef::from_array_view(
+                (
+                    [DECODER_NUM_LAYERS, 1_usize, DECODER_STATE_DIM],
+                    stream.state_1.as_slice(),
+                ),
             )
             .context("build state_1 tensor")?;
-            let s2 = Tensor::from_array(
-                ([DECODER_NUM_LAYERS, 1_usize, DECODER_STATE_DIM], stream.state_2.clone()),
+            let s2 = TensorRef::from_array_view(
+                (
+                    [DECODER_NUM_LAYERS, 1_usize, DECODER_STATE_DIM],
+                    stream.state_2.as_slice(),
+                ),
             )
             .context("build state_2 tensor")?;
 
@@ -798,8 +757,8 @@ fn decode_chunk(
             let (_, n2) = outs[index.dec_s2]
                 .try_extract_tensor::<f32>()
                 .context("extract output_states_2")?;
-            stream.state_1 = n1.to_vec();
-            stream.state_2 = n2.to_vec();
+            stream.state_1.copy_from_slice(n1);
+            stream.state_2.copy_from_slice(n2);
         }
     }
     Ok(emitted)
@@ -817,7 +776,6 @@ fn argmax(slice: &[f32]) -> usize {
     best_idx
 }
 
-// -- Streaming interface --------------------------------------------------------
 
 impl StreamingBackend for NemotronStreamingBackend {
     fn chunk_samples(&self) -> usize {
@@ -837,9 +795,11 @@ impl StreamingBackend for NemotronStreamingBackend {
             return Ok(String::new());
         }
 
-        // Mel over the entire buffer: avoids edge effects at chunk boundaries
-        // (parakeet-rs pattern). full_mel is [128, total_frames].
+        let t_all = Instant::now();
+
+        let t0 = Instant::now();
         let full_mel = loaded.features.compute_mel(&stream.audio_buffer)?;
+        let t_mel = t0.elapsed();
         let total_mel_frames = full_mel.shape()[1];
         let processed_mel_frames = stream.audio_processed / HOP_LENGTH;
         if total_mel_frames.saturating_sub(processed_mel_frames) < CHUNK_SIZE_MEL {
@@ -849,15 +809,12 @@ impl StreamingBackend for NemotronStreamingBackend {
         let main_start = processed_mel_frames;
         let mut chunk_data = vec![0.0f32; N_MELS * CHUNK_INPUT_FRAMES];
         if stream.chunk_idx == 0 {
-            // First chunk: zero pre-encode cache section, main from frame 0.
             for f in 0..CHUNK_SIZE_MEL {
                 for m in 0..N_MELS {
                     chunk_data[m * CHUNK_INPUT_FRAMES + PRE_ENCODE_CACHE + f] = full_mel[[m, f]];
                 }
             }
         } else {
-            // Subsequent chunks: 9 pre-encode cache frames from before the
-            // main window, then the main 56.
             let cache_start = main_start.saturating_sub(PRE_ENCODE_CACHE);
             let cache_frames = main_start - cache_start;
             let cache_offset = PRE_ENCODE_CACHE - cache_frames;
@@ -874,20 +831,36 @@ impl StreamingBackend for NemotronStreamingBackend {
         }
 
         let before = stream.accumulated.len();
-        let (enc_data, enc_frames) = run_encoder_chunk(
+        let t1 = Instant::now();
+        let mut enc_scratch = Vec::new();
+        let enc_frames = run_encoder_chunk(
             &mut loaded.encoder,
             &loaded.index,
-            chunk_data,
+            &chunk_data,
             CHUNK_INPUT_FRAMES,
             CHUNK_INPUT_FRAMES as i64,
             &mut stream,
+            &mut enc_scratch,
         )?;
-        decode_chunk(&mut loaded.decoder, &loaded.index, &enc_data, enc_frames, &mut stream)?;
+        let t_enc = t1.elapsed();
+        let t2 = Instant::now();
+        decode_chunk(&mut loaded.decoder, &loaded.index, &enc_scratch, enc_frames, &mut stream)?;
+        let t_dec = t2.elapsed();
+
+        debug!(
+            "nemotron chunk={} buf={} mel={:?} enc={:?} dec={:?} total={:?} emitted={}",
+            stream.chunk_idx,
+            stream.audio_buffer.len(),
+            t_mel,
+            t_enc,
+            t_dec,
+            t_all.elapsed(),
+            stream.accumulated.len() - before
+        );
 
         stream.audio_processed += CHUNK_SIZE_MEL * HOP_LENGTH;
         stream.chunk_idx += 1;
 
-        // Trim the buffer; keep enough for pre-encode cache context.
         let keep_samples = (PRE_ENCODE_CACHE + CHUNK_SIZE_MEL) * HOP_LENGTH + 2 * WIN_LENGTH;
         if stream.audio_buffer.len() > keep_samples * 2 {
             let remove = stream.audio_buffer.len() - keep_samples;
@@ -909,8 +882,6 @@ impl StreamingBackend for NemotronStreamingBackend {
         let loaded = guard.as_mut().context("Nemotron state not initialised")?;
         let mut stream = self.stream.lock().unwrap();
 
-        // Encode any remainder the last full chunk left behind (up to 559ms
-        // of tail audio would otherwise be lost at stop).
         if stream.audio_buffer.len() >= WIN_LENGTH {
             let full_mel = loaded.features.compute_mel(&stream.audio_buffer)?;
             let total = full_mel.shape()[1];
@@ -944,15 +915,17 @@ impl StreamingBackend for NemotronStreamingBackend {
                     }
                 }
                 let input_frames = PRE_ENCODE_CACHE + remaining.min(CHUNK_SIZE_MEL);
-                let (enc_data, enc_frames) = run_encoder_chunk(
+                let mut enc_scratch = Vec::new();
+                let enc_frames = run_encoder_chunk(
                     &mut loaded.encoder,
                     &loaded.index,
-                    chunk_data[..N_MELS * input_frames].to_vec(),
+                    &chunk_data[..N_MELS * input_frames],
                     input_frames,
                     input_frames as i64,
                     &mut stream,
+                    &mut enc_scratch,
                 )?;
-                decode_chunk(&mut loaded.decoder, &loaded.index, &enc_data, enc_frames, &mut stream)?;
+                decode_chunk(&mut loaded.decoder, &loaded.index, &enc_scratch, enc_frames, &mut stream)?;
             }
         }
 
@@ -966,11 +939,8 @@ impl StreamingBackend for NemotronStreamingBackend {
     }
 }
 
-// -- Offline batch decode -------------------------------------------------------
 
 /// Offline chunk loop over a complete clip (batch flow; G2a parity baseline):
-/// mel over the full clip, stepping CHUNK_SIZE_MEL frames per chunk, last
-/// chunk may be shorter (the encoder T axis is dynamic).
 fn run_offline(loaded: &mut Loaded, audio: &[f32]) -> Result<Vec<usize>> {
     let mut stream = StreamState::new();
 
@@ -1002,15 +972,17 @@ fn run_offline(loaded: &mut Loaded, audio: &[f32]) -> Result<Vec<usize>> {
             }
         }
 
-        let (enc_data, enc_frames) = run_encoder_chunk(
+        let mut enc_scratch = Vec::new();
+        let enc_frames = run_encoder_chunk(
             &mut loaded.encoder,
             &loaded.index,
-            chunk_data,
+            &chunk_data,
             input_frames,
             input_frames as i64,
             &mut stream,
+            &mut enc_scratch,
         )?;
-        decode_chunk(&mut loaded.decoder, &loaded.index, &enc_data, enc_frames, &mut stream)?;
+        decode_chunk(&mut loaded.decoder, &loaded.index, &enc_scratch, enc_frames, &mut stream)?;
 
         buffer_idx += CHUNK_SIZE_MEL;
         chunk_idx += 1;
@@ -1134,8 +1106,6 @@ mod tests {
 
     #[test]
     fn test_offline_decode_test_wav() {
-        // G2a material: whole-file chunked decode of the sherpa test wav.
-        // Env: FOTON_NEMOTRON_DIR = model dir; FOTON_NEMOTRON_WAV = 16 kHz wav.
         let dir = match probe_dir() {
             Some(d) => d,
             None => return,
@@ -1163,8 +1133,6 @@ mod tests {
 
     #[test]
     fn test_streaming_feed_matches_offline() {
-        // Streaming decode over the same wav: feed 560ms chunks, flush; final
-        // text must contain the reference sentence.
         let dir = match probe_dir() {
             Some(d) => d,
             None => return,

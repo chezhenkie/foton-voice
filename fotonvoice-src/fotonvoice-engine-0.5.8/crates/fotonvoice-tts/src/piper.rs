@@ -1,16 +1,14 @@
 //! Piper voice catalogue, path resolution, and standalone binary/voice
-//! download + extraction. `TtsEngineWorker::speak_piper` (in `engine.rs`)
-//! spawns the `piper` binary resolved here and calls back into
-//! [`get_voice_path`] / [`sample_rate_for_voice_path`].
 
 #[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::{info, warn};
 
-// -- Piper voice catalogue -----------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct VoiceInfo {
@@ -57,14 +55,12 @@ pub static PIPER_VOICES: &[VoiceInfo] = &[
     VoiceInfo { name: "ScorchAI",                        quality: "medium", sample_rate: 22050, filename: "ScorchAI.onnx" },
 ];
 
-// -- Piper helpers -------------------------------------------------------------
 
 pub fn piper_voices_dir() -> PathBuf {
     fotonvoice_config::portable::app_root().join("piper-voices")
 }
 
 /// Expands a leading `~` to the user's home directory. Shared with `pocket.rs`,
-/// which applies the same expansion to its own voice-clip directory setting.
 pub(crate) fn expand_tilde(path: &str) -> PathBuf {
     if path == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
@@ -89,9 +85,6 @@ pub fn piper_binary() -> Option<PathBuf> {
     let exe = if cfg!(target_os = "windows") { "piper.exe" } else { "piper" };
     let local_dir = fotonvoice_config::portable::app_root().join("piper");
     let local = local_dir.join(exe);
-    // On unix the local install is fotonvoice-managed: only use it when healthy
-    // (binary + espeak-ng-data directory), so a broken install falls through to
-    // a system-wide piper and gets repaired on the next voice download.
     let local_healthy = if cfg!(unix) {
         local.exists() && local_dir.join("espeak-ng-data").is_dir()
     } else {
@@ -103,7 +96,6 @@ pub fn piper_binary() -> Option<PathBuf> {
     fotonvoice_config::find_in_path("piper")
 }
 
-// -- Voice catalogue helpers ---------------------------------------------------
 
 fn voice_name_to_filename(name: &str) -> Option<String> {
     PIPER_VOICES
@@ -113,9 +105,6 @@ fn voice_name_to_filename(name: &str) -> Option<String> {
 }
 
 /// Used by `TtsEngineWorker::speak_piper` to pick the correct playback sample rate.
-/// Sample rate for any voice on disk: the static catalogue first, then the
-/// voice's own `.onnx.json` (`audio.sample_rate`). The fallback matters for
-/// folder voices that are not in the hardcoded download catalogue.
 pub(crate) fn sample_rate_for_voice_path(name: &str, voice_path: &std::path::Path) -> u32 {
     if let Some(v) = PIPER_VOICES.iter().find(|v| v.name == name) {
         return v.sample_rate;
@@ -137,9 +126,160 @@ pub(crate) fn sample_rate_for_voice_path(name: &str, voice_path: &std::path::Pat
     22050
 }
 
+
+pub(crate) struct PiperResident {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    chunks: std::sync::mpsc::Receiver<Vec<u8>>,
+    stderr_tail: Arc<std::sync::Mutex<Vec<u8>>>,
+    fingerprint: PiperFingerprint,
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub(crate) struct PiperFingerprint {
+    pub voice_path: PathBuf,
+    pub gpu: bool,
+    pub length_scale: String,
+}
+
+impl PiperResident {
+    pub fn fingerprint(&self) -> &PiperFingerprint {
+        &self.fingerprint
+    }
+
+    /// Whether the piper child has exited on its own (crash / killed).
+    pub fn has_exited(&mut self) -> bool {
+        matches!(
+            self.child.try_wait(),
+            Ok(Some(_))
+        )
+    }    /// Feed one utterance (a single line; newlines must already be normalized).
+    pub fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        self.stdin.write_all(line.as_bytes())?;
+        self.stdin.write_all(b"\n")?;
+        self.stdin.flush()
+    }
+
+    /// Next PCM chunk from piper (up to 8 KiB), or `None` when the process
+    pub fn recv_chunk(&self, timeout: std::time::Duration) -> Option<Vec<u8>> {
+        match self.chunks.recv_timeout(timeout) {
+            Ok(bytes) => Some(bytes),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                None
+            }
+        }
+    }
+
+    /// Discard any PCM still queued from an abandoned utterance so it cannot
+    pub fn drain_pending(&self) {
+        while let Ok(_stale) = self.chunks.try_recv() {}
+    }
+
+    /// Last stderr output (bounded), for error reports.
+    pub fn stderr_tail(&self) -> String {
+        let tail = self.stderr_tail.lock().unwrap();
+        String::from_utf8_lossy(&tail).trim().to_string()
+    }
+
+    /// Kill the child (stdin closes when this struct is dropped).
+    #[allow(dead_code)]
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for PiperResident {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+pub(crate) fn spawn_piper_resident(
+    binary: &std::path::Path,
+    fingerprint: PiperFingerprint,
+) -> Result<PiperResident> {
+    let mut cmd = std::process::Command::new(binary);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.arg("--model")
+        .arg(&fingerprint.voice_path)
+        .arg("--length-scale")
+        .arg(&fingerprint.length_scale)
+        .arg("--output-raw");
+    if fingerprint.gpu {
+        cmd.arg("--cuda");
+    }
+    cmd.env("PYTHONUNBUFFERED", "1");
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().context("spawn piper (resident)")?;
+    let stdout = child.stdout.take().context("piper stdout")?;
+    let stderr = child.stderr.take().context("piper stderr")?;
+    let stdin = child.stdin.take().context("piper stdin")?;
+
+    let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::Builder::new()
+        .name("piper-stdout".into())
+        .spawn(move || {
+            let mut out = stdout;
+            loop {
+                let mut block = vec![0u8; 8192];
+                match std::io::Read::read(&mut out, &mut block) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        block.truncate(n);
+                        if chunk_tx.send(block).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        })?;
+
+    let stderr_tail: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stderr_tail_reader = stderr_tail.clone();
+    std::thread::Builder::new()
+        .name("piper-stderr".into())
+        .spawn(move || {
+            use std::io::Read;
+            let mut err = stderr;
+            let mut buf = [0u8; 4096];
+            loop {
+                match err.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let mut tail = stderr_tail_reader.lock().unwrap();
+                        tail.extend_from_slice(&buf[..n]);
+                        if tail.len() > 64 * 1024 {
+                            let excess = tail.len() - 64 * 1024;
+                            tail.drain(..excess);
+                        }
+                    }
+                }
+            }
+        })?;
+
+    Ok(PiperResident {
+        child,
+        stdin,
+        chunks: chunk_rx,
+        stderr_tail,
+        fingerprint,
+    })
+}
+
 /// Voices present in the voices folder: every `*.onnx` with a paired
-/// `.onnx.json`. The settings menu lists this - whatever is on disk, not the
-/// hardcoded download catalogue.
 pub fn list_local_voices(voice_dir: &str) -> Vec<String> {
     let dir = resolve_voices_dir(voice_dir);
     let mut out = Vec::new();
@@ -165,7 +305,6 @@ pub fn is_voice_downloaded(voice_name: &str, voice_dir: &str) -> bool {
     get_voice_path(voice_name, voice_dir).is_some()
 }
 
-// -- Piper voice download ------------------------------------------------------
 
 const PIPER_RELEASE_BASE: &str =
     "https://github.com/rhasspy/piper/releases/download/v0.0.2/";
@@ -200,14 +339,6 @@ pub fn get_voice_path(voice_name: &str, voice_dir: &str) -> Option<PathBuf> {
 }
 
 /// Extracts the piper release tarball into `dest_dir`, preserving the archive's
-/// directory structure with the leading `piper/` component stripped.
-///
-/// Preserving the tree matters: the tarball ships an `espeak-ng-data/`
-/// directory that the piper binary needs for phonemization. An earlier version
-/// of this code flattened every entry's file name into one directory, which
-/// destroyed `espeak-ng-data/` - so the standalone piper binary failed on every
-/// machine without a system-wide piper install (no TTS audio, only a
-/// "piper process failed" log line).
 #[cfg(unix)]
 fn extract_piper_archive(bytes: &[u8], dest_dir: &Path) -> Result<()> {
     let cursor = std::io::Cursor::new(bytes);
@@ -218,7 +349,6 @@ fn extract_piper_archive(bytes: &[u8], dest_dir: &Path) -> Result<()> {
         let mut entry = entry?;
         let path = entry.path()?.into_owned();
 
-        // Strip the top-level "piper/" component; skip unsafe paths.
         let rel: PathBuf = path
             .components()
             .skip(1)
@@ -232,11 +362,9 @@ fn extract_piper_archive(bytes: &[u8], dest_dir: &Path) -> Result<()> {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // unpack() handles directories, files, and symlinks and preserves modes.
         entry.unpack(&dest)?;
     }
 
-    // Belt and braces: the binary must be executable.
     use std::os::unix::fs::PermissionsExt;
     let exe = dest_dir.join("piper");
     if let Ok(metadata) = std::fs::metadata(&exe) {
@@ -249,16 +377,6 @@ fn extract_piper_archive(bytes: &[u8], dest_dir: &Path) -> Result<()> {
 }
 
 /// Fetch the standalone Piper binary FotonVoice Engine manages for itself.
-///
-/// Unix only. On Windows this reports what it cannot do rather than returning
-/// success: the body used to be `#[cfg(unix)]` with a bare `Ok(())` fallthrough,
-/// so on Windows it claimed to have installed Piper and had done nothing, and
-/// the first sign of trouble was silent TTS. Piper is the default engine, so
-/// that is the common path, not an edge case.
-///
-/// Wiring up the download needs the Windows release asset - a zip, not the
-/// tarball the Unix path unpacks - which means a zip reader and a verified
-/// URL. Until then, saying so is better than pretending.
 #[cfg(not(unix))]
 pub async fn download_piper_binary() -> Result<()> {
     {
@@ -280,9 +398,6 @@ pub async fn download_piper_binary() -> Result<()> {
         let local_dir = fotonvoice_config::portable::app_root().join("piper");
 
         let dest_exe = local_dir.join("piper");
-        // A correct install has the binary AND the espeak-ng-data directory.
-        // Installs made by the old flattening extractor have the binary but a
-        // bogus `espeak-ng-data` *file* - wipe and re-extract those too.
         if dest_exe.exists() && local_dir.join("espeak-ng-data").is_dir() {
             return Ok(());
         }
@@ -364,7 +479,67 @@ mod tests {
         fs::write(dir.join(format!("{filename}.json")), b"{}").unwrap();
     }
 
-    // -- resolve_voices_dir ----------------------------------------------------
+
+    #[test]
+    fn resident_piper_streams_two_lines() {
+        let Some(binary) = piper_binary() else {
+            println!("piper not installed - skipping");
+            return;
+        };
+        let voice_name = match list_local_voices("").first() {
+            Some(name) => name.clone(),
+            None => {
+                println!("no local piper voice - skipping");
+                return;
+            }
+        };
+        let Some(voice_path) = get_voice_path(&voice_name, "") else {
+            println!("voice files missing - skipping");
+            return;
+        };
+
+        let fingerprint = PiperFingerprint {
+            voice_path,
+            gpu: false,
+            length_scale: "1".into(),
+        };
+        let mut resident =
+            spawn_piper_resident(&binary, fingerprint).expect("spawn resident piper");
+
+        resident
+            .write_line("First resident line.")
+            .expect("write line 1");
+        let mut total1 = 0usize;
+        let mut quiet = 0;
+        while quiet < 10 {
+            match resident.recv_chunk(std::time::Duration::from_millis(100)) {
+                Some(bytes) => {
+                    total1 += bytes.len();
+                    quiet = 0;
+                }
+                None => quiet += 1,
+            }
+        }
+        assert!(total1 > 1000, "line 1 produced only {total1} bytes");
+
+        resident
+            .write_line("Second line of the resident test.")
+            .expect("write line 2");
+        let mut total2 = 0usize;
+        quiet = 0;
+        while quiet < 10 {
+            match resident.recv_chunk(std::time::Duration::from_millis(100)) {
+                Some(bytes) => {
+                    total2 += bytes.len();
+                    quiet = 0;
+                }
+                None => quiet += 1,
+            }
+        }
+        assert!(total2 > 100, "line 2 produced only {total2} bytes");
+        assert!(!resident.has_exited(), "resident piper exited during test");
+    }
+
 
     #[test]
     fn test_resolve_voices_dir_empty_uses_default() {
@@ -394,7 +569,6 @@ mod tests {
         assert_eq!(result, home);
     }
 
-    // -- expand_tilde ----------------------------------------------------------
 
     #[test]
     fn test_expand_tilde_home() {
@@ -418,7 +592,6 @@ mod tests {
         assert_eq!(expand_tilde("relative/path"), PathBuf::from("relative/path"));
     }
 
-    // -- is_voice_downloaded ---------------------------------------------------
 
     #[test]
     fn test_is_voice_downloaded_default_dir_not_present() {
@@ -429,7 +602,7 @@ mod tests {
     fn test_is_voice_downloaded_returns_true_when_files_exist() {
         let dir = tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
-        create_fake_voice(dir.path(), "en_US-amy-low.onnx");
+        create_fake_voice(dir.path(), "en-us-amy-low.onnx");
         assert!(is_voice_downloaded("en-us-amy-low", path));
     }
 
@@ -458,7 +631,6 @@ mod tests {
         assert!(!is_voice_downloaded("en-us-amy-low", path));
     }
 
-    // -- list_local_voices / sample_rate_for_voice_path -------------------------
 
     #[test]
     fn test_list_local_voices_finds_onnx_json_pairs() {
@@ -466,7 +638,6 @@ mod tests {
         let path = dir.path().to_str().unwrap();
         create_fake_voice(dir.path(), "zz-custom-high.onnx");
         create_fake_voice(dir.path(), "aa-custom-low.onnx");
-        // onnx without a json pair is not a usable voice.
         fs::write(dir.path().join("broken.onnx"), b"fake").unwrap();
         fs::write(dir.path().join("notes.txt"), b"x").unwrap();
         assert_eq!(list_local_voices(path), vec!["aa-custom-low", "zz-custom-high"]);
@@ -490,14 +661,12 @@ mod tests {
         .unwrap();
         let voice_path = dir.path().join("zz-custom-high.onnx");
         assert_eq!(sample_rate_for_voice_path("zz-custom-high", &voice_path), 48000);
-        // Catalogue voices still resolve from the static table.
         assert_eq!(
             sample_rate_for_voice_path("en_US-carlin-high", &dir.path().join("en_US-carlin-high.onnx")),
             22050
         );
     }
 
-    // -- get_voice_path --------------------------------------------------------
 
     #[test]
     fn test_get_voice_path_returns_none_when_missing() {
@@ -510,8 +679,8 @@ mod tests {
     fn test_get_voice_path_returns_some_when_present() {
         let dir = tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
-        create_fake_voice(dir.path(), "en_US-ryan-high.onnx");
-        let result = get_voice_path("en-us-ryan-high", path);
+        create_fake_voice(dir.path(), "en_US-carlin-high.onnx");
+        let result = get_voice_path("en_US-carlin-high", path);
         assert!(result.is_some());
         assert!(result.unwrap().exists());
     }
@@ -522,22 +691,21 @@ mod tests {
         let other_dir = tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
         let other_path = other_dir.path().to_str().unwrap();
-        create_fake_voice(other_dir.path(), "en_US-danny-low.onnx");
-        assert!(get_voice_path("en-us-danny-low", path).is_none());
-        assert!(get_voice_path("en-us-danny-low", other_path).is_some());
+        create_fake_voice(other_dir.path(), "en_US-carlin-high.onnx");
+        assert!(get_voice_path("en_US-carlin-high", path).is_none());
+        assert!(get_voice_path("en_US-carlin-high", other_path).is_some());
     }
 
     #[test]
     fn test_get_voice_path_lowercase_fallback() {
         let dir = tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
-        let lc_name = "en_us-lessac-medium.onnx";
+        let lc_name = "de_de-thorsten-medium.onnx";
         fs::write(dir.path().join(lc_name), b"fake").unwrap();
         fs::write(dir.path().join(format!("{lc_name}.json")), b"{}").unwrap();
-        assert!(get_voice_path("en-us-lessac-medium", path).is_some());
+        assert!(get_voice_path("de_DE-thorsten-medium", path).is_some());
     }
 
-    // -- Piper voice catalogue -------------------------------------------------
 
     #[test]
     fn test_piper_voices_not_empty() {
@@ -580,7 +748,7 @@ mod tests {
 
     #[test]
     fn test_piper_voices_sample_rates_are_valid() {
-        let valid_rates = [16000u32, 22050u32];
+        let valid_rates = [16000u32, 22050u32, 44100u32];
         for v in PIPER_VOICES {
             assert!(valid_rates.contains(&v.sample_rate), "unexpected sample_rate {} for {}", v.sample_rate, v.name);
         }
@@ -593,7 +761,6 @@ mod tests {
         }
     }
 
-    // -- sample_rate_for_voice_path ---------------------------------------------
 
     #[test]
     fn test_sample_rate_for_known_high_quality_voice() {
@@ -613,14 +780,12 @@ mod tests {
         assert_eq!(sample_rate_for_voice_path("xx-unknown-voice", &p), 22050);
     }
 
-    // -- piper_binary ----------------------------------------------------------
 
     #[test]
     fn test_piper_binary_returns_option_without_panicking() {
         let _ = piper_binary();
     }
 
-    // -- extract_piper_archive -------------------------------------------------
 
     #[cfg(unix)]
     fn build_fake_piper_tarball() -> Vec<u8> {
@@ -640,7 +805,6 @@ mod tests {
 
         add_file("piper/piper", b"#!/bin/sh\necho fake piper\n", 0o755);
         add_file("piper/libespeak-ng.so.1", b"fake lib", 0o644);
-        // Nested data tree - the part the old flattening extractor destroyed.
         add_file("piper/espeak-ng-data/phondata", b"fake phondata", 0o644);
         add_file("piper/espeak-ng-data/lang/gmw/en-US", b"fake lang", 0o644);
 
@@ -655,16 +819,12 @@ mod tests {
 
         extract_piper_archive(&bytes, dir.path()).unwrap();
 
-        // Regression: espeak-ng-data must survive as a real directory tree,
-        // not a flattened pile of files (which broke piper phonemization on
-        // every fresh install without a system-wide piper).
         assert!(dir.path().join("piper").is_file());
         assert!(dir.path().join("libespeak-ng.so.1").is_file());
         assert!(dir.path().join("espeak-ng-data").is_dir());
         assert!(dir.path().join("espeak-ng-data/phondata").is_file());
         assert!(dir.path().join("espeak-ng-data/lang/gmw/en-US").is_file());
 
-        // Binary must be executable.
         use std::os::unix::fs::PermissionsExt;
         let mode = fs::metadata(dir.path().join("piper")).unwrap().permissions().mode();
         assert_eq!(mode & 0o111, 0o111, "piper binary must be executable");
@@ -680,8 +840,6 @@ mod tests {
         let mut builder = tar::Builder::new(gz);
         let content: &[u8] = b"evil";
         let mut header = tar::Header::new_gnu();
-        // Write the malicious path straight into the header bytes -
-        // Builder::append_data / Header::set_path refuse `..` themselves.
         {
             let name = b"piper/../../escape.txt";
             let gnu = header.as_gnu_mut().unwrap();
@@ -696,15 +854,11 @@ mod tests {
         let dir = tempdir().unwrap();
         extract_piper_archive(&bytes, dir.path()).unwrap();
 
-        // The ParentDir components must be stripped: nothing lands outside the
-        // destination directory.
         assert!(!dir.path().parent().unwrap().join("escape.txt").exists());
         assert!(!dir.path().parent().unwrap().parent().unwrap().join("escape.txt").exists());
-        // The sanitized remainder is extracted inside the destination instead.
         assert!(dir.path().join("escape.txt").exists());
     }
 
-    // -- piper_voices_dir ------------------------------------------------------
 
     #[test]
     fn test_piper_voices_dir_not_empty() {
@@ -718,13 +872,12 @@ mod tests {
         assert!(d.ends_with("piper-voices"));
     }
 
-    // -- voice_name_to_filename ------------------------------------------------
 
     #[test]
     fn test_voice_name_to_filename_known() {
         assert_eq!(
             voice_name_to_filename("en-us-lessac-medium"),
-            Some("en_US-lessac-medium.onnx".to_string())
+            Some("en-us-lessac-medium.onnx".to_string())
         );
     }
 

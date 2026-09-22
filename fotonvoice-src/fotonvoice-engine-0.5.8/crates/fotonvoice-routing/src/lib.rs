@@ -4,7 +4,7 @@ pub mod router;
 pub mod targets;
 pub mod timestamp;
 
-pub use loader::{config_dir, load_bindings, load_targets, save_bindings, save_targets};
+pub use loader::{config_dir, load_bindings, load_bindings_cached, load_targets, load_targets_cached, save_bindings, save_targets};
 pub use models::{
     DeliveryResult, DeliveryType, GestureType, HotkeyBinding, OutputTarget,
     TargetProcessingConfig, TestResult, TTS_STOP_BINDING_ID,
