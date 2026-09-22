@@ -453,3 +453,66 @@ fn main() {
 
     tracing::info!("FotonVoice Engine LLM sidecar exiting.");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_artifacts_removes_leading_close_think() {
+        assert_eq!(strip_artifacts("</think> Cleaned text"), "Cleaned text");
+        assert_eq!(strip_artifacts("</think>\nCleaned text\n"), "Cleaned text");
+    }
+
+    #[test]
+    fn strip_artifacts_removes_trailing_im_end() {
+        assert_eq!(strip_artifacts("Cleaned text<|im_end|>"), "Cleaned text");
+        assert_eq!(strip_artifacts("Cleaned text <|im_end|>"), "Cleaned text");
+    }
+
+    #[test]
+    fn strip_artifacts_plain_text_survives() {
+        assert_eq!(strip_artifacts("  already clean  "), "already clean");
+    }
+
+    #[test]
+    fn strip_artifacts_empty_yields_empty() {
+        assert_eq!(strip_artifacts("   "), "");
+        assert_eq!(strip_artifacts(""), "");
+    }
+
+    #[test]
+    fn request_parses_minimal_line() {
+        let req: Request = serde_json::from_str(r#"{"method":"ping","id":7}"#).unwrap();
+        assert_eq!(req.method, "ping");
+        assert_eq!(req.id, Some(serde_json::json!(7)));
+        assert!(req.params.is_none());
+    }
+
+    #[test]
+    fn clean_params_defaults() {
+        let p: CleanParams =
+            serde_json::from_value(serde_json::json!({ "raw_text": "hi" })).unwrap();
+        assert_eq!(p.raw_text, "hi");
+        assert!(p.styling.is_none());
+        assert!(p.context.is_none());
+        assert!(p.model_path.is_none());
+    }
+
+    #[test]
+    fn clean_params_full() {
+        let p: CleanParams = serde_json::from_value(serde_json::json!({
+            "raw_text": "hi", "styling": "formal", "context": "email",
+            "model_path": "/tmp/m.gguf"
+        }))
+        .unwrap();
+        assert_eq!(p.styling.as_deref(), Some("formal"));
+        assert_eq!(p.context.as_deref(), Some("email"));
+        assert_eq!(p.model_path.as_deref(), Some("/tmp/m.gguf"));
+    }
+
+    #[test]
+    fn bad_json_line_is_not_a_request() {
+        assert!(serde_json::from_str::<Request>("not json").is_err());
+    }
+}

@@ -1,5 +1,8 @@
+#[cfg(feature = "moonshine")]
 use fotonvoice_inference::moonshine;
+#[cfg(feature = "nemotron-streaming")]
 use fotonvoice_inference::nemotron_streaming;
+#[cfg(feature = "parakeet")]
 use fotonvoice_inference::parakeet;
 
 #[tauri::command]

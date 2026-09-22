@@ -100,3 +100,15 @@ pub fn show_notification(summary: &str, body: &str) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::show_notification;
+
+    // The crate is a platform shim: real injection needs a focused window and
+    // a user watching, so unit tests cover only the fire-and-forget contract.
+    #[test]
+    fn show_notification_returns_without_panicking() {
+        show_notification("test", "body");
+    }
+}

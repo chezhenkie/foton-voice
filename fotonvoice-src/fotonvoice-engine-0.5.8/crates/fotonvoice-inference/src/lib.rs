@@ -207,7 +207,7 @@ use crossbeam_channel::{Receiver, Sender};
 use tracing::{error, info};
 use fotonvoice_config::{AppConfig, BackendChoice};
 
-use backend::{TranscribeRequest, TranscriptionBackend};
+use backend::{TranscribeRequest, TranscriptionBackend, TranscriptionResult};
 use postprocess::{run_pipeline, PostProcessConfig, is_silence_hallucination};
 use whisper_cpp::WhisperCppBackend;
 
@@ -497,8 +497,7 @@ fn build_backend(config: &AppConfig) -> Box<dyn TranscriptionBackend> {
             }
             #[cfg(not(feature = "moonshine"))]
             {
-                tracing::warn!("Moonshine backend selected but not compiled in this build; using whisper-cpp");
-                Box::new(WhisperCppBackend::new(config.engine.whisper_cpp.clone()))
+                Box::new(unavailable_backend("Moonshine", "moonshine"))
             }
         }
         BackendChoice::Parakeet => {
@@ -512,8 +511,7 @@ fn build_backend(config: &AppConfig) -> Box<dyn TranscriptionBackend> {
             }
             #[cfg(not(feature = "parakeet"))]
             {
-                tracing::warn!("Parakeet backend selected but not compiled in this build; using whisper-cpp");
-                Box::new(WhisperCppBackend::new(config.engine.whisper_cpp.clone()))
+                Box::new(unavailable_backend("Parakeet", "parakeet"))
             }
         }
         BackendChoice::NemotronStreaming => {
@@ -529,8 +527,7 @@ fn build_backend(config: &AppConfig) -> Box<dyn TranscriptionBackend> {
             }
             #[cfg(not(feature = "nemotron-streaming"))]
             {
-                tracing::warn!("Nemotron streaming backend selected but not compiled in this build; using whisper-cpp");
-                Box::new(WhisperCppBackend::new(config.engine.whisper_cpp.clone()))
+                Box::new(unavailable_backend("Nemotron streaming", "nemotron-streaming"))
             }
         }
         BackendChoice::RemoteOpenAi => {
@@ -545,6 +542,45 @@ fn build_backend(config: &AppConfig) -> Box<dyn TranscriptionBackend> {
     }
 }
 
+/// A backend for engines the build was compiled without. Fails loudly at load
+/// and transcription time instead of silently substituting whisper.cpp.
+struct UnavailableBackend {
+    label: &'static str,
+    feature: &'static str,
+}
+
+fn unavailable_backend(label: &'static str, feature: &'static str) -> UnavailableBackend {
+    UnavailableBackend { label, feature }
+}
+
+impl TranscriptionBackend for UnavailableBackend {
+    fn name(&self) -> &str {
+        self.label
+    }
+
+    fn load(&mut self) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "{} backend was selected but this build was compiled without the `{}` feature. Rebuild with `--features {}` or pick another backend.",
+            self.label,
+            self.feature,
+            self.feature
+        ))
+    }
+
+    fn transcribe(&self, _req: &TranscribeRequest) -> anyhow::Result<TranscriptionResult> {
+        Err(anyhow::anyhow!(
+            "{} backend is not available in this build (feature `{}`)",
+            self.label,
+            self.feature
+        ))
+    }
+
+    fn unload(&mut self) {}
+
+    fn is_loaded(&self) -> bool {
+        false
+    }
+}
 
 /// Run the inference engine on a dedicated OS thread.
 pub fn run_worker(
