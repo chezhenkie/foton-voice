@@ -128,7 +128,7 @@ pub(crate) fn ensure_vox_cpm_2_loaded(
 
     let clone_ref = resolve_clone_reference(cfg, config.hf_token.as_deref())?;
     let reference_text = if cfg.ultimate_cloning { clone_ref.as_ref().and_then(|(_, t)| t.as_deref()) } else { None };
-    session.as_ref().unwrap().speak(&SpeakRequest {
+    session.as_ref().ok_or_else(|| anyhow::anyhow!("audio.cpp session missing after ensure"))?.speak(&SpeakRequest {
         text: " ",
         speaker: Some(speaker_ref(cfg, &clone_ref)),
         reference_text,
@@ -163,7 +163,7 @@ pub(crate) fn speak_vox_cpm_2(
         cfg.gpu
     );
 
-    let audio = session.as_ref().unwrap().speak(&SpeakRequest {
+    let audio = session.as_ref().ok_or_else(|| anyhow::anyhow!("audio.cpp session missing after ensure"))?.speak(&SpeakRequest {
         text: &u.text,
         speaker: Some(speaker_ref(cfg, &clone_ref)),
         reference_text,

@@ -823,7 +823,7 @@ fn chat_histories() -> &'static std::sync::Mutex<std::collections::HashMap<Strin
 fn conversation_for(target_id: &str) -> Conversation {
     chat_histories()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .entry(target_id.to_string())
         .or_default()
         .clone()
@@ -832,7 +832,7 @@ fn conversation_for(target_id: &str) -> Conversation {
 /// Drop the stored conversation for one target. Returns the number of messages
 pub async fn reset_chat_history(target_id: &str) -> usize {
     let convo = {
-        let map = chat_histories().lock().unwrap();
+        let map = chat_histories().lock().unwrap_or_else(|e| e.into_inner());
         match map.get(target_id) {
             Some(c) => c.clone(),
             None => return 0,
@@ -847,7 +847,7 @@ pub async fn reset_chat_history(target_id: &str) -> usize {
 /// Read a target's conversation without modifying it (for UI / tests).
 pub async fn chat_history(target_id: &str) -> Vec<ChatMessage> {
     let convo = {
-        let map = chat_histories().lock().unwrap();
+        let map = chat_histories().lock().unwrap_or_else(|e| e.into_inner());
         match map.get(target_id) {
             Some(c) => c.clone(),
             None => return Vec::new(),

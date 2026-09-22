@@ -564,13 +564,13 @@ impl NemotronStreamingBackend {
         let features = FeatureCache::new();
         let index = OutputIndex::resolve(&encoder, &decoder)?;
 
-        *self.state.lock().unwrap() = Some(Loaded { encoder, decoder, vocab, features, index });
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(Loaded { encoder, decoder, vocab, features, index });
         self.loaded = true;
         Ok(())
     }
 
     pub fn unload(&mut self) {
-        *self.state.lock().unwrap() = None;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.loaded = false;
     }
 }
@@ -786,9 +786,9 @@ impl StreamingBackend for NemotronStreamingBackend {
         if !self.loaded {
             bail!("Model not loaded");
         }
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let loaded = guard.as_mut().context("Nemotron state not initialised")?;
-        let mut stream = self.stream.lock().unwrap();
+        let mut stream = self.stream.lock().unwrap_or_else(|e| e.into_inner());
 
         stream.audio_buffer.extend_from_slice(samples);
         if stream.audio_buffer.len() < WIN_LENGTH {
@@ -878,9 +878,9 @@ impl StreamingBackend for NemotronStreamingBackend {
         if !self.loaded {
             bail!("Model not loaded");
         }
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let loaded = guard.as_mut().context("Nemotron state not initialised")?;
-        let mut stream = self.stream.lock().unwrap();
+        let mut stream = self.stream.lock().unwrap_or_else(|e| e.into_inner());
 
         if stream.audio_buffer.len() >= WIN_LENGTH {
             let full_mel = loaded.features.compute_mel(&stream.audio_buffer)?;
@@ -935,7 +935,7 @@ impl StreamingBackend for NemotronStreamingBackend {
     }
 
     fn reset(&mut self) {
-        self.stream.lock().unwrap().reset();
+        self.stream.lock().unwrap_or_else(|e| e.into_inner()).reset();
     }
 }
 
@@ -1016,7 +1016,7 @@ impl TranscriptionBackend for NemotronStreamingBackend {
         }
 
         let t0 = Instant::now();
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let loaded = guard.as_mut().context("Nemotron state not initialised")?;
         let tokens = run_offline(loaded, &req.audio)?;
         let text = detokenize(&tokens, &loaded.vocab);

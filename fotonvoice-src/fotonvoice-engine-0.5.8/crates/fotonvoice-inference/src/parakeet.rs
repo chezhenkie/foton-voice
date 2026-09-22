@@ -390,7 +390,7 @@ impl TranscriptionBackend for ParakeetBackend {
             .position(|o| o.name() == "output_states_2")
             .unwrap_or(3);
 
-        *self.state.lock().unwrap() = Some(Loaded {
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(Loaded {
             preprocessor,
             encoder,
             decoder,
@@ -409,7 +409,7 @@ impl TranscriptionBackend for ParakeetBackend {
         if !self.loaded {
             bail!("Model not loaded");
         }
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let state = guard.as_mut().context("Parakeet state not initialised")?;
 
         let n_samples = req.audio.len();
@@ -439,7 +439,7 @@ impl TranscriptionBackend for ParakeetBackend {
     }
 
     fn unload(&mut self) {
-        *self.state.lock().unwrap() = None;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.loaded = false;
     }
 

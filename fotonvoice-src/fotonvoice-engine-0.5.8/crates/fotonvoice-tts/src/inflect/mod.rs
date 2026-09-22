@@ -485,7 +485,9 @@ pub(crate) fn speak_inflect_micro(
     let is_prewarm = u.source_label.as_deref() == Some("prewarm");
 
     ensure_inflect_micro_loaded(config, model)?;
-    let model = model.as_mut().unwrap();
+    let model = model
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("inflect model slot missing after ensure"))?;
 
     if is_prewarm {
         let _ = model.synthesize("warm up", cfg, config.speed, cfg.seed)?;

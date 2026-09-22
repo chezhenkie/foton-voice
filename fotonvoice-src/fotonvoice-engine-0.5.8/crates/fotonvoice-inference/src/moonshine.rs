@@ -349,7 +349,7 @@ impl TranscriptionBackend for MoonshineBackend {
 
         info!("Moonshine geometry: {num_layers} layers, {kv_heads} kv-heads, head_dim {head_dim}");
 
-        *self.state.lock().unwrap() = Some(Loaded {
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(Loaded {
             encoder,
             decoder,
             tokenizer,
@@ -367,7 +367,7 @@ impl TranscriptionBackend for MoonshineBackend {
         if !self.loaded {
             bail!("Model not loaded");
         }
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let state = guard.as_mut().context("Moonshine state not initialised")?;
 
         let n_samples = req.audio.len();
@@ -390,7 +390,7 @@ impl TranscriptionBackend for MoonshineBackend {
     }
 
     fn unload(&mut self) {
-        *self.state.lock().unwrap() = None;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.loaded = false;
     }
 
@@ -470,12 +470,18 @@ fn run_inference(state: &mut Loaded, audio: &[f32]) -> Result<String> {
         let mut values: Vec<SessionInputValue> = Vec::with_capacity(state.decoder_plan.len());
         for slot in &state.decoder_plan {
             let val: SessionInputValue = match slot {
-                DecoderInput::InputIds => input_ids.take().unwrap().into(),
+                DecoderInput::InputIds => input_ids
+                    .take()
+                    .ok_or_else(|| anyhow!("decoder plan requests input_ids twice"))?
+                    .into(),
                 DecoderInput::Hidden => (&hidden_tensor).into(),
-                DecoderInput::UseCache => use_cache_t.take().unwrap().into(),
+                DecoderInput::UseCache => use_cache_t
+                    .take()
+                    .ok_or_else(|| anyhow!("decoder plan requests use_cache twice"))?
+                    .into(),
                 DecoderInput::EncoderMask => enc_mask_tensor
                     .as_ref()
-                    .expect("EncoderMask slot implies the mask was built")
+                    .ok_or_else(|| anyhow!("decoder plan requests encoder_mask without a built mask"))?
                     .into(),
                 DecoderInput::Cache(i) => {
                     let (shape, data) = &caches[*i];

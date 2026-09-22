@@ -234,7 +234,7 @@ pub(crate) fn ensure_pocket_tts_loaded(
 
     let resolved = resolve_pocket_tts_voice(&cfg.voice, &cfg.voice_dir)
         .ok_or_else(|| anyhow::anyhow!("unknown pocket-tts voice: {}", cfg.voice))?;
-    session.as_ref().unwrap().speak(&SpeakRequest {
+    session.as_ref().ok_or_else(|| anyhow::anyhow!("audio.cpp session missing after ensure"))?.speak(&SpeakRequest {
         text: " ",
         speaker: Some(speaker_ref_for_voice(&resolved)),
         reference_text: None,
@@ -266,7 +266,7 @@ pub(crate) fn speak_pocket_tts(
     let resolved = resolve_pocket_tts_voice(voice, &cfg.voice_dir)
         .ok_or_else(|| anyhow::anyhow!("unknown pocket-tts voice: {voice}"))?;
 
-    let audio = session.as_ref().unwrap().speak(&SpeakRequest {
+    let audio = session.as_ref().ok_or_else(|| anyhow::anyhow!("audio.cpp session missing after ensure"))?.speak(&SpeakRequest {
         text: &u.text,
         speaker: Some(speaker_ref_for_voice(&resolved)),
         reference_text: None,

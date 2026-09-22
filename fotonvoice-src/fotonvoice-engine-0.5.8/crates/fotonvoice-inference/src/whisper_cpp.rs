@@ -183,12 +183,15 @@ impl TranscriptionBackend for WhisperCppBackend {
         params.use_gpu = requested != "cpu";
         log_device_choice(&requested, crate::whisper_gpu_backend());
 
-        let ctx = whisper_rs::WhisperContext::new_with_params(path.to_str().unwrap(), params)
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("model path is not valid UTF-8: {}", path.display()))?;
+        let ctx = whisper_rs::WhisperContext::new_with_params(path_str, params)
             .context("whisper-rs load")?;
 
         let state = ctx.create_state().context("whisper state init")?;
 
-        *self.state.lock().unwrap() = Some(state);
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(state);
         self.ctx = Some(ctx);
         self.model_path = Some(path);
         self.loaded = true;
@@ -199,13 +202,13 @@ impl TranscriptionBackend for WhisperCppBackend {
         if !self.loaded {
             bail!("Model not loaded");
         }
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let state = guard.as_mut().context("whisper state not initialised")?;
         transcribe_with_state(state, req, self.threads())
     }
 
     fn unload(&mut self) {
-        *self.state.lock().unwrap() = None;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.ctx = None;
         self.loaded = false;
     }

@@ -244,7 +244,7 @@ impl RemoteStreamingSession {
                         match chunk_rx.poll_recv(_cx) {
                             std::task::Poll::Ready(Some(chunk)) => {
                                 {
-                                    let mut buf = buffered_for_stream.lock().unwrap();
+                                    let mut buf = buffered_for_stream.lock().unwrap_or_else(|e| e.into_inner());
                                     buf.extend_from_slice(&chunk);
                                 }
                                 let pcm = samples_to_pcm16(&chunk);
@@ -307,7 +307,7 @@ impl RemoteStreamingSession {
                 Ok(resp) if resp.status().is_success() => {
                     let inference_ms = start_inst.elapsed().as_millis() as u32;
                     let body_bytes = resp.bytes().await.unwrap_or_default();
-                    let total_samples = buffered_for_fallback.lock().unwrap().len();
+                    let total_samples = buffered_for_fallback.lock().unwrap_or_else(|e| e.into_inner()).len();
                     let duration_ms = (total_samples as f32 / 16.0) as u32;
                     let result = parse_transcription_response(&body_bytes, duration_ms, inference_ms);
                     let _ = result_tx.send(result);
@@ -318,7 +318,7 @@ impl RemoteStreamingSession {
                         err.as_ref().map(|r| r.status())
                     );
 
-                    let samples = buffered_for_fallback.lock().unwrap().clone();
+                    let samples = buffered_for_fallback.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if samples.is_empty() {
                         let _ = result_tx.send(Err(anyhow!("No audio was captured")));
                         return;
@@ -367,12 +367,12 @@ impl RemoteStreamingSession {
 
     /// Access the accumulated samples for noise-gate / RMS checks.
     pub fn buffered_samples(&self) -> Vec<f32> {
-        self.buffered_samples.lock().unwrap().clone()
+        self.buffered_samples.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Take the accumulated samples out of the session buffer without a copy
     pub fn take_buffered_samples(&self) -> Vec<f32> {
-        std::mem::take(&mut self.buffered_samples.lock().unwrap())
+        std::mem::take(&mut self.buffered_samples.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
 

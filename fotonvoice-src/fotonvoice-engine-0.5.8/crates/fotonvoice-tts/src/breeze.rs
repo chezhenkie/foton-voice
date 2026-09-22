@@ -135,7 +135,7 @@ pub(crate) fn ensure_breeze_tts_2_loaded(
 
     let clone_ref = resolve_clone_reference(cfg, config.hf_token.as_deref())?;
     let speaker = speaker_ref(cfg, &clone_ref);
-    session.as_ref().unwrap().speak(&SpeakRequest {
+    session.as_ref().ok_or_else(|| anyhow::anyhow!("audio.cpp session missing after ensure"))?.speak(&SpeakRequest {
         text: " ",
         speaker: Some(speaker),
         reference_text: clone_ref.as_ref().map(|(_, t)| t.as_str()),
@@ -170,7 +170,7 @@ pub(crate) fn speak_breeze_tts_2(
         cfg.gpu
     );
 
-    let audio = session.as_ref().unwrap().speak(&SpeakRequest {
+    let audio = session.as_ref().ok_or_else(|| anyhow::anyhow!("audio.cpp session missing after ensure"))?.speak(&SpeakRequest {
         text: &u.text,
         speaker: Some(speaker),
         reference_text: clone_ref.as_ref().map(|(_, t)| t.as_str()),

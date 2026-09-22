@@ -55,7 +55,7 @@ pub enum TtsCommand {
 static ACTIVE_SINK: std::sync::Mutex<Option<std::sync::Arc<rodio::Sink>>> = std::sync::Mutex::new(None);
 
 pub fn stop_current_playback() {
-    let mut guard = ACTIVE_SINK.lock().unwrap();
+    let mut guard = ACTIVE_SINK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref sink) = *guard {
         let _ = sink.stop();
     }
@@ -278,24 +278,27 @@ impl TtsEngineWorker {
                             snips.entry("vox control".to_string()).or_insert_with(|| "Foton Voice".to_string());
                             snips_cache = Some(snips);
                         }
-                        let snips = snips_cache.as_ref().unwrap();
-                        utterance.text = expand_snippets(&utterance.text, snips);
+                        // Built directly above in this branch, so always present.
+                        if let Some(snips) = snips_cache.as_ref() {
+                            utterance.text = expand_snippets(&utterance.text, snips);
+                        }
                         if !self.custom_vocabulary.is_empty() {
                             utterance.text = correct_custom_vocabulary(&utterance.text, &self.custom_vocabulary);
                         }
                     }
 
-                    let sink_res = init_audio(&mut audio_context);
-                    if let Err(e) = sink_res {
-                        warn!("TTS audio init error: {e}");
-                        if !is_prewarm {
-                            if let Some(ref cb) = self.on_error {
-                                cb(format!("Audio output unavailable: {e}"));
+                    let sink = match init_audio(&mut audio_context) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!("TTS audio init error: {e}");
+                            if !is_prewarm {
+                                if let Some(ref cb) = self.on_error {
+                                    cb(format!("Audio output unavailable: {e}"));
+                                }
                             }
+                            continue;
                         }
-                        continue;
-                    }
-                    let sink = sink_res.unwrap();
+                    };
                     let sink_speed = match current_config.engine {
                         TtsEngine::Piper
                         | TtsEngine::InflectMicro
@@ -310,7 +313,7 @@ impl TtsEngineWorker {
                     sink.set_speed(sink_speed.clamp(0.5, 2.5));
 
                     {
-                        let mut guard = ACTIVE_SINK.lock().unwrap();
+                        let mut guard = ACTIVE_SINK.lock().unwrap_or_else(|e| e.into_inner());
                         *guard = Some(sink.clone());
                     }
 
@@ -379,7 +382,7 @@ impl TtsEngineWorker {
                     });
 
                     {
-                        let mut guard = ACTIVE_SINK.lock().unwrap();
+                        let mut guard = ACTIVE_SINK.lock().unwrap_or_else(|e| e.into_inner());
                         *guard = None;
                     }
 
@@ -489,7 +492,10 @@ impl TtsEngineWorker {
                     .context("start resident piper")?,
             );
         }
-        let piper = resident.as_mut().unwrap();
+        // Just spawned above, so always present.
+        let Some(piper) = resident.as_mut() else {
+            anyhow::bail!("resident piper slot missing");
+        };
         piper.drain_pending();
 
         let line = u.text.replace("\r\n", " ").replace('\n', " ");

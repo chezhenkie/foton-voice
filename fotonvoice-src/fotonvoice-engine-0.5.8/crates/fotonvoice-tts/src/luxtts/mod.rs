@@ -143,7 +143,9 @@ pub(crate) fn speak_lux_tts(
     let is_prewarm = u.source_label.as_deref() == Some("prewarm");
 
     ensure_lux_tts_loaded(config, model)?;
-    let model = model.as_mut().unwrap();
+    let model = model
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("luxtts model slot missing after ensure"))?;
 
     let clip = resolve_reference_clip(&cfg.cloned_voice, &cfg.voice_dir)?;
     let transcript = std::fs::read_to_string(clip.with_extension("txt"))

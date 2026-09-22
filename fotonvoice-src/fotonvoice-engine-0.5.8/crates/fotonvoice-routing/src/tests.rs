@@ -1334,13 +1334,13 @@ async fn test_speak_target_success() {
     let spoken = Arc::new(Mutex::new(String::new()));
     let spoken_clone = spoken.clone();
     crate::targets::set_speak_callback(Arc::new(move |text| {
-        *spoken_clone.lock().unwrap() = text.to_string();
+        *spoken_clone.lock().unwrap_or_else(|e| e.into_inner()) = text.to_string();
     }));
     
     let target = build_target(config);
     let res = target.deliver("Hello speak target").await;
     assert!(res.success);
-    assert_eq!(*spoken.lock().unwrap(), "Hello speak target");
+    assert_eq!(*spoken.lock().unwrap_or_else(|e| e.into_inner()), "Hello speak target");
 }
 
 

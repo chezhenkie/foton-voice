@@ -179,7 +179,7 @@ impl PiperResident {
 
     /// Last stderr output (bounded), for error reports.
     pub fn stderr_tail(&self) -> String {
-        let tail = self.stderr_tail.lock().unwrap();
+        let tail = self.stderr_tail.lock().unwrap_or_else(|e| e.into_inner());
         String::from_utf8_lossy(&tail).trim().to_string()
     }
 
@@ -259,7 +259,7 @@ pub(crate) fn spawn_piper_resident(
                 match err.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        let mut tail = stderr_tail_reader.lock().unwrap();
+                        let mut tail = stderr_tail_reader.lock().unwrap_or_else(|e| e.into_inner());
                         tail.extend_from_slice(&buf[..n]);
                         if tail.len() > 64 * 1024 {
                             let excess = tail.len() - 64 * 1024;

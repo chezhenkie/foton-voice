@@ -391,7 +391,9 @@ fn clean_via_sidecar(
     }
 
     let model_path = s1_mini_dir(custom_dir).join(MODEL_FILENAME);
-    let proc = guard.as_mut().unwrap();
+    let Some(proc) = guard.as_mut() else {
+        anyhow::bail!("sidecar process slot missing after spawn");
+    };
 
     let res = match proc.call(
         "clean",

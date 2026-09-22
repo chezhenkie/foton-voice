@@ -497,7 +497,7 @@ static TARGETS_CACHE: std::sync::Mutex<Option<(Option<std::time::SystemTime>, st
 pub fn load_targets_cached(config_dir: &Path) -> std::sync::Arc<Vec<OutputTarget>> {
     let path = config_dir.join("targets.toml");
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-    let mut cache = TARGETS_CACHE.lock().unwrap();
+    let mut cache = TARGETS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((cached_mtime, ref data)) = *cache {
         if cached_mtime == mtime {
             return data.clone();
@@ -515,7 +515,7 @@ static BINDINGS_CACHE: std::sync::Mutex<Option<(Option<std::time::SystemTime>, s
 pub fn load_bindings_cached(config_dir: &Path) -> std::sync::Arc<Vec<HotkeyBinding>> {
     let path = config_dir.join("bindings.toml");
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-    let mut cache = BINDINGS_CACHE.lock().unwrap();
+    let mut cache = BINDINGS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((cached_mtime, ref data)) = *cache {
         if cached_mtime == mtime {
             return data.clone();

@@ -144,9 +144,9 @@ fn run(
     health: Arc<ListenerHealth>,
 ) {
     let (raw_tx, raw_rx) = crossbeam_channel::unbounded::<RawKey>();
-    *PLAN.write().unwrap() = Some(SuppressPlan::build(&bindings));
-    *SENDER.write().unwrap() = Some(raw_tx.clone());
-    *EVENTS.lock().unwrap() = Some(raw_tx);
+    *PLAN.write().unwrap_or_else(|e| e.into_inner()) = Some(SuppressPlan::build(&bindings));
+    *SENDER.write().unwrap_or_else(|e| e.into_inner()) = Some(raw_tx.clone());
+    *EVENTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(raw_tx);
 
     let worker_health = health.clone();
     let worker = std::thread::Builder::new()
@@ -344,7 +344,7 @@ fn match_loop(
                 }
                 engine.reload(new_bindings.clone());
                 matcher.reload(new_bindings.clone());
-                *PLAN.write().unwrap() = Some(SuppressPlan::build(&new_bindings));
+                *PLAN.write().unwrap_or_else(|e| e.into_inner()) = Some(SuppressPlan::build(&new_bindings));
             }
             recv(raw_rx) -> msg => {
                 let Ok(raw) = msg else { break };
