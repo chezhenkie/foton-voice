@@ -1,30 +1,4 @@
 //! Inflect-Micro-v2 (<https://huggingface.co/owensong/Inflect-Micro-v2>) - a
-//! ~9.4M-parameter VITS-family text-to-waveform model, released under Apache 2.0,
-//! producing 24 kHz mono audio from a single fixed English voice.
-//!
-//! Unlike Piper (which shells out to a separate binary) and Pocket-TTS (which
-//! clones a voice from a reference clip), Inflect runs in-process through ONNX
-//! Runtime and has no voice to select - so its settings are the sampling seed and
-//! the latent sampling temperature rather than a voice picker.
-//!
-//! Split by concern:
-//! - [`phonemes`] - eSpeak-NG IPA frontend and the phoneme->id vocabulary
-//! - [`model`]    - the `duration.onnx` / `decode.onnx` pair and the synthesis path
-//!
-//! # Build feature
-//!
-//! The ONNX half sits behind the `inflect-micro` cargo feature so the default
-//! build doesn't pull in ONNX Runtime. [`INFLECT_MICRO_COMPILED`] reports whether
-//! it was built in, which the settings UI surfaces so choosing the engine in a
-//! build without it fails loudly rather than silently doing nothing.
-//!
-//! # Tensor contract
-//!
-//! The graph signatures, tokenization, chunking, boundary pauses and edge fade
-//! all follow the export's own `inference_onnx.py`. The one deliberate
-//! divergence is the latent-noise RNG: the reference draws it with NumPy, which
-//! this cannot reproduce stream-for-stream, so a given seed does not select the
-//! same sample here as it does there. See `model::StandardNormal`.
 
 pub mod phonemes;
 
@@ -38,7 +12,6 @@ use tracing::{info, warn};
 
 use crate::piper::expand_tilde;
 
-// -- Model constants -----------------------------------------------------------
 
 /// Inflect-Micro-v2 emits 24 kHz mono audio.
 pub const SAMPLE_RATE: u32 = 24_000;
@@ -63,8 +36,6 @@ struct Layout {
 }
 
 /// Candidate upstream locations, tried in order. The publisher ships the
-/// verified FP32 export in a separate `-ONNX` repository alongside the PyTorch
-/// release, keeping the graphs under `onnx/`.
 const CANDIDATE_LAYOUTS: [Layout; 4] = [
     Layout { repo: "owensong/Inflect-Micro-v2-ONNX", subdir: "onnx" },
     Layout { repo: "owensong/Inflect-Micro-v2-ONNX", subdir: "" },
@@ -93,25 +64,14 @@ impl Layout {
 }
 
 /// Repositories searched for the ordered symbol list, most likely first.
-///
-/// The ONNX export imports the list from its parent package, which is published
-/// in the PyTorch repository rather than beside the graphs - so it is absent
-/// from the listing the graphs come from and has to be fetched separately. Ids
-/// are positions in this list, so nothing else will substitute for it. The file
-/// is located by listing each repository recursively rather than by assuming a
-/// path, since guessing one has proven unreliable.
 const SYMBOL_LIST_REPOS: [&str; 2] =
     ["owensong/Inflect-Micro-v2", "owensong/Inflect-Micro-v2-ONNX"];
 
 /// Upper bound on an auxiliary file fetched alongside the graphs. The phoneme
-/// table is a few kilobytes; this only exists to stop a stray large asset from
-/// being pulled in by the "fetch every small text file" rule.
 const MAX_AUX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
-// -- Filesystem layout ---------------------------------------------------------
 
 /// Default model directory: `<portable root>/models/inflect-micro/`, keeping
-/// the same `models/<engine>` layout the STT backends use.
 pub fn inflect_micro_model_dir() -> PathBuf {
     fotonvoice_config::portable::app_root()
         .join("models")
@@ -128,32 +88,19 @@ pub fn resolve_model_dir(model_dir: &str) -> PathBuf {
 }
 
 /// True when both ONNX graphs and a phoneme vocabulary are present.
-///
-/// The vocabulary is part of the check because synthesis cannot be correct
-/// without it - see [`phonemes::PhonemeVocab::load`].
 pub fn is_inflect_micro_downloaded(model_dir: &str) -> bool {
     let dir = resolve_model_dir(model_dir);
     if !MODEL_FILES.iter().all(|f| dir.join(f).exists()) {
         return false;
     }
-    // Detected by parsing rather than by filename, so this agrees with what
-    // `InflectModel::load` will actually accept.
     matches!(phonemes::PhonemeVocab::load(&dir), Ok(Some(_)))
 }
 
-// -- Download ------------------------------------------------------------------
 
 /// Serializes downloads so a Settings click and an on-demand load can't fight
-/// over the same files.
 static DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Fetch the model into `model_dir` (or the platform default). Files already
-/// present are skipped, so this is safe to call repeatedly.
-///
-/// The export's layout is discovered by listing the hub rather than assumed: the
-/// graphs come from whichever candidate repository actually has them, and the
-/// symbol list is searched for separately because it is published apart from
-/// them.
 pub async fn download_inflect_micro_assets(model_dir: &str) -> Result<()> {
     let dir = resolve_model_dir(model_dir);
     tokio::fs::create_dir_all(&dir)
@@ -176,9 +123,6 @@ pub async fn download_inflect_micro_assets(model_dir: &str) -> Result<()> {
             .with_context(|| format!("download {file}"))?;
     }
 
-    // Fetch every small text-ish file alongside the graphs rather than guessing
-    // what the phoneme table is called. Which one actually *is* the table is
-    // decided by parsing it - see `PhonemeVocab::load`.
     for entry in listing.iter().filter(|e| e.is_auxiliary()) {
         let path = dir.join(&entry.name);
         if path.exists() {
@@ -187,14 +131,10 @@ pub async fn download_inflect_micro_assets(model_dir: &str) -> Result<()> {
         let url = layout.file_url(&entry.name);
         match download_to(&url, &path).await {
             Ok(()) => info!("Downloaded Inflect-Micro-v2 auxiliary file: {}", entry.name),
-            // Auxiliary files are best-effort; the vocabulary check below is
-            // what decides whether the download actually succeeded.
             Err(e) => warn!("Could not fetch {}: {e:#}", entry.name),
         }
     }
 
-    // The symbol list is not published with the graphs, so search for it
-    // separately when nothing already on disk parses as a table.
     let mut symbol_search = Vec::new();
     if phonemes::PhonemeVocab::load(&dir)?.is_none() {
         if let Err(e) = fetch_symbol_list(&dir, &mut symbol_search).await {
@@ -240,11 +180,6 @@ struct RepoFile {
 
 impl RepoFile {
     /// Whether this is a small non-graph file worth fetching alongside the
-    /// graphs - the phoneme table is one of these, whatever it is called.
-    ///
-    /// `.py` is included because this export ships no standalone table: the
-    /// symbol list lives inside the reference script (`inference_onnx.py`).
-    /// Those files are only ever read as data - nothing here executes them.
     fn is_auxiliary(&self) -> bool {
         if self.size > MAX_AUX_FILE_BYTES {
             return false;
@@ -260,11 +195,6 @@ impl RepoFile {
 }
 
 /// Find which candidate layout actually hosts the export by listing each through
-/// the hub API and looking for [`DURATION_FILE`].
-///
-/// Listing rather than probing a guessed filename means the phoneme table is
-/// discovered instead of assumed. On failure the error names every endpoint
-/// tried and what it returned.
 async fn resolve_layout() -> Result<(Layout, Vec<RepoFile>)> {
     let client = reqwest::Client::new();
     let mut attempts = Vec::with_capacity(CANDIDATE_LAYOUTS.len());
@@ -294,7 +224,6 @@ async fn resolve_layout() -> Result<(Layout, Vec<RepoFile>)> {
 }
 
 /// Fetch and parse one hub tree listing into its file entries (directories and
-/// anything without a usable path are skipped).
 async fn fetch_listing(client: &reqwest::Client, url: &str) -> Result<Vec<RepoFile>> {
     let response = client
         .get(url)
@@ -308,11 +237,6 @@ async fn fetch_listing(client: &reqwest::Client, url: &str) -> Result<Vec<RepoFi
 }
 
 /// Locate and download the ordered symbol list.
-///
-/// Lists each candidate repository recursively and takes the first entry named
-/// `symbols.py` (or, failing that, any Python file whose name mentions symbols),
-/// downloading it from wherever it actually lives. Steps taken are appended to
-/// `report` so a failure can say what was searched.
 async fn fetch_symbol_list(dir: &std::path::Path, report: &mut Vec<String>) -> Result<()> {
     let client = reqwest::Client::new();
 
@@ -358,7 +282,6 @@ async fn fetch_symbol_list(dir: &std::path::Path, report: &mut Vec<String>) -> R
 }
 
 /// Parse the hub's tree JSON: an array of `{type, path, size}` objects, where
-/// `path` is repo-relative and so carries the subdirectory prefix.
 fn parse_listing(body: &str) -> Result<Vec<RepoFile>> {
     let value: serde_json::Value = serde_json::from_str(body).context("invalid JSON")?;
     let array = value.as_array().context("expected a JSON array")?;
@@ -369,7 +292,6 @@ fn parse_listing(body: &str) -> Result<Vec<RepoFile>> {
             continue;
         }
         let Some(path) = entry.get("path").and_then(|p| p.as_str()) else { continue };
-        // Keep only the basename; downloads are addressed relative to the subdir.
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
         if name.is_empty() {
             continue;
@@ -384,7 +306,6 @@ fn parse_listing(body: &str) -> Result<Vec<RepoFile>> {
 }
 
 /// Download one URL to `path`, writing via a `.part` temp file so an interrupted
-/// transfer never leaves a truncated file that later looks "present".
 async fn download_to(url: &str, path: &std::path::Path) -> Result<()> {
     let response = reqwest::get(url)
         .await
@@ -406,17 +327,14 @@ async fn download_to(url: &str, path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-// -- Text chunking -------------------------------------------------------------
 
 /// Maximum characters per synthesis call, matching `split_text`'s default in the
-/// export's reference script.
 pub const CHUNK_LIMIT_CHARS: usize = 280;
 
 /// Length of the taper applied to each end of a chunk, matching `edge_fade`.
 pub const EDGE_FADE_MS: f32 = 5.0;
 
 /// Silence inserted after a chunk, keyed by the punctuation that ended it.
-/// Values are the reference script's `boundary_pause_seconds`.
 pub fn boundary_pause_seconds(chunk: &str) -> f32 {
     match chunk.trim_end().chars().last() {
         Some('?') => 0.28,
@@ -430,7 +348,6 @@ pub fn boundary_pause_seconds(chunk: &str) -> f32 {
 }
 
 /// Taper the first and last 5 ms of a chunk so concatenation doesn't click.
-/// Mirrors the reference script's `edge_fade`.
 pub fn edge_fade(waveform: &mut [f32], sample_rate: u32, milliseconds: f32) {
     let frames = ((sample_rate as f32 * milliseconds / 1000.0).round() as usize)
         .min(waveform.len() / 2);
@@ -447,12 +364,6 @@ pub fn edge_fade(waveform: &mut [f32], sample_rate: u32, milliseconds: f32) {
 }
 
 /// Split `text` into synthesis chunks, following the reference `split_text`.
-///
-/// Whitespace is normalised, the text is broken after sentence-ending
-/// punctuation, and any sentence still over [`CHUNK_LIMIT_CHARS`] is split again
-/// at the last comma/semicolon/colon in range (or the last space, or hard at the
-/// limit). Sentences are *not* packed together - each is its own chunk, which is
-/// what makes the per-chunk boundary pauses land in the right places.
 pub fn chunk_text(text: &str) -> Vec<String> {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
@@ -462,7 +373,6 @@ pub fn chunk_text(text: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     for sentence in split_sentences(&normalized) {
         let mut sentence = sentence;
-        // `.len()` is bytes; the reference counts characters, so work in chars.
         while sentence.chars().count() > CHUNK_LIMIT_CHARS {
             let split_at = pick_split_point(&sentence, CHUNK_LIMIT_CHARS);
             let head: String = sentence.chars().take(split_at).collect();
@@ -484,7 +394,6 @@ pub fn chunk_text(text: &str) -> Vec<String> {
 }
 
 /// Choose where to cut an over-long sentence: the last `,`/`;`/`:` within the
-/// limit if it is past the halfway point, else the last space, else hard.
 fn pick_split_point(sentence: &str, limit: usize) -> usize {
     let chars: Vec<char> = sentence.chars().collect();
     let search_end = (limit + 1).min(chars.len());
@@ -505,7 +414,6 @@ fn pick_split_point(sentence: &str, limit: usize) -> usize {
 }
 
 /// Break after `.`/`!`/`?`/`;`/`:` followed by whitespace. The `regex` crate has
-/// no lookbehind, and this is the whole of what the reference pattern does.
 fn split_sentences(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
@@ -534,12 +442,8 @@ fn split_sentences(text: &str) -> Vec<String> {
     out
 }
 
-// -- Synthesis -----------------------------------------------------------------
 
 /// Loads the Inflect-Micro-v2 ONNX sessions into the worker's cache if they are
-/// not already there. Idempotent, so both the pre-load path and synthesis call
-/// it unconditionally - and since the sessions are the engine's whole resident
-/// footprint, dropping `model` is what the on-demand memory mode reclaims.
 #[cfg(feature = "inflect-micro")]
 pub(crate) fn ensure_inflect_micro_loaded(
     config: &fotonvoice_config::TtsConfig,
@@ -564,10 +468,6 @@ pub(crate) fn ensure_inflect_micro_loaded(
 }
 
 /// Called from `TtsEngineWorker::run` when `config.engine == TtsEngine::InflectMicro`.
-///
-/// Takes the worker's model cache by mutable reference so the loaded ONNX
-/// sessions persist for the worker thread's lifetime, matching how
-/// `speak_pocket_tts` caches its model.
 #[cfg(feature = "inflect-micro")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn speak_inflect_micro(
@@ -588,7 +488,6 @@ pub(crate) fn speak_inflect_micro(
     let model = model.as_mut().unwrap();
 
     if is_prewarm {
-        // One short synthesis to warm the sessions; nothing is played.
         let _ = model.synthesize("warm up", cfg, config.speed, cfg.seed)?;
         return Ok(());
     }
@@ -601,8 +500,6 @@ pub(crate) fn speak_inflect_micro(
             break; // stop() was called - abandon the rest of the utterance
         }
 
-        // The reference advances the seed per chunk so consecutive sentences
-        // don't draw identical latent noise.
         let seed = cfg.seed.wrapping_add(index as u64);
         let mut audio = model.synthesize(chunk, cfg, config.speed, seed)?;
         if audio.is_empty() {
@@ -610,8 +507,6 @@ pub(crate) fn speak_inflect_micro(
         }
         edge_fade(&mut audio, SAMPLE_RATE, EDGE_FADE_MS);
 
-        // Re-check after synthesis: a chunk can take long enough that stop()
-        // lands mid-generation, and appending would restart a stopped sink.
         if generation_counter.load(Ordering::SeqCst) != generation {
             break;
         }
@@ -623,7 +518,6 @@ pub(crate) fn speak_inflect_micro(
             }
         }
 
-        // Silence between chunks, sized by how the previous one ended.
         if index > 0 {
             let pause = boundary_pause_seconds(&chunks[index - 1]);
             let frames = (SAMPLE_RATE as f32 * pause).round() as usize;
@@ -645,9 +539,6 @@ pub(crate) fn speak_inflect_micro(
         sink.append(rodio::buffer::SamplesBuffer::new(1, SAMPLE_RATE, audio));
     }
 
-    // Reaching here having produced nothing would return Ok with no audio and
-    // no error, which reads to the user as a hang rather than a failure. Say
-    // what happened instead.
     if !callback_fired && generation_counter.load(Ordering::SeqCst) == generation {
         anyhow::bail!(
             "Inflect-Micro-v2 produced no audio for {} chunk(s) of text. The \
@@ -662,8 +553,6 @@ pub(crate) fn speak_inflect_micro(
 }
 
 /// Stand-in for builds without the `inflect-micro` feature: there is no model to
-/// load, so a pre-load is a no-op rather than an error (the real message comes
-/// from `speak_inflect_micro` if the engine is actually used).
 #[cfg(not(feature = "inflect-micro"))]
 pub(crate) fn ensure_inflect_micro_loaded(
     _config: &fotonvoice_config::TtsConfig,
@@ -673,7 +562,6 @@ pub(crate) fn ensure_inflect_micro_loaded(
 }
 
 /// Stand-in used when the crate is built without the `inflect-micro` feature, so
-/// selecting the engine reports why it can't run instead of failing obscurely.
 #[cfg(not(feature = "inflect-micro"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn speak_inflect_micro(
@@ -697,7 +585,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    // -- Filesystem layout ----------------------------------------------------
 
     #[test]
     fn test_model_dir_has_inflect_micro_segment() {
@@ -714,7 +601,6 @@ mod tests {
         assert_eq!(resolve_model_dir("/opt/models"), PathBuf::from("/opt/models"));
     }
 
-    // -- Readiness ------------------------------------------------------------
 
     #[test]
     fn test_not_downloaded_when_dir_empty() {
@@ -754,8 +640,6 @@ mod tests {
 
     #[test]
     fn test_downloaded_recognises_vocab_under_an_unexpected_name() {
-        // The export's table is not reliably named; readiness must agree with
-        // what `PhonemeVocab::load` accepts, which is decided by parsing.
         let dir = tempdir().unwrap();
         for f in MODEL_FILES {
             std::fs::write(dir.path().join(f), b"x").unwrap();
@@ -766,7 +650,6 @@ mod tests {
 
     #[test]
     fn test_not_downloaded_when_only_a_hyperparameter_config_is_present() {
-        // A config.json of model hyperparameters must not be mistaken for a table.
         let dir = tempdir().unwrap();
         for f in MODEL_FILES {
             std::fs::write(dir.path().join(f), b"x").unwrap();
@@ -799,7 +682,6 @@ mod tests {
         }
     }
 
-    // -- Repository listing ---------------------------------------------------
 
     #[test]
     fn test_parse_listing_extracts_basenames_and_sizes() {
@@ -816,8 +698,6 @@ mod tests {
 
     #[test]
     fn test_parse_listing_keeps_full_path_for_nested_files() {
-        // A recursive listing is how the symbol list is found, and downloading
-        // it needs the directory prefix that the basename throws away.
         let body = r#"[{"type":"file","path":"text/symbols.py","size":900}]"#;
         let files = parse_listing(body).unwrap();
         assert_eq!(files[0].path, "text/symbols.py");
@@ -835,7 +715,6 @@ mod tests {
         assert_eq!(files[0].size, 0);
     }
 
-    // -- Auxiliary file selection ---------------------------------------------
 
     #[test]
     fn test_auxiliary_selects_small_text_files() {
@@ -847,8 +726,6 @@ mod tests {
 
     #[test]
     fn test_auxiliary_includes_reference_scripts() {
-        // This export ships no standalone table - the symbol list is inside
-        // inference_onnx.py, so the scripts have to come down with the graphs.
         for name in ["inference_onnx.py", "export_onnx.py"] {
             let f = RepoFile { path: name.into(), name: name.into(), size: 8192 };
             assert!(f.is_auxiliary(), "{name} should be fetched");
@@ -866,7 +743,6 @@ mod tests {
         assert!(!RepoFile { path: "README.md".into(), name: "README.md".into(), size: 100 }.is_auxiliary());
     }
 
-    // -- Layout URLs ----------------------------------------------------------
 
     #[test]
     fn test_layout_urls_with_subdir() {
@@ -884,12 +760,10 @@ mod tests {
 
     #[test]
     fn test_known_good_layout_is_tried_first() {
-        // Confirmed working against the published export.
         assert_eq!(CANDIDATE_LAYOUTS[0].repo, "owensong/Inflect-Micro-v2-ONNX");
         assert_eq!(CANDIDATE_LAYOUTS[0].subdir, "onnx");
     }
 
-    // -- Sentence splitting ---------------------------------------------------
 
     #[test]
     fn test_split_sentences_keeps_terminal_punctuation() {
@@ -905,11 +779,9 @@ mod tests {
 
     #[test]
     fn test_split_sentences_requires_whitespace_after_terminator() {
-        // "3.5" must not split - the period is not followed by whitespace.
         assert_eq!(split_sentences("pi is 3.14 exactly"), vec!["pi is 3.14 exactly"]);
     }
 
-    // -- Boundary pauses and fade ---------------------------------------------
 
     #[test]
     fn test_boundary_pause_varies_by_terminator() {
@@ -947,12 +819,9 @@ mod tests {
         assert!(split_sentences("   \n  ").is_empty());
     }
 
-    // -- Chunking -------------------------------------------------------------
 
     #[test]
     fn test_chunk_text_gives_each_sentence_its_own_chunk() {
-        // Sentences are not packed together - one chunk each is what makes the
-        // per-chunk boundary pauses land in the right places.
         let chunks = chunk_text("One. Two. Three.");
         assert_eq!(chunks, vec!["One.", "Two.", "Three."]);
     }
@@ -979,7 +848,6 @@ mod tests {
 
     #[test]
     fn test_chunk_text_splits_on_inner_punctuation_when_available() {
-        // A comma past the halfway point is preferred over a hard cut.
         let head = "a".repeat(200);
         let tail = "b".repeat(200);
         let chunks = chunk_text(&format!("{head}, {tail}"));
@@ -1006,7 +874,6 @@ mod tests {
         }
     }
 
-    // -- Build gating ---------------------------------------------------------
 
     #[test]
     fn test_compiled_flag_tracks_feature() {

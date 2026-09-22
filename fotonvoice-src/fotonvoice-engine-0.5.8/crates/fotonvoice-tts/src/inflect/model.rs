@@ -1,23 +1,4 @@
 //! The two ONNX graphs behind Inflect-Micro-v2, and the synthesis pipeline.
-//!
-//! The export splits the learned text-to-waveform path in two:
-//!
-//! 1. `duration.onnx` - phoneme ids -> the aligned latent sequence, applying the
-//!    stochastic duration predictor and monotonic alignment.
-//! 2. `decode.onnx`   - that latent sequence -> a 24 kHz mono waveform, via the
-//!    residual coupling flow and the alias-reduced neural vocoder.
-//!
-//! # Binding to the graphs
-//!
-//! The tensor names come from the export's own `inference_onnx.py`, so they are
-//! the graphs' real signature rather than an inference from convention. Both are
-//! verified at load time and a missing input is a hard error reporting what the
-//! graph actually declares, so a revision mismatch surfaces as an actionable
-//! message rather than as garbled audio. The `inflect_micro_inspect` Tauri
-//! command reports the same signature without loading a voice.
-//!
-//! `zp_noise` is drawn host-side rather than sampled inside the graph - see
-//! [`StandardNormal`] for what that means for seed reproducibility.
 
 use std::path::{Path, PathBuf};
 
@@ -31,10 +12,6 @@ use tracing::{debug, info, warn};
 use super::phonemes::{self, PhonemeVocab};
 use super::{DECODE_FILE, DURATION_FILE, SAMPLE_RATE};
 
-// -- Tensor contract -----------------------------------------------------------
-//
-// Taken from the export's own `inference_onnx.py`, so these are the graphs'
-// actual input and output names rather than an inference from convention.
 
 /// `duration.onnx` inputs.
 const DURATION_INPUTS: [&str; 3] = ["tokens", "lengths", "length_scale"];
@@ -47,14 +24,8 @@ const DECODE_INPUTS: [&str; 5] =
 /// `decode.onnx` output.
 const DECODE_OUTPUT: &str = "waveform";
 
-// -- Discovered signature ------------------------------------------------------
 
 /// One graph's declared inputs and outputs.
-///
-/// `inputs`/`outputs` hold bare names, which is what the contract check compares
-/// against. `input_details`/`output_details` carry ONNX Runtime's full
-/// description of each (element type and shape), which is what a diagnostic
-/// report needs - a name alone can't tell you a dtype or rank is wrong.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GraphSignature {
     pub file: String,
@@ -65,8 +36,6 @@ pub struct GraphSignature {
 }
 
 /// The full discovered signature of both graphs. Returned by
-/// [`inspect`] and surfaced through the `inflect_micro_inspect` Tauri command so
-/// the real tensor contract can be read off a downloaded model.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ModelSignature {
     pub duration: GraphSignature,
@@ -87,8 +56,6 @@ fn signature_of(session: &Session, file: &str) -> GraphSignature {
 }
 
 /// Load both graphs purely to report what they declare, skipping the contract
-/// check. That is deliberate: this is the diagnostic for a model whose signature
-/// does *not* match, so it has to succeed where [`InflectModel::load`] fails.
 pub fn inspect(dir: &Path) -> Result<ModelSignature> {
     let duration = build_session(&dir.join(DURATION_FILE))?;
     let decode = build_session(&dir.join(DECODE_FILE))?;
@@ -122,7 +89,6 @@ fn describe(sig: &GraphSignature) -> String {
     )
 }
 
-// -- Session construction ------------------------------------------------------
 
 fn threads() -> usize {
     std::thread::available_parallelism()
@@ -138,10 +104,6 @@ fn build_session(path: &Path) -> Result<Session> {
             path.display()
         );
     }
-    // Builder methods return `ort::Error<SessionBuilder>`, which carries the
-    // builder back for recovery and so isn't a `Send + Sync` std error that
-    // anyhow can absorb - format via Display instead. This mirrors the same
-    // dance in `fotonvoice-inference::moonshine::build_session`.
     Session::builder()
         .map_err(|e| anyhow!("ort session builder: {e}"))?
         .with_optimization_level(GraphOptimizationLevel::Level3)
@@ -152,18 +114,8 @@ fn build_session(path: &Path) -> Result<Session> {
         .with_context(|| format!("load ONNX graph {}", path.display()))
 }
 
-// -- Latent noise --------------------------------------------------------------
 
 /// Seeded standard-normal sampler for the `zp_noise` input.
-///
-/// The reference script draws this host-side with NumPy
-/// (`np.random.default_rng(seed).standard_normal(...)`). Reproducing NumPy's
-/// PCG64 stream and ziggurat sampler exactly would be the only way to match its
-/// output sample-for-sample, so this uses its own PCG64 with Box-Muller instead:
-/// output is fully deterministic for a given seed within FotonVoice Engine, but a given
-/// seed does not correspond to the same voice as the same seed in the Python
-/// reference. Any correctly-distributed noise yields valid audio - the seed only
-/// controls which sample from the distribution you get.
 struct StandardNormal {
     state: u128,
     /// Box-Muller produces two deviates per pass; this holds the spare.
@@ -190,7 +142,6 @@ impl StandardNormal {
             .state
             .wrapping_mul(Self::MULTIPLIER)
             .wrapping_add(Self::INCREMENT);
-        // XSL-RR output: xor the halves, then rotate by the top 6 bits.
         let xored = ((self.state >> 64) ^ self.state) as u64;
         let rot = (self.state >> 122) as u32;
         xored.rotate_right(rot)
@@ -219,7 +170,6 @@ impl StandardNormal {
     }
 }
 
-// -- Loaded model --------------------------------------------------------------
 
 pub struct InflectModel {
     duration: Session,
@@ -230,7 +180,6 @@ pub struct InflectModel {
 }
 
 /// Fail with the discovered signature when a graph doesn't declare what the
-/// reference contract says it should.
 fn require_inputs(sig: &GraphSignature, required: &[&str], other: &GraphSignature) -> Result<()> {
     let missing: Vec<&str> = required
         .iter()
@@ -255,10 +204,6 @@ fn require_inputs(sig: &GraphSignature, required: &[&str], other: &GraphSignatur
 
 impl InflectModel {
     /// Load both graphs and verify they declare the expected tensor contract.
-    ///
-    /// Fails when the phoneme table is absent or a graph's signature doesn't
-    /// match, rather than proceeding - a wrong binding produces audio that
-    /// sounds broken in ways that are hard to trace back here.
     pub fn load(dir: &Path) -> Result<Self> {
         info!("Loading Inflect-Micro-v2 from {}", dir.display());
 
@@ -278,8 +223,6 @@ impl InflectModel {
             )
         })?;
 
-        // Full per-tensor detail is verbose, so it sits at debug; a failure path
-        // reports it regardless, and `inflect_micro_inspect` shows it on demand.
         debug!("Inflect-Micro-v2 graph signatures:\n{}\n{}", describe(&duration_sig), describe(&decode_sig));
 
         require_inputs(&duration_sig, &DURATION_INPUTS, &decode_sig)?;
@@ -324,11 +267,6 @@ impl InflectModel {
     }
 
     /// Synthesize one chunk to a 24 kHz mono waveform in `[-1.0, 1.0]`.
-    ///
-    /// Mirrors `InflectONNX._synthesize_chunk`: phonemize, tokenize with blanks,
-    /// run the duration graph for the expanded latent statistics, draw the latent
-    /// noise host-side, then decode. `speed` is the shared TTS multiplier; VITS
-    /// expresses rate as `length_scale`, its reciprocal.
     pub fn synthesize(
         &mut self,
         text: &str,
@@ -358,13 +296,11 @@ impl InflectModel {
         let n = encoded.ids.len();
         let length_scale = if speed > 0.0 { 1.0 / speed } else { 1.0 };
 
-        // -- Stage 1: tokens -> expanded latent statistics ----------------------
         let (m_p_exp, logs_p_exp, y_mask) = {
             let tokens = Tensor::from_array(([1_usize, n], encoded.ids.clone()))
                 .context("build tokens tensor")?;
             let lengths = Tensor::from_array(([1_usize], vec![n as i64]))
                 .context("build lengths tensor")?;
-            // Scalar (rank-0), matching `np.asarray(value, dtype=np.float32)`.
             let length_scale_t = Tensor::from_array(([0_usize; 0], vec![length_scale]))
                 .context("build length_scale tensor")?;
 
@@ -400,7 +336,6 @@ impl InflectModel {
             (it.next().unwrap(), it.next().unwrap(), it.next().unwrap())
         };
 
-        // -- Stage 2: latents + noise -> waveform -------------------------------
         let noise_values = StandardNormal::new(seed).fill(m_p_exp.1.len());
 
         let m_shape = m_p_exp.0.clone();
@@ -410,7 +345,6 @@ impl InflectModel {
             .context("build logs_p_exp tensor")?;
         let y_mask_t =
             Tensor::from_array((y_mask.0, y_mask.1)).context("build y_mask tensor")?;
-        // zp_noise matches m_p_exp's shape exactly.
         let zp_noise_t = Tensor::from_array((m_p_exp.0, noise_values))
             .context("build zp_noise tensor")?;
         let noise_scale_t = Tensor::from_array(([0_usize; 0], vec![cfg.noise_scale]))
@@ -460,7 +394,6 @@ mod tests {
         }
     }
 
-    // -- Contract validation --------------------------------------------------
 
     #[test]
     fn test_require_inputs_accepts_the_reference_contract() {
@@ -472,7 +405,6 @@ mod tests {
 
     #[test]
     fn test_require_inputs_ignores_extra_inputs() {
-        // A graph declaring more than we feed is fine; only absence is fatal.
         let d = sig(DURATION_FILE, &["tokens", "lengths", "length_scale", "extra"], &[]);
         let c = sig(DECODE_FILE, &[], &[]);
         assert!(require_inputs(&d, &DURATION_INPUTS, &c).is_ok());
@@ -500,8 +432,6 @@ mod tests {
 
     #[test]
     fn test_zp_noise_is_a_decode_input() {
-        // The latent noise is drawn host-side and fed in; forgetting it makes
-        // synthesis fail at run time rather than at load.
         assert!(DECODE_INPUTS.contains(&"zp_noise"));
     }
 
@@ -515,14 +445,12 @@ mod tests {
         }
     }
 
-    // -- Reporting ------------------------------------------------------------
 
     #[test]
     fn test_describe_lists_inputs_and_outputs() {
         let s = sig("duration.onnx", &["a", "b"], &["c"]);
         let text = describe(&s);
         assert!(text.contains("duration.onnx"));
-        // The report shows per-tensor detail lines, not a comma-joined name list.
         assert!(text.contains("a"));
         assert!(text.contains("b"));
         assert!(text.contains("c"));
@@ -533,7 +461,6 @@ mod tests {
         assert!(threads() >= 1);
     }
 
-    // -- Latent noise sampler -------------------------------------------------
 
     #[test]
     fn test_standard_normal_is_deterministic_for_a_seed() {

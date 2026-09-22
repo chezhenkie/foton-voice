@@ -36,9 +36,6 @@ describe("Output Commands tab", () => {
     expect(screen.getByText(/Add New Output Command/)).toBeTruthy();
   });
 
-  /// The phrase is the whole point of naming a command, and nothing else in
-  /// the UI says it out loud - a user who never reads the docs would other-
-  /// wise have no way to discover that speaking the name routes their text.
   test("explains how to trigger a command by voice", async () => {
     const { container } = render(CommandsTab);
     await screen.findByText("Output Commands");
@@ -48,7 +45,6 @@ describe("Output Commands tab", () => {
 
     const text = note.textContent ?? "";
     expect(text).toContain("FotonVoice Engine");
-    // The order the user has to say it in: trigger, name, then the text.
     expect(text.indexOf("FotonVoice Engine notes")).toBeGreaterThan(-1);
     expect(text).toMatch(/command's name/);
   });

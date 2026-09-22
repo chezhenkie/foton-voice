@@ -20,34 +20,25 @@ fn test_startup_error_layer_privacy_and_levels() {
     crate::startup_log::STARTUP_COMPLETE.store(false, std::sync::atomic::Ordering::SeqCst);
     
     tracing::subscriber::with_default(subscriber, || {
-        // 1. Startup INFO log (should be written)
         tracing::info!("System startup: device init");
         
-        // 2. Transcription text (should be blocked by privacy filters)
         tracing::info!("Received transcription: Hello user");
         
-        // 3. Spoken text warn (should be blocked by privacy filters)
         tracing::warn!("Failed to speak the text: Hello user");
         
-        // 4. OpenAI payload error (should be blocked by privacy filters)
         tracing::error!("OpenAI request payload: test prompt");
         
-        // Transition to post-startup
         crate::startup_log::STARTUP_COMPLETE.store(true, std::sync::atomic::Ordering::SeqCst);
         
-        // 5. Post-startup INFO log (should be ignored by level filter)
         tracing::info!("Normal runtime info log");
         
-        // 6. Post-startup ERROR log (should be written)
         tracing::error!("System audio device connection lost");
     });
     
-    // Read file contents
     let mut file = std::fs::File::open(log_path).unwrap();
     let mut content = String::new();
     file.read_to_string(&mut content).unwrap();
     
-    // Assertions
     assert!(content.contains("System startup: device init"));
     assert!(content.contains("System audio device connection lost"));
     
@@ -100,11 +91,6 @@ fn make_test_state() -> AppState {
 
 #[tokio::test]
 async fn starting_dictation_interrupts_a_spoken_response() {
-    // Talking over a response means interrupting it, not being talked over -
-    // and capturing while the speakers are still going feeds FotonVoice Engine's own
-    // voice back into the microphone. Every path that starts dictation goes
-    // through `begin_recording` for that reason; with no engine attached it
-    // still has to start the capture rather than fail.
     let state = make_test_state();
     assert!(state.tts_handle.lock().await.is_none());
 
@@ -236,7 +222,6 @@ async fn test_sequential_multi_target_delivery() {
         assert!(res.success, "Delivery failed: {:?}", res.error);
     }
 
-    // Sleep a tiny bit to let OS write flush
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let content_a = std::fs::read_to_string(&path_a).unwrap_or_default();
@@ -250,9 +235,6 @@ async fn test_sequential_multi_target_delivery() {
 
 #[test]
 fn bare_modifier_shortcuts_are_refused_on_the_portal() {
-    // The case the settings recorder has to catch. A lone Super reads as a
-    // perfectly good hotkey to a user and no desktop can bind it, so the
-    // rejection has to name the rule and say what to press instead.
     let health = fotonvoice_hotkeys::ListenerHealth::default();
     health.set_supported(true);
     health.set_backend(fotonvoice_hotkeys::Backend::Portal);
@@ -289,9 +271,6 @@ fn a_valid_combination_reports_what_the_desktop_will_bind() {
 
 #[test]
 fn bare_modifiers_are_allowed_where_fotonvoice_watches_the_keyboard() {
-    // On the evdev fallback a lone Super genuinely works. Refusing it there
-    // would break a working setup to satisfy a constraint that does not
-    // apply - but it is still worth telling the user it is fragile.
     let health = fotonvoice_hotkeys::ListenerHealth::default();
     health.set_supported(true);
     health.set_backend(fotonvoice_hotkeys::Backend::Evdev);
@@ -311,17 +290,11 @@ fn bare_modifiers_are_allowed_where_fotonvoice_watches_the_keyboard() {
 }
 
 /// The stop-key arbiter, end to end: the grab is taken when playback starts and
-/// given back once it stops.
-///
-/// Multi-threaded on purpose - the assertions block on the reloader channel,
-/// which on a current-thread runtime would starve the very task under test.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_stop_key_is_taken_for_playback_and_given_back_after() {
     use std::time::Duration;
 
     let state = Arc::new(make_test_state());
-    // The desktop owns the grab here, so a standing Escape registration would
-    // take the key from every other app: this is the case the arbiter exists for.
     state.hotkey_health.set_supported(true);
     state
         .hotkey_health
@@ -344,7 +317,6 @@ async fn the_stop_key_is_taken_for_playback_and_given_back_after() {
             .any(|b| b.id == crate::stop_key::STOP_BINDING_ID)
     };
 
-    // Nothing is speaking, so nothing should be registered yet.
     assert!(
         reloader_rx.recv_timeout(Duration::from_millis(750)).is_err(),
         "the listener must not be reloaded while there is nothing to arm"
@@ -371,11 +343,6 @@ async fn the_stop_key_is_taken_for_playback_and_given_back_after() {
 
 #[test]
 fn a_standing_binding_on_bare_escape_warns_what_it_costs() {
-    // Bound as a dictation hotkey, Escape is registered for as long as FotonVoice Engine
-    // runs, and where the compositor owns the grab that means no other app ever
-    // sees it. The user may still want it, so this is advice rather than a
-    // refusal - but it has to name the cost, and say that the TTS stop key does
-    // not pay it.
     let health = fotonvoice_hotkeys::ListenerHealth::default();
     health.set_supported(true);
     health.set_backend(fotonvoice_hotkeys::Backend::Portal);
@@ -396,8 +363,6 @@ fn a_standing_binding_on_bare_escape_warns_what_it_costs() {
 
 #[test]
 fn bare_escape_is_unremarkable_where_fotonvoice_watches_the_keyboard() {
-    // X11 raw events, evdev and the Windows hook grab nothing - every app still
-    // receives Escape - so there is no cost to warn about on any of them.
     for backend in [
         fotonvoice_hotkeys::Backend::X11,
         fotonvoice_hotkeys::Backend::Evdev,
@@ -446,8 +411,6 @@ fn two_regular_keys_are_refused_with_their_own_reason() {
 
 #[test]
 fn validation_is_enforced_before_the_backend_has_answered() {
-    // The portal is the default path, so an unfinished handshake must not
-    // be a window in which an unbindable shortcut can be saved.
     let health = fotonvoice_hotkeys::ListenerHealth::default();
     health.set_supported(true);
     assert_eq!(health.backend(), fotonvoice_hotkeys::Backend::Starting);
@@ -463,8 +426,6 @@ fn validation_is_enforced_before_the_backend_has_answered() {
 #[test]
 fn hotkey_status_reports_the_portal_as_active_and_private() {
     let _lock = crate::test_utils::get_env_lock().lock().unwrap();
-    // The state the app is built for: the compositor owns the keys and
-    // FotonVoice Engine has no access to input devices at all.
     let health = fotonvoice_hotkeys::ListenerHealth::default();
     health.set_supported(true);
     health.set_backend(fotonvoice_hotkeys::Backend::Portal);
@@ -484,8 +445,6 @@ fn hotkey_status_reports_the_portal_as_active_and_private() {
 #[test]
 fn hotkey_status_marks_the_evdev_fallback_as_not_private() {
     let _lock = crate::test_utils::get_env_lock().lock().unwrap();
-    // It works, but every keystroke on the machine passes through FotonVoice Engine,
-    // and the user is entitled to know that.
     let health = fotonvoice_hotkeys::ListenerHealth::default();
     health.set_supported(true);
     health.set_portal_error("no such interface".to_string());
@@ -502,9 +461,6 @@ fn hotkey_status_marks_the_evdev_fallback_as_not_private() {
 
 #[test]
 fn hotkey_status_flags_an_elevated_foreground_window() {
-    // Task Manager, an elevated terminal, a UAC prompt: the hook stays
-    // installed and healthy, but UIPI blinds it while such a window has
-    // focus. Without this, the payload would say "active" the whole time.
     let _lock = crate::test_utils::get_env_lock().lock().unwrap();
     let health = fotonvoice_hotkeys::ListenerHealth::default();
     health.set_supported(true);
@@ -525,10 +481,6 @@ fn hotkey_status_flags_an_elevated_foreground_window() {
 
 #[test]
 fn hotkey_status_flags_kde_for_the_manual_enable_bug() {
-    // xdg-desktop-portal-kde registers shortcuts disabled and gives FotonVoice Engine
-    // no way to see that - this is the standing warning that fills the gap,
-    // scoped to the one desktop the bug is confirmed on (bugs.kde.org
-    // #483639) so it does not cry wolf where binding really is instant.
     let _lock = crate::test_utils::get_env_lock().lock().unwrap();
     std::env::set_var("XDG_CURRENT_DESKTOP", "KDE");
 
@@ -564,8 +516,6 @@ fn hotkey_status_does_not_flag_desktops_without_the_bug() {
 
 #[test]
 fn hotkey_status_scopes_the_kde_warning_to_the_portal_backend() {
-    // The bug is specifically in how xdg-desktop-portal-kde hands off
-    // BindShortcuts; the evdev fallback never goes near it.
     let _lock = crate::test_utils::get_env_lock().lock().unwrap();
     std::env::set_var("XDG_CURRENT_DESKTOP", "KDE");
 
@@ -583,8 +533,6 @@ fn hotkey_status_scopes_the_kde_warning_to_the_portal_backend() {
 
 #[test]
 fn hotkey_status_recognises_kde_via_the_legacy_full_session_variable() {
-    // Some Plasma sessions do not populate XDG_CURRENT_DESKTOP as "KDE";
-    // KDE_FULL_SESSION is the older, still-set fallback signal.
     let _lock = crate::test_utils::get_env_lock().lock().unwrap();
     std::env::remove_var("XDG_CURRENT_DESKTOP");
     std::env::set_var("KDE_FULL_SESSION", "true");
@@ -628,9 +576,6 @@ async fn open_shortcut_settings_prefers_the_kde_module_when_available() {
 
 #[tokio::test]
 async fn open_shortcut_settings_falls_back_down_the_candidate_list() {
-    // Only the last-resort GNOME panel is "installed" - the command must
-    // still succeed by walking past every unavailable candidate first,
-    // not give up at the first miss.
     let _lock = crate::test_utils::get_env_lock().lock().unwrap();
     std::env::set_var("FOTONVOICE_FAKE_COMMANDS", "gnome-control-center");
     std::env::set_var("FOTONVOICE_INSTALLER_TEST_MOCK", "1");
@@ -679,9 +624,6 @@ fn hotkey_status_asks_for_attention_when_nothing_can_deliver_shortcuts() {
 #[test]
 fn hotkey_status_does_not_flash_a_failure_during_startup() {
     let _lock = crate::test_utils::get_env_lock().lock().unwrap();
-    // The portal handshake is async. Reporting "broken" for the few hundred
-    // milliseconds before it answers would pop the setup window on every
-    // launch of a perfectly working install.
     let health = fotonvoice_hotkeys::ListenerHealth::default();
     health.set_supported(true);
 
@@ -712,9 +654,6 @@ fn hotkey_status_honours_the_test_override() {
 
 #[tokio::test]
 async fn test_setup_blocker_flags_a_missing_model_at_keypress() {
-    // The hotkey fired, so permissions are fine - but the model is not
-    // downloaded and dictation will silently produce nothing. That is
-    // exactly the moment the user must be told.
     let state = Arc::new(make_test_state());
     {
         let mut cfg = state.config.lock().await;
@@ -724,8 +663,6 @@ async fn test_setup_blocker_flags_a_missing_model_at_keypress() {
             tempfile::tempdir().unwrap().path().to_string_lossy().to_string();
     }
 
-    // The injection-tool check runs first and depends on the host, so only
-    // assert that *something* is reported and that it names a real cause.
     let blocker = setup_blocker(&state).await.expect("unfinished setup must report");
     assert!(
         blocker.contains("large-v3") || blocker.contains("wtype") || blocker.contains("xdotool"),
@@ -735,8 +672,6 @@ async fn test_setup_blocker_flags_a_missing_model_at_keypress() {
 
 #[tokio::test]
 async fn test_setup_blocker_reports_a_missing_model() {
-    // Small sizes no longer auto-download, so a configured but undownloaded
-    // model must be reported by the setup blocker instead of skipped.
     if crate::commands::missing_injection_tool().is_some() {
         return; // host lacks wtype/xdotool; that blocker legitimately wins
     }

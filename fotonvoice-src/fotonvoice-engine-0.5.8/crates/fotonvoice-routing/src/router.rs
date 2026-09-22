@@ -27,7 +27,6 @@ impl OutputTargetRouter {
     }
 
     /// Deliver text to the named target. Returns the result, or an error
-    /// result if the target id is unknown.
     pub async fn deliver(&self, target_id: &str, text: &str) -> DeliveryResult {
         let configs_guard = self.configs.read().await;
         let target_config = configs_guard.iter().find(|t| t.id == target_id).cloned();
@@ -111,8 +110,6 @@ impl OutputTargetRouter {
     }
 
     /// Deliver text directly to the named target without re-evaluating voice commands.
-    /// Used when voice command resolution and S1-mini post-processing have already
-    /// resolved the destination and processed the remaining payload.
     pub async fn deliver_direct(&self, target_id: &str, text: &str) -> DeliveryResult {
         let configs_guard = self.configs.read().await;
         let target_config = configs_guard.iter().find(|t| t.id == target_id).cloned();

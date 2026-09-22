@@ -1,28 +1,13 @@
 //! Translating FotonVoice Engine key combinations into desktop shortcut accelerators.
-//!
-//! This is the single definition of what FotonVoice Engine can ask a desktop to bind,
-//! following the accelerator syntax of the XDG shortcuts specification
-//! (`CTRL+SHIFT+a`). The portal backend uses it to register shortcuts and the
-//! settings UI validates against it over IPC, so what the key recorder accepts
-//! and what a compositor can actually bind cannot drift apart.
-//!
-//! Compiled on every platform, not just Linux: Windows has no such restriction
-//! at runtime, but the rules still describe what a binding must look like to
-//! survive a move to a portal desktop.
 
 /// Why a key combination cannot be a portal shortcut.
-///
-/// Carried rather than collapsed into `None` so the settings UI can tell the
-/// user *which* rule they hit, and what to press instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TriggerProblem {
     /// Nothing was captured.
     Empty,
     /// Modifiers only. A lone Super, or Ctrl+Shift with no other key, is not a
-    /// valid accelerator: the compositor has nothing to bind.
     ModifiersOnly,
     /// More than one non-modifier key. An accelerator is modifiers plus exactly
-    /// one key.
     MultipleKeys,
     /// A key with no keysym equivalent in the shortcuts specification.
     UnsupportedKey(String),
@@ -51,12 +36,6 @@ impl std::fmt::Display for TriggerProblem {
 }
 
 /// Translate evdev key names into the accelerator syntax of the XDG shortcuts
-/// specification (`CTRL+SHIFT+a`).
-///
-/// This is the single definition of what FotonVoice Engine can ask a desktop to bind. The
-/// settings UI validates against it through an IPC command rather than
-/// reimplementing the rules, so what the recorder accepts and what the portal
-/// can register cannot drift apart.
 pub fn accelerator(keys: &[String]) -> Result<String, TriggerProblem> {
     if keys.is_empty() {
         return Err(TriggerProblem::Empty);
@@ -84,7 +63,6 @@ pub fn accelerator(keys: &[String]) -> Result<String, TriggerProblem> {
     }
 
     let key = key.ok_or(TriggerProblem::ModifiersOnly)?;
-    // Canonical order, so the same combo always produces the same string.
     let mut parts: Vec<&str> = Vec::new();
     for m in ["CTRL", "ALT", "SHIFT", "LOGO"] {
         if modifiers.contains(&m) {
@@ -100,11 +78,6 @@ pub fn accelerator(keys: &[String]) -> Result<String, TriggerProblem> {
 }
 
 /// The preferred trigger to hand the portal, or `None` when the combination
-/// cannot be expressed.
-///
-/// `None` is not fatal at registration time: the portal reads a missing
-/// preferred trigger as "ask the user", which is what keeps a binding saved by
-/// an older FotonVoice Engine working instead of vanishing.
 pub fn portal_trigger(keys: &[String]) -> Option<String> {
     accelerator(keys).ok()
 }
@@ -172,34 +145,9 @@ fn keysym_name(key: &str) -> Option<String> {
 }
 
 /// Keys FotonVoice Engine will not hold a *standing* grab on, in every spelling a saved
-/// config might use.
-///
-/// Registering a global shortcut - through the XDG shortcuts portal, or through
-/// Cinnamon's own keybinding settings - asks the desktop for an *exclusive*
-/// grab. The compositor then routes that key to FotonVoice Engine and to nothing else:
-/// the menu that was open does not close, the dialog does not cancel, the app
-/// underneath is never told the key was pressed. For a combination the user
-/// deliberately reserved for FotonVoice Engine (Super+Space, Ctrl+Alt+D) that is exactly
-/// what they asked for. For Escape it never is - Escape is how every program on
-/// the machine says "never mind", and it is FotonVoice Engine's default TTS stop key, so
-/// users who never picked it would lose it desktop-wide.
-///
-/// The app answers this by holding the grab only for the seconds it is actually
-/// speaking (`stop_key::StopKeyGrab::WhileSpeaking`), so Escape interrupts
-/// playback and belongs to the rest of the desktop the rest of the time. This
-/// list is what marks a key as needing that treatment.
-///
-/// Both spellings are here on purpose: the Rust config canonicalises to
-/// `KEY_ESC`, but a config written by an older build - or by the frontend's own
-/// default - can still say `KEY_ESCAPE`.
 pub const RESERVED_KEYS: &[&str] = &["KEY_ESC", "KEY_ESCAPE"];
 
 /// Would a standing grab on these keys take something the rest of the desktop
-/// needs?
-///
-/// Only bare, unmodified combinations count. `Ctrl+Escape` grabs a combination
-/// nothing else is listening for, so it is an ordinary shortcut and is
-/// registered for the life of the process like any other.
 pub fn is_reserved_for_the_desktop(keys: &[String]) -> bool {
     !keys.is_empty()
         && keys
@@ -208,7 +156,6 @@ pub fn is_reserved_for_the_desktop(keys: &[String]) -> bool {
 }
 
 /// True for a key that only ever acts as a modifier, so it cannot be the one
-/// regular key an accelerator needs.
 pub fn is_modifier(key: &str) -> bool {
     modifier_name(key).is_some()
 }
@@ -252,8 +199,6 @@ mod tests {
 
     #[test]
     fn a_bare_modifier_is_rejected_with_a_reason() {
-        // The case the settings UI has to catch: a lone Super looks like a
-        // perfectly good hotkey to a user, and no desktop can bind it.
         assert_eq!(
             accelerator(&keys(&["KEY_LEFTMETA"])),
             Err(TriggerProblem::ModifiersOnly)
@@ -270,10 +215,6 @@ mod tests {
 
     #[test]
     fn bare_escape_is_a_valid_accelerator_that_may_only_be_held_transiently() {
-        // Escape *is* something a desktop can bind, and FotonVoice Engine does bind it -
-        // that is how the stop key interrupts playback. What it must not do is
-        // hold the grab while it is not speaking, because the grab is exclusive
-        // and an open menu would stop closing anywhere on the machine.
         assert_eq!(accelerator(&keys(&["KEY_ESC"])).unwrap(), "Escape");
         assert!(is_reserved_for_the_desktop(&keys(&["KEY_ESC"])));
         assert!(is_reserved_for_the_desktop(&keys(&["KEY_ESCAPE"])));
@@ -281,9 +222,6 @@ mod tests {
 
     #[test]
     fn escape_with_a_modifier_is_an_ordinary_shortcut() {
-        // Ctrl+Escape takes nothing from the desktop: no app is listening for
-        // the combination, so it is registered for the life of the process and
-        // needs none of the arming machinery.
         assert_eq!(
             accelerator(&keys(&["KEY_LEFTCTRL", "KEY_ESC"])).unwrap(),
             "CTRL+Escape"
@@ -298,9 +236,6 @@ mod tests {
 
     #[test]
     fn only_escape_is_reserved() {
-        // The rule is deliberately one key wide. A bare F5 or a bare Space is a
-        // combination the user picked on purpose, and taking it back between
-        // utterances would break setups that work today.
         for k in ["KEY_F5", "KEY_SPACE", "KEY_A", "KEY_TAB", "KEY_ENTER"] {
             assert!(
                 !is_reserved_for_the_desktop(&keys(&[k])),
@@ -331,8 +266,6 @@ mod tests {
     fn an_unmappable_key_names_itself() {
         let err = accelerator(&keys(&["KEY_FN_F1"])).unwrap_err();
         assert_eq!(err, TriggerProblem::UnsupportedKey("KEY_FN_F1".into()));
-        // The message must name the key without the evdev prefix, which means
-        // nothing to a user reading a settings dialog.
         assert!(err.to_string().contains("FN_F1"));
         assert!(!err.to_string().contains("KEY_FN_F1"));
     }
@@ -368,8 +301,6 @@ mod tests {
 
     #[test]
     fn the_bindings_fotonvoice_ships_with_are_all_bindable() {
-        // A default the settings UI would refuse to save is a default that
-        // cannot work on the backend FotonVoice Engine prefers.
         for binding in fotonvoice_routing::loader::default_bindings() {
             assert!(
                 accelerator(&binding.keys).is_ok(),

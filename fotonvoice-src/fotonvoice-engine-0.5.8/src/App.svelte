@@ -4,7 +4,6 @@
   import Overlay from "./lib/Overlay/Overlay.svelte";
   import UdevWarning from "./lib/Diagnostics/UdevWarning.svelte";
 
-  // Determine which view to render based on the URL path
   const path = window.location.pathname;
 
   function getView() {

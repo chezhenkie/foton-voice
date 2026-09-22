@@ -11,12 +11,6 @@ use fotonvoice_config::WhisperCppConfig;
 
 use crate::backend::{TranscribeRequest, TranscriptionBackend, TranscriptionResult};
 
-// -- GGUF model resolution -----------------------------------------------------
-//
-// One size, one file. Presence, download, delete, and load all use the same
-// single filename; there is no fallback chain. A configured size whose file
-// is missing or fails the sanity check is an error the user sees, never a
-// silent switch to another quant.
 
 static GGUF_MAP: &[(&str, &str)] = &[
     ("small",             "ggml-small-q5_1.bin"),
@@ -25,7 +19,6 @@ static GGUF_MAP: &[(&str, &str)] = &[
     ("medium.en",         "ggml-medium.en-q5_0.bin"),
     ("large-v3",          "ggml-large-v3-q5_0.bin"),
     ("large-v3-turbo",    "ggml-large-v3-turbo-q5_0.bin"),
-    // Q8_0 variants: near-lossless int8, preferred on GPU builds.
     ("small-q8",          "ggml-small-q8_0.bin"),
     ("small.en-q8",       "ggml-small.en-q8_0.bin"),
     ("medium-q8",         "ggml-medium-q8_0.bin"),
@@ -37,17 +30,9 @@ const GGUF_BASE_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
 /// Smallest byte size any shipped model file can plausibly have. Every model
-/// in GGUF_MAP is hundreds of MB, so anything under this floor is a truncated
-/// or zero-length download and must never be reported as present.
 const MODEL_FILE_MIN_BYTES: u64 = 1024 * 1024;
 
 /// True when `path` is a usable Whisper model file: it exists, is large enough
-/// to be real, and begins with a magic whisper.cpp accepts at load time. Both
-/// on-disk variants seen here: the ggml binary format (bytes "lmgg", i.e.
-/// little-endian "ggml" - measured on this machine's q5_0/q5_1/q8_0 files) and
-/// GGUF ("GGUF" ASCII, per gguf.h). Existence-only checks would report a
-/// zero-byte or half-written file as "downloaded", which then fails at load
-/// time - the UI shows green "ready" for a model that will not run.
 pub fn is_valid_model_file(path: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
@@ -63,17 +48,11 @@ pub fn is_valid_model_file(path: &Path) -> bool {
 }
 
 /// Retired: the tiny/base sizes this auto-downloaded silently no longer ship,
-/// and every remaining model is large enough that pulling it without asking
-/// would be a bad surprise. All model downloads are explicit now.
 pub fn is_small_auto_downloadable(_size: &str) -> bool {
     false
 }
 
 /// What a configured `device` actually resolves to in this build.
-///
-/// `whisper_cpp.device` chooses *whether* to offload, never *to what*: ggml
-/// links one compute backend at compile time. So `cuda` on a Vulkan build runs
-/// on Vulkan, and any GPU choice on a CPU build runs on the CPU.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DeviceOutcome<'a> {
     /// The user asked for the CPU and gets it.
@@ -87,10 +66,6 @@ pub enum DeviceOutcome<'a> {
 }
 
 /// Resolve a configured device name against what this build can actually do.
-///
-/// The Engine tab only offers what the build has, but a config file can be
-/// copied between machines or hand-edited, so a mismatch is reported rather
-/// than obeyed silently.
 pub fn resolve_device<'a>(requested: &str, compiled: Option<&'a str>) -> DeviceOutcome<'a> {
     if requested == "cpu" {
         return DeviceOutcome::Cpu;
@@ -119,20 +94,14 @@ fn log_device_choice(requested: &str, compiled: Option<&str>) {
     }
 }
 
-// -- Backend -------------------------------------------------------------------
 
 pub struct WhisperCppBackend {
     cfg: WhisperCppConfig,
     model_path: Option<PathBuf>,
     loaded: bool,
 
-    // Model context - kept alive so the state's Arc ref remains valid.
     ctx: Option<whisper_rs::WhisperContext>,
 
-    // Inference state - KV cache + attention buffers, reused across calls.
-    // WhisperState holds Arc<WhisperInnerContext> so it is self-contained; no
-    // lifetime trickery needed.  We lock during each transcribe() call (the
-    // inference worker is single-threaded so there is never real contention).
     state: Mutex<Option<whisper_rs::WhisperState>>,
 }
 
@@ -154,7 +123,6 @@ impl WhisperCppBackend {
     fn resolve_model_path(&self) -> Result<PathBuf> {
         let size = &self.cfg.model_size;
 
-        // Absolute path or ends with .bin -> use directly
         if size.ends_with(".bin") || Path::new(size).is_absolute() {
             let p = PathBuf::from(size);
             if p.exists() {
@@ -218,8 +186,6 @@ impl TranscriptionBackend for WhisperCppBackend {
         let ctx = whisper_rs::WhisperContext::new_with_params(path.to_str().unwrap(), params)
             .context("whisper-rs load")?;
 
-        // Create the inference state once. Allocates KV cache + attention buffers
-        // up front so transcribe() never has to reallocate them.
         let state = ctx.create_state().context("whisper state init")?;
 
         *self.state.lock().unwrap() = Some(state);
@@ -239,7 +205,6 @@ impl TranscriptionBackend for WhisperCppBackend {
     }
 
     fn unload(&mut self) {
-        // Drop state first so its Arc ref to the inner context is released before ctx.
         *self.state.lock().unwrap() = None;
         self.ctx = None;
         self.loaded = false;
@@ -250,7 +215,6 @@ impl TranscriptionBackend for WhisperCppBackend {
     }
 }
 
-// -- whisper-rs transcription (reuses pre-allocated state) --------------------
 
 fn transcribe_with_state(
     state: &mut whisper_rs::WhisperState,
@@ -300,7 +264,6 @@ fn transcribe_with_state(
 }
 
 /// Presence is keyed to the size's single file - the same file the download
-/// fetches, the delete removes, and the loader opens.
 pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
     let filename = match GGUF_MAP.iter().find(|(name, _)| *name == size) {
         Some((_, file)) => *file,
@@ -315,9 +278,6 @@ pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
 }
 
 /// Remove the GGUF file for `size` from `model_dir` - the same single file the
-/// presence check and download use, so "installed" and "deleted" can never
-/// disagree. Refuses to run for unknown sizes so a mistyped size can never
-/// point the removal at an unexpected path.
 pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
     let filename = match GGUF_MAP.iter().find(|(name, _)| *name == size) {
         Some((_, file)) => *file,
@@ -338,8 +298,6 @@ pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
 }
 
 /// Serializes calls to `download_model`. Guards against two independent
-/// triggers racing on the same file - e.g. a download trigger in Settings and
-/// a retry from the transcription worker firing at the same time.
 static DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
@@ -358,8 +316,6 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
 
     let path = model_dir.join(filename);
 
-    // An existing file that fails the sanity check is a broken download, not a
-    // model - drop it and fetch a fresh copy rather than "succeeding".
     match is_valid_model_file(&path) {
         true => return Ok(()),
         false => {
@@ -371,8 +327,6 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
     }
 
     let _guard = DOWNLOAD_LOCK.lock().await;
-    // Re-check after acquiring the lock: another caller may have just
-    // finished downloading this exact file while we were waiting.
     match is_valid_model_file(&path) {
         true => return Ok(()),
         false => {
@@ -392,9 +346,6 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
         .await
         .context("save model file")?;
 
-    // Never report a download as done unless the bytes on disk pass the same
-    // check `is_model_downloaded` uses. A truncated or bad write is removed so
-    // the next attempt starts clean.
     if !is_valid_model_file(&path) {
         let _ = std::fs::remove_file(&path);
         bail!(
@@ -412,10 +363,8 @@ mod tests {
     use super::*;
     use fotonvoice_config::WhisperCppConfig;
 
-    // -- resolve_device --------------------------------------------------------
 
     /// "auto" is the default and must never produce a warning about a mismatch:
-    /// it is a request to use whatever the build has.
     #[test]
     fn auto_takes_whatever_the_build_compiled() {
         assert_eq!(resolve_device("auto", Some("vulkan")), DeviceOutcome::Gpu("vulkan"));
@@ -423,7 +372,6 @@ mod tests {
     }
 
     /// The case that made the Device dropdown misleading: a config naming CUDA
-    /// on the Vulkan AppImage. It runs - on Vulkan - and says so.
     #[test]
     fn naming_the_other_gpu_backend_reports_the_one_in_the_build() {
         assert_eq!(
@@ -446,7 +394,6 @@ mod tests {
         assert_eq!(resolve_device("cpu", None), DeviceOutcome::Cpu);
     }
 
-    // -- is_small_auto_downloadable --------------------------------------------
 
     #[test]
     fn test_small_auto_downloadable_retired() {
@@ -485,7 +432,6 @@ mod tests {
 
     #[test]
     fn test_threads_calculation() {
-        // Explicit threads count
         let cfg = WhisperCppConfig {
             model_dir: "".to_string(),
             model_size: "small.en".to_string(),
@@ -496,7 +442,6 @@ mod tests {
         let backend = WhisperCppBackend::new(cfg);
         assert_eq!(backend.threads(), 5);
 
-        // Auto threads count (0)
         let cfg_auto = WhisperCppConfig {
             model_dir: "".to_string(),
             model_size: "small.en".to_string(),
@@ -518,7 +463,6 @@ mod tests {
             language: "auto".to_string(),
         };
         let backend = WhisperCppBackend::new(cfg);
-        // Should bail because path does not exist
         assert!(backend.resolve_model_path().is_err());
     }
 
@@ -554,10 +498,8 @@ mod tests {
         assert!(backend.transcribe(&req).is_err());
     }
 
-    // -- model_dir tests -------------------------------------------------------
 
     /// Write a file that passes `is_valid_model_file`: the ggml format magic
-/// (bytes "lmgg") plus enough zero padding to clear the size floor.
     fn write_valid_model(dir: &Path, name: &str) {
         use std::io::Write;
         let path = dir.join(name);
@@ -569,8 +511,6 @@ mod tests {
 
     #[test]
     fn test_is_model_downloaded_default_dir_not_present() {
-        // With empty model_dir (default) and no models on disk, returns false.
-        // We isolate HOME to ensure default directory is empty.
         let old_home = std::env::var_os("HOME");
         let temp_home = tempfile::tempdir().expect("create temp home");
         let home = temp_home.path().to_path_buf();
@@ -652,7 +592,6 @@ mod tests {
         write_valid_model(dir.path(), "good.bin");
         assert!(is_valid_model_file(&good));
 
-        // GGUF-format files (ASCII "GGUF" header) must also pass.
         let gguf = dir.path().join("gguf.bin");
         let mut f = std::fs::File::create(&gguf).unwrap();
         f.write_all(b"GGUF").unwrap();
@@ -660,8 +599,6 @@ mod tests {
         f.write_all(&padding).unwrap();
         assert!(is_valid_model_file(&gguf));
 
-        // The real files on this machine's disk use the ggml magic; reject a
-        // wrong-magic file of full size to prove the magic is actually read.
         let wrong_magic = dir.path().join("wrong.bin");
         std::fs::File::create(&wrong_magic)
             .unwrap()
@@ -672,18 +609,15 @@ mod tests {
 
     #[test]
     fn test_is_model_downloaded_nonexistent_path() {
-        // A path that does not exist on disk: no models found there.
         assert!(!is_model_downloaded("small.en", "/nonexistent/path/that/does/not/exist"));
     }
 
     #[test]
     fn test_is_model_downloaded_unknown_size() {
-        // Unknown model size always returns false regardless of dir.
         assert!(!is_model_downloaded("unknown-size", ""));
         assert!(!is_model_downloaded("unknown-size", "/tmp"));
     }
 
-    // -- Q8_0 variants --------------------------------------------------------
 
     #[test]
     fn test_q8_entries_point_at_their_own_q8_0_file() {
@@ -703,7 +637,6 @@ mod tests {
     }
 
     /// No fallbacks: a q8 size resolves to - and only to - its own q8_0 file.
-    /// A q5 file on disk must not satisfy presence or loading for a q8 size.
     #[test]
     fn test_q8_size_ignores_a_q5_file_on_disk() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -769,10 +702,6 @@ mod tests {
 
     #[test]
     fn test_resolve_model_path_falls_back_to_default_when_dir_empty() {
-        // When model_dir is empty, resolve_model_path uses the default dir.
-        // The default dir almost certainly does not contain models in CI, so we
-        // just verify the error message mentions the default path rather than a
-        // custom one.
         let cfg = WhisperCppConfig {
             model_dir: "".to_string(),
             model_size: "small.en".to_string(),
@@ -788,14 +717,11 @@ mod tests {
                 "error should mention default dir: {e}"
             ),
             Ok(p) => {
-                // If there happens to be a model on this machine, just check it's under the default dir.
                 assert!(p.starts_with(&default_dir));
             }
         }
     }
 
-    // Tilde expansion itself is covered by `crate::util` tests; this exercises
-    // it through the whisper model-dir resolution path.
     #[test]
     fn test_is_model_downloaded_tilde_path() {
         let old_home = std::env::var_os("HOME");
@@ -807,7 +733,6 @@ mod tests {
         let dir = tempfile::tempdir_in(&home).expect("tempdir in home");
         write_valid_model(dir.path(), "ggml-small.en-q5_1.bin");
 
-        // Construct a ~/... path pointing at the temp dir
         let rel = dir.path().strip_prefix(&home).unwrap();
         let tilde_path = format!("~/{}", rel.display());
 

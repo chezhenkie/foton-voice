@@ -5,7 +5,6 @@ use tokio::sync::Mutex;
 #[cfg(target_os = "linux")]
 use tracing::info;
 
-// -- Shared state --------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictationStatus {
@@ -36,7 +35,6 @@ impl Default for DictationStatus {
     }
 }
 
-// -- DBus service (Linux only) ------------------------------------------------
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -46,9 +44,6 @@ mod linux {
     pub struct DictationInterface {
         pub state: Arc<Mutex<AppState>>,
         /// Channels to send control commands back to the app coordinator. The
-        /// start channel carries the id of the binding that asked for it, so a
-        /// desktop shortcut can dictate into that binding's own targets. Empty
-        /// means "whichever binding the app would use by default".
         pub start_tx: tokio::sync::mpsc::Sender<String>,
         pub stop_tx: tokio::sync::mpsc::Sender<()>,
     }
@@ -70,11 +65,6 @@ mod linux {
         }
 
         /// Toggle dictation for one specific binding.
-        ///
-        /// This is what a Cinnamon/MATE native shortcut calls: the desktop owns
-        /// the key grab there, so the only way FotonVoice Engine learns *which* of the
-        /// user's bindings fired - and therefore which targets the text goes to
-        /// - is for the shortcut to name it.
         async fn toggle_binding(&self, binding_id: String) -> zbus::fdo::Result<()> {
             self.toggle(binding_id).await
         }
@@ -160,19 +150,12 @@ mod linux {
         use zbus::fdo::DBusProxy;
 
         /// The caller has to keep the connection `start_service` returns.
-        ///
-        /// zbus closes a connection when its last handle drops, and closing it
-        /// releases the requested name and tears down the object server - so a
-        /// caller that discards the return value leaves the bus name unowned
-        /// while startup has already logged it as registered. (upstream d944258)
         #[tokio::test]
         async fn the_bus_name_lives_exactly_as_long_as_the_returned_connection() {
             let state = Arc::new(Mutex::new(AppState::default()));
             let (start_tx, _start_rx) = tokio::sync::mpsc::channel(4);
             let (stop_tx, _stop_rx) = tokio::sync::mpsc::channel(4);
 
-            // No session bus in this environment (plain CI container): there is
-            // no bus to make an assertion about.
             let Ok(conn) = start_service(state, start_tx, stop_tx).await else {
                 return;
             };
@@ -186,8 +169,6 @@ mod linux {
                 "the connection handed back by `start_service` must own the name"
             );
 
-            // Subscribed before the drop: the release is asynchronous, and
-            // polling for it would either race or need an arbitrary sleep.
             let mut lost = dbus
                 .receive_name_owner_changed_with_args(&[(0, name), (2, "")])
                 .await
@@ -208,7 +189,6 @@ mod linux {
 #[cfg(target_os = "linux")]
 pub use linux::{emit_status_changed, emit_text_injected, start_service};
 
-// -- Stub for non-Linux platforms ----------------------------------------------
 
 #[cfg(not(target_os = "linux"))]
 pub async fn start_service(

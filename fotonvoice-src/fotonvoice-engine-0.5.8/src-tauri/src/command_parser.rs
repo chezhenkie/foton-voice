@@ -1,22 +1,11 @@
 use regex::Regex;
 
 /// Attempts to intercept a command from the transcription.
-///
-/// Patterns:
-/// 1. "FotonVoice Engine, [command], [text]"
-/// 2. "[text]. FotonVoice Engine, [command]"
-///
-/// Returns `Some((target_id, payload))` if a command is successfully parsed,
-/// otherwise `None`.
 pub fn parse_command_routing(text: &str) -> Option<(String, String)> {
-    // Every transcription reaches this, so the cheap rejection comes first and
-    // without allocating a lowercased copy of the text to do it.
     if !contains_ignore_ascii_case(text, "fotonvoice-engine") {
         return None;
     }
 
-    // Pattern 1: "FotonVoice Engine, [command], [text]" (or "FotonVoice Engine [command] [text]")
-    // Regex: (?i)fotonvoice-engine[,\s]+([a-z0-9_-]+)[,\s]+(.*)
     static RE_PREFIX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re_prefix = RE_PREFIX
         .get_or_init(|| Regex::new(r"(?i)fotonvoice-engine[,\s]+([a-z0-9_-]+)[,\s]+(.*)").unwrap());
@@ -26,8 +15,6 @@ pub fn parse_command_routing(text: &str) -> Option<(String, String)> {
         return Some((cmd, payload));
     }
 
-    // Pattern 2: "[text]. FotonVoice Engine, [command]"
-    // Regex: (.*)[.,\s]+(?i)fotonvoice-engine[,\s]+([a-z0-9_-]+)
     static RE_SUFFIX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re_suffix = RE_SUFFIX
         .get_or_init(|| Regex::new(r"(.*)[.,\s]+(?i)fotonvoice-engine[,\s]+([a-z0-9_-]+)").unwrap());
@@ -95,8 +82,6 @@ mod tests {
     fn test_invalid_command_format() {
         let input = "FotonVoice Engine , , text";
         let result = parse_command_routing(input);
-        // The regex might match but cmd would be empty if we aren't careful.
-        // [a-z0-9_-]+ requires at least one character.
         assert!(result.is_none());
     }
 }

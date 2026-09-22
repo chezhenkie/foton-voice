@@ -1,23 +1,9 @@
 //! Fixed-version WebView2 runtime bootstrap.
-//!
-//! A portable install must not depend on the OS having an Edge/WebView2
-//! runtime installed (debloated and LTSC Windows images ship without one,
-//! and the app window then silently never opens). The shipping zip
-//! `WebView2Runtime.zip` sits beside the exe; on startup we make sure it is
-//! extracted into `WebView2Runtime\` and point
-//! `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` at that folder, which makes the
-//! WebView2 loader use our bundled engine instead of searching the system.
-//!
-//! Cost model: the zip is extracted once. A marker file inside the extracted
-//! folder records which zip it came from, so later launches skip extraction
-//! entirely until the zip itself changes. If there is no zip beside the exe,
-//! nothing here runs and behavior is exactly as before.
 
 use std::fs;
 use std::path::Path;
 
 /// Extract `WebView2Runtime.zip` from the portable root (if present) and set
-/// `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` to the extracted folder.
 pub fn ensure_fixed_runtime(app_root: &Path) {
     let zip_path = app_root.join("WebView2Runtime.zip");
     let metadata = match fs::metadata(&zip_path) {
@@ -53,7 +39,6 @@ pub fn ensure_fixed_runtime(app_root: &Path) {
 }
 
 /// Cheap zip identity: length + mtime seconds. Changes whenever the runtime
-/// is updated by a new build, so the cache invalidates itself.
 fn stamp(p: &Path) -> String {
     p.metadata()
         .and_then(|m| m.modified())

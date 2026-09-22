@@ -1,11 +1,9 @@
 //! Reference copies of the pre-optimization implementations, kept only for the
-//! differential test below. Verbatim from 6195ee0.
 #![allow(dead_code)]
 use std::collections::HashMap;
 use regex::Regex;
 
 /// Classic Levenshtein (edit) distance between two strings, computed over
-/// `char`s rather than bytes so it works correctly with non-ASCII input.
 pub fn ref_levenshtein_distance(s1: &str, s2: &str) -> usize {
     let s1_chars: Vec<char> = s1.chars().collect();
     let s2_chars: Vec<char> = s2.chars().collect();
@@ -41,8 +39,6 @@ pub fn ref_levenshtein_distance(s1: &str, s2: &str) -> usize {
 }
 
 /// Replaces short trigger words/phrases in `text` with their configured
-/// expansions (case-insensitive, word-boundary matched). Used for both
-/// dictation snippets (STT output) and spoken-text shortcuts (TTS input).
 pub fn ref_expand_snippets(text: &str, snippets: &HashMap<String, String>) -> String {
     if snippets.is_empty() {
         return text.to_string();
@@ -58,15 +54,6 @@ pub fn ref_expand_snippets(text: &str, snippets: &HashMap<String, String>) -> St
 }
 
 /// Fuzzy-corrects occurrences of `custom_vocab` entries in `text` using
-/// Levenshtein distance, so phonetic mis-transcriptions/mis-readings of
-/// proper nouns and domain-specific terms get normalized back to the
-/// configured spelling.
-///
-/// Multi-word phrases are corrected first (longest phrase first, so a
-/// longer match "wins" over a shorter one contained within it), followed
-/// by single-word corrections. The allowed edit distance scales with word
-/// length: exact match only for 1-3 chars, distance <= 1 for mid-length
-/// words, distance <= 2 for longer words.
 pub fn ref_correct_custom_vocabulary(text: &str, custom_vocab: &[String]) -> String {
     let mut result = text.to_string();
 
@@ -83,7 +70,6 @@ pub fn ref_correct_custom_vocabulary(text: &str, custom_vocab: &[String]) -> Str
         }
     }
 
-    // 1. Process multi-word phrases first (longest first)
     multi_word.sort_by(|a, b| b.len().cmp(&a.len()));
 
     if !multi_word.is_empty() {
@@ -148,7 +134,6 @@ pub fn ref_correct_custom_vocabulary(text: &str, custom_vocab: &[String]) -> Str
         }
     }
 
-    // 2. Process single-word corrections
     if !single_word.is_empty() {
         let re_word = match Regex::new(r"[a-zA-Z0-9'\-]+") {
             Ok(re) => re,
@@ -196,8 +181,6 @@ pub fn ref_correct_custom_vocabulary(text: &str, custom_vocab: &[String]) -> Str
         }).to_string();
     }
 
-    // 3. Dynamic FotonVoice Engine brand homophone fallback
-    // Matches any remaining "<word> control/ctrl" phrase within edit distance <= 3 of "vox control"
     if let Ok(re_ctrl) = Regex::new(r"(?i)\b[a-z0-9'-]{2,}\s+(control|ctrl|ctl|kontrol)\b") {
         result = re_ctrl.replace_all(&result, |caps: &regex::Captures| {
             let matched = caps.get(0).unwrap().as_str();
@@ -258,8 +241,6 @@ mod differential {
     }
 
     /// The optimized vocabulary correction must agree with the original on
-    /// every input, including the vocabulary-driven paths the earlier
-    /// end-to-end comparison never reached.
     #[test]
     fn vocabulary_correction_matches_the_original() {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
@@ -277,9 +258,6 @@ mod differential {
             let vocab_len = (rng.next() % 5) as usize;
             let vocab: Vec<String> = (0..vocab_len).map(|_| rng.pick_owned(&vocab_pool)).collect();
 
-            // The brand normalisation used to be the tail of this function and
-            // is now its own; applied in the same order, the pair has to come
-            // out exactly where the original did.
             let mine =
                 normalize_brand_name(&correct_custom_vocabulary(&text, &vocab)).into_owned();
             let theirs = ref_correct_custom_vocabulary(&text, &vocab);

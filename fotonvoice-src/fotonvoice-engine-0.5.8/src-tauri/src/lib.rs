@@ -1,4 +1,3 @@
-// FotonVoice Engine Tauri Application Core
 use std::sync::{
     atomic::{AtomicBool, AtomicU32},
     Arc,
@@ -38,19 +37,12 @@ pub fn run_cli_installer() -> Result<(), String> {
 }
 
 /// The commit this binary was built from, or `"unknown"` for a build that did
-/// not set `FOTONVOICE_BUILD_SHA` (a bare `cargo build`, say).
-///
-/// Set by `.github/workflows/build-msvc.yml` from `github.sha`; see `build.rs`
-/// for why it needs a `rerun-if-env-changed`.
 pub const BUILD_SHA: &str = match option_env!("FOTONVOICE_BUILD_SHA") {
     Some(sha) => sha,
     None => "unknown",
 };
 
 /// What this build is, as one line: the version, and the commit behind it.
-///
-/// Reported by `--version` and written to the startup log. A packaged build
-/// otherwise has no way to say which source it came from.
 pub fn version_string() -> String {
     format!(
         "FotonVoice Engine {} (build {})",
@@ -69,26 +61,13 @@ pub mod test_utils {
     }
 }
 
-// -- Tauri app entry point -----------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
     {
-        // Workaround for WebKitGTK blank window/rendering issues due to DMABUF creation failures
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
 
-        // The dictation overlay needs a window that can set its own absolute
-        // position and reliably stay above other windows. A native Wayland
-        // toplevel can do neither - position and stacking are compositor
-        // policy, not something a client gets to ask for. Forcing the app
-        // through XWayland gets back the X11 behavior this depends on
-        // (absolute positioning, `_NET_WM_STATE_ABOVE`), at the cost of
-        // native Wayland features (e.g. fractional scaling) for the whole
-        // app, not just the overlay - GTK's backend is chosen once,
-        // process-wide, at init, so there's no way to select it per-window.
-        // Only forced when a Wayland session with a reachable X server
-        // (XWayland) is actually detected.
         if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_some() {
             eprintln!(
                 "Wayland session detected: forcing GDK_BACKEND=x11 (via XWayland) so the \
@@ -97,7 +76,6 @@ pub fn run() {
             std::env::set_var("GDK_BACKEND", "x11");
         }
 
-        // Suppress libayatana-appindicator deprecation warnings by registering a dummy log handler
         unsafe {
             extern "C" {
                 fn g_log_set_handler(
@@ -128,16 +106,11 @@ pub fn run() {
         }
     }
 
-    // Initialise logging (console + special warning-free/privacy-safe startup and error file log)
-    // Before anything reads or writes app files, run the one-time migration of
-    // legacy AppData content into the portable root beside the exe.
     fotonvoice_config::portable::ensure_migrated();
     use tracing_subscriber::prelude::*;
     let local_dir = fotonvoice_config::portable::app_root();
     let _ = std::fs::create_dir_all(&local_dir);
 
-    // Bundled WebView2 fixed runtime (see webview2.rs). Must run before any
-    // webview is created; harmless no-op when the shipping zip is absent.
     #[cfg(target_os = "windows")]
     webview2::ensure_fixed_runtime(&local_dir);
 
@@ -164,20 +137,15 @@ pub fn run() {
         let _ = registry.try_init();
     }
 
-    // First line in every log: which build this is.
     tracing::info!("{}", version_string());
 
     let config = Config::load();
 
-    // Log the sanitized configuration parameters at startup
     tracing::info!("=== System Startup Config ===");
     tracing::info!("Backend choice: {:?}", config.data.engine.backend);
     tracing::info!("Whisper model size: {}", config.data.engine.whisper_cpp.model_size);
     tracing::info!("Whisper device: {}", config.data.engine.whisper_cpp.device);
     tracing::info!("Whisper threads: {}", config.data.engine.whisper_cpp.threads);
-    // What the build can offload, as opposed to what the config asks for. The
-    // two differ more often than they look like they should: the Vulkan build
-    // accelerates whisper.cpp and nothing else.
     tracing::info!(
         "GPU support in this build - whisper.cpp: {}, Moonshine: {}, Parakeet: {}",
         fotonvoice_inference::whisper_gpu_backend().unwrap_or("none (CPU)"),
@@ -221,7 +189,6 @@ pub fn run() {
 
     let router = Arc::new(OutputTargetRouter::new(targets.clone()));
 
-    // -- Audio & Inference pipelines ------------------------------------------
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<fotonvoice_audio::AudioChunk>(64);
     let (text_tx, text_rx) = crossbeam_channel::bounded::<fotonvoice_inference::InferenceOutput>(32);
     let (inference_tx, inference_rx) =
@@ -229,8 +196,6 @@ pub fn run() {
     let (inference_cfg_tx, inference_cfg_rx) =
         crossbeam_channel::unbounded::<Arc<fotonvoice_config::AppConfig>>();
     let (overlay_tx, overlay_rx) = crossbeam_channel::unbounded::<String>();
-    // One pending nudge is all the capture supervisor needs: it re-reads every
-    // flag when it wakes, so a second nudge would tell it nothing new.
     let (audio_wake_tx, audio_wake_rx) = crossbeam_channel::bounded::<()>(1);
 
     let hotkey_health = Arc::new(fotonvoice_hotkeys::ListenerHealth::default());
@@ -294,7 +259,6 @@ pub fn run() {
         );
     }
 
-    // Audio chunk coordinator thread
     let rt_handle = tokio::runtime::Handle::current();
     pipeline::spawn_audio_coordinator(
         app_state.clone(),
@@ -304,7 +268,6 @@ pub fn run() {
         rt_handle.clone(),
     );
 
-    // Inference worker with live config reloading
     fotonvoice_inference::run_worker_with_config(
         cfg_data.clone(),
         inference_rx,
@@ -312,7 +275,6 @@ pub fn run() {
         inference_cfg_rx,
     );
 
-    // TTS initial worker
     let _tts_handle = if cfg_data.tts.enabled {
         Some(fotonvoice_tts::TtsEngineWorker::start(
             cfg_data.tts.clone(),
@@ -337,8 +299,6 @@ pub fn run() {
         }
     });
 
-    // Setup desktop integration (launcher and icon) before initializing hotkey listeners,
-    // so xdg-desktop-portal can resolve the `ai.fotonvoice.engine` AppID against an installed .desktop file.
     #[cfg(target_os = "linux")]
     {
         if let Err(e) = crate::installer::setup_desktop_integration() {
@@ -346,12 +306,6 @@ pub fn run() {
         }
     }
 
-    // Hotkey listener & bindings
-    //
-    // The stop key is not in this set. Where the desktop owns the key grab a
-    // standing registration on bare Escape would take the key from every other
-    // app, so `stop_key`'s arbiter adds it - here, immediately, on the backends
-    // that grab nothing, and only while FotonVoice Engine speaks on the ones that do.
     let mut all_bindings = bindings;
     let initial_grab =
         crate::stop_key::stop_key_grab(hotkey_health.backend(), &cfg_data.tts.stop_key);
@@ -383,19 +337,15 @@ pub fn run() {
 
     pipeline::spawn_hotkey_gesture_handler(app_state.clone(), gesture_rx);
 
-    // Text delivery worker
     pipeline::spawn_text_delivery_worker(app_state.clone(), text_rx, rt_handle);
 
-    // DBus service
     #[cfg(target_os = "linux")]
     services::start_dbus_service(app_state.clone());
 
-    // MCP Server
     if cfg_data.mcp.server_enabled {
         services::start_mcp_server(app_state.clone());
     }
 
-    // -- Build Tauri app -------------------------------------------------------
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             tracing::info!("Single instance trigger: argv={:?}, cwd={:?}", argv, cwd);
@@ -411,7 +361,6 @@ pub fn run() {
         .setup(move |app| {
             set_app_handle(app.handle().clone());
 
-            // Set window icon programmatically on Linux/Wayland
             #[cfg(target_os = "linux")]
             {
                 let _ = crate::installer::setup_desktop_integration();
@@ -423,27 +372,21 @@ pub fn run() {
                 }
             }
 
-            // Re-initialize TTS worker with event emitter callbacks
             services::setup_tts_and_fifos(&app.handle(), app_state.clone());
 
-            // Register Speak target callback
             services::register_speak_target(&app.handle());
 
-            // Register Command trigger target callback
             services::register_command_trigger_target(&app.handle());
 
-            // Setup watcher for hotkey permissions
             #[cfg(target_os = "linux")]
             pipeline::spawn_setup_watcher(app.handle().clone(), app_state.hotkey_health.clone());
 
-            // Forward audio levels to the settings window and the overlay
             pipeline::spawn_audio_level_forwarder(
                 app.handle().clone(),
                 app_state.clone(),
                 audio_level_rx,
             );
 
-            // Setup system tray
             let _tray = tray::create_tray(app)?;
             tray::sync_tts_memory_item(app.handle().clone(), app_state.clone());
 
@@ -468,24 +411,6 @@ pub fn run() {
                     .expect("Failed to load processing_6 icon"),
             ];
 
-            // -- Dictation overlay ------------------------------------------------
-            // window::open_overlay_window builds the transparent, click-through,
-            // always-on-top WebviewWindow that renders the `/overlay` route
-            // (src/lib/Overlay/Overlay.svelte) - see that function's doc comment
-            // and docs/overlays.md for how it's put together.
-            //
-            // Built once here and kept for the session, on BOTH lanes. The
-            // old Linux destroy/recreate per dictation (a WebKitGTK
-            // stale-frame workaround) is gone with its cause: the host-first
-            // WebKitGTK AppImage packaging (see
-            // scripts/appimage-hooks/host-first-fallback.sh). Constructing
-            // the window costs one brief flash of an empty window - a webview
-            // is mapped before it has loaded /overlay and painted - and that
-            // cost lands here, before the user has asked for anything; the
-            // transparent-until-painted gate (reveal_overlay) covers the
-            // rest. tray::spawn_status_ticker still builds it on the first
-            // activation if this fails, so a failure delays rather than
-            // loses it.
             let overlay_handle = app.handle().clone();
             if let Err(e) = crate::window::open_overlay_window(
                 &overlay_handle,
@@ -494,12 +419,6 @@ pub fn run() {
             ) {
                 tracing::warn!("Could not pre-build the dictation overlay: {e}");
             }
-            // overlay_tx carries position updates (sent whenever
-            // config.ui.overlay_position / overlay_monitor change - see
-            // commands.rs's save_config and tray.rs's config-change ticker) and
-            // status/audio-level messages the audio-level forwarder also emits
-            // as Tauri events (status-tick / audio-level) that the frontend
-            // consumes directly; only the position updates need applying here.
             std::thread::spawn(move || {
                 while let Ok(msg) = overlay_rx.recv() {
                     let Ok(value) = serde_json::from_str::<serde_json::Value>(&msg) else {
@@ -514,10 +433,8 @@ pub fn run() {
                 }
             });
 
-            // Auto download speech model if needed.
             services::auto_download_speech_model_if_needed(app, &cfg_data);
 
-            // Emit periodic status updates to all windows and animate tray
             tray::spawn_status_ticker(
                 app.handle().clone(),
                 app_state.clone(),
@@ -606,12 +523,6 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error building Tauri application")
         .run(|_app, event| {
-            // Windows are ordinary windows: the close button closes them, and
-            // every entry point rebuilds one when it is gone. That makes the
-            // last window closing look to Tauri like the app should exit, which
-            // for a tray app it must not - dictation carries on with nothing on
-            // screen. An explicit quit carries an exit code, so the tray's Quit
-            // item still works.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
                 if code.is_none() {
                     api.prevent_exit();

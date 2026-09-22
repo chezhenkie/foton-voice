@@ -11,7 +11,6 @@ let keysCheckCalls: string[][] = [];
 let openShortcutSettingsCalls = 0;
 let openShortcutSettingsResult: "ok" | string = "ok";
 
-// Mock tauri invoke
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd, args) => {
     if (cmd === "get_targets") {
@@ -38,7 +37,6 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
 }));
 
-/// The backend's verdict for a combination the desktop cannot register.
 function rejected(message: string) {
   return {
     accepted: false,
@@ -92,9 +90,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
   });
 
   test("refuses a bare-modifier capture and says why", async () => {
-    // A lone Super looks like a perfectly good hotkey to a user, and no desktop
-    // can bind it. Discovering that later, silently, is the failure this
-    // prevents.
     mockBindings = [
       {
         id: "bind1",
@@ -128,7 +123,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
   });
 
   test("keeps the previous combination when a capture is refused", async () => {
-    // Rejecting must not also destroy the working shortcut the user already had.
     mockBindings = [
       {
         id: "bind1",
@@ -152,7 +146,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
     await fireEvent.keyUp(recorder, { key: "Shift", code: "ShiftLeft" });
 
     await screen.findByText(/not accepted/i);
-    // Chips render the evdev name minus the KEY_ prefix.
     for (const key of ["LEFTCTRL", "LEFTALT", "D"]) {
       expect(screen.getAllByText(key).length).toBeGreaterThan(0);
     }
@@ -211,12 +204,10 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
     await fireEvent.focus(recorder);
     await fireEvent.keyDown(recorder, { key: "Meta", code: "MetaLeft" });
 
-    // Told before they lift the key, not after the capture is thrown away.
     expect(await screen.findByText(/add a regular key/i)).toBeTruthy();
   });
 
   test("flags a saved binding the desktop cannot register", async () => {
-    // Bindings from an older FotonVoice Engine are not silently broken - they are named.
     mockBindings = [
       {
         id: "legacy",
@@ -236,8 +227,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
   });
 
   test("does not block bare modifiers when FotonVoice Engine watches the keyboard itself", async () => {
-    // On the evdev fallback a lone Super genuinely works, so refusing it would
-    // be wrong - but it is still worth saying it is fragile.
     mockHotkeyStatus = hotkeyStatus({
       backend: "evdev",
       is_private: false,
@@ -279,7 +268,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
   });
 
   test("offers only the four supported gestures", async () => {
-    // `chord` was removed; it must not reappear as a selectable option.
     mockBindings = [
       {
         id: "bind1",
@@ -312,10 +300,8 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
     expect(
       await screen.findByText("Your desktop is handling these shortcuts"),
     ).toBeTruthy();
-    // Collapsed initially
     expect(screen.queryByText(/Your desktop decides which keys/i)).toBeNull();
 
-    // Click toggle to expand
     const toggle = await screen.findByRole("button", {
       name: /Toggle shortcut backend details/i,
     });
@@ -323,14 +309,11 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
 
     expect(await screen.findByText(/Your desktop decides which keys/i)).toBeTruthy();
 
-    // Click toggle again to collapse
     await fireEvent.click(toggle);
     expect(screen.queryByText(/Your desktop decides which keys/i)).toBeNull();
   });
 
   test("shows the keys the compositor actually bound, not the ones requested", async () => {
-    // The portal lets the user pick different keys, and the app must show
-    // what is really in effect rather than what it asked for.
     mockBindings = [
       {
         id: "bind1",
@@ -411,10 +394,8 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
     render(HotkeysTab);
 
     expect(await screen.findByText(/One more step on KDE/i)).toBeTruthy();
-    // Collapsed by default
     expect(screen.queryByText(/KDE bug 483639/i)).toBeNull();
 
-    // Click toggle to expand
     const toggle = await screen.findByRole("button", {
       name: /Toggle manual shortcut enable details/i,
     });
@@ -426,7 +407,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
 
     expect(openShortcutSettingsCalls).toBe(1);
 
-    // Click toggle to collapse
     await fireEvent.click(toggle);
     expect(screen.queryByText(/KDE bug 483639/i)).toBeNull();
   });
@@ -440,7 +420,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
 
     render(HotkeysTab);
 
-    // Click toggle to expand
     const toggle = await screen.findByRole("button", {
       name: /Toggle manual shortcut enable details/i,
     });
@@ -486,11 +465,9 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
 
     render(HotkeysTab);
 
-    // Conflict banner should NOT be present
     const banner = screen.queryByText(/Conflict detected/i);
     expect(banner).toBeNull();
 
-    // No CONFLICT markers should be present
     const marker = screen.queryByText("CONFLICT");
     expect(marker).toBeNull();
   });
@@ -523,15 +500,12 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
 
     const { container } = render(HotkeysTab);
 
-    // Conflict banner should be present
     const banner = await screen.findByText(/Conflict detected/i);
     expect(banner).not.toBeNull();
 
-    // CONFLICT markers should be rendered
     const markers = await screen.findAllByText("CONFLICT");
     expect(markers.length).toBe(2);
 
-    // The cards should have active-conflict class
     const conflictItems = container.querySelectorAll(".active-conflict");
     expect(conflictItems.length).toBe(2);
   });
@@ -564,15 +538,12 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
 
     const { container } = render(HotkeysTab);
 
-    // Conflict banner should still be present because a conflict exists in the list
     const banner = await screen.findByText(/Conflict detected/i);
     expect(banner).not.toBeNull();
 
-    // No CONFLICT markers should be rendered (since one is disabled, the active one works)
     const marker = screen.queryByText("CONFLICT");
     expect(marker).toBeNull();
 
-    // The cards should have has-conflict class but NOT active-conflict class
     const hasConflictItems = container.querySelectorAll(".has-conflict");
     expect(hasConflictItems.length).toBe(2);
 
@@ -641,41 +612,31 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
 
     const { container } = render(HotkeysTab);
 
-    // Click Edit button to open Hotkey Editor modal
     const editBtn = await screen.findByRole("button", { name: /Edit/i });
     await fireEvent.click(editBtn);
 
-    // Verify Binding Editor modal is open
     expect(screen.getByText("Edit Hotkey Binding")).not.toBeNull();
 
-    // Find the custom dropdown trigger button
     const trigger = container.querySelector(".custom-select-trigger") as HTMLButtonElement;
     expect(trigger).not.toBeNull();
     expect(trigger.textContent).toContain("Focused Window");
 
-    // Click trigger to open dropdown list
     await fireEvent.click(trigger);
 
-    // Click "-- Create New Target --" option button
     const createBtn = screen.getByText("Create New Target");
     expect(createBtn).not.toBeNull();
     await fireEvent.click(createBtn);
 
-    // Verify Target Editor modal opens
     expect(await screen.findByText("Create Target")).not.toBeNull();
 
-    // Verify that Target ID input is hidden in nested mode
     const targetIdInput = screen.queryByPlaceholderText("e.g. obsidian_vault");
     expect(targetIdInput).toBeNull();
 
-    // Click Cancel button in the Target modal
     const cancelButtons = screen.getAllByRole("button", { name: /Cancel/i });
     await fireEvent.click(cancelButtons[1]);
 
-    // Verify Target modal is closed
     expect(screen.queryByText("Create Target")).toBeNull();
 
-    // Verify select visually reverts back to previous value
     expect(trigger.textContent).toContain("Focused Window");
   });
 
@@ -696,43 +657,31 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
 
     const { container } = render(HotkeysTab);
 
-    // Click Edit button to open Hotkey Editor modal
     const editBtn = await screen.findByRole("button", { name: /Edit/i });
     await fireEvent.click(editBtn);
 
-    // Find the custom dropdown trigger button
     const trigger = container.querySelector(".custom-select-trigger") as HTMLButtonElement;
     expect(trigger).not.toBeNull();
 
-    // Click trigger to open dropdown list
     await fireEvent.click(trigger);
     
-    // Click "-- Create New Target --" option button
     const createBtn = screen.getByText("Create New Target");
     await fireEvent.click(createBtn);
 
-    // Verify Target Editor modal opens
     expect(await screen.findByText("Create Target")).not.toBeNull();
 
-    // Set the target's command name
     const labelInput = screen.getByPlaceholderText("e.g. Obsidian Notes");
     await fireEvent.input(labelInput, { target: { value: "My Nested Target" } });
 
-    // Click Done to save target
     const doneButtons = screen.getAllByRole("button", { name: /Done/i });
     await fireEvent.click(doneButtons[1]);
 
-    // Verify Target modal is closed
     expect(screen.queryByText("Create Target")).toBeNull();
 
-    // Verify select value was updated to the new target's label and delivery
     expect(trigger.textContent).toContain("My Nested Target (inject)");
   });
 
   test("saving an existing binding with unchanged keys does not trigger a false key-validation error", async () => {
-    // Regression: if the user edits a binding only to rename it (without re-recording keys),
-    // saveBindingModal must NOT run check_hotkey_keys and must NOT show any error,
-    // even if the existing keys would normally be flagged (e.g. bare modifier on portal).
     mockBindings = [
       {
         id: "bind1",
@@ -745,28 +694,21 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
         disabled: false,
       },
     ];
-    // check_hotkey_keys should NOT be called when keys haven't changed
     mockKeysChecks = [rejected("This should not appear")];
 
     render(HotkeysTab);
     await fireEvent.click(await screen.findByRole("button", { name: /Edit/i }));
 
-    // Change only the label, leave keys untouched
     const labelInput = screen.getByDisplayValue("Old Name");
     await fireEvent.input(labelInput, { target: { value: "New Name" } });
 
-    // Click Done - should save without error despite no re-recording
     await fireEvent.click(await screen.findByRole("button", { name: /^Done$/i }));
 
-    // The stale rejection must not have been shown
     expect(screen.queryByText(/not accepted/i)).toBeNull();
-    // check_hotkey_keys must NOT have been called for the unchanged combo
     expect(keysCheckCalls).toHaveLength(0);
   });
 
   test("re-capturing the exact same keys clears any stale error from a previous capture", async () => {
-    // Regression: user tries a bare modifier (rejected), then re-records the
-    // original valid combo. The UI must show no error after the re-record.
     mockBindings = [
       {
         id: "bind1",
@@ -779,7 +721,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
         disabled: false,
       },
     ];
-    // First call = rejected bare modifier; second call = same combo as original (no-op path, won't be called)
     mockKeysChecks = [rejected("Your desktop cannot register this shortcut.")];
 
     const { container } = render(HotkeysTab);
@@ -787,20 +728,17 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
 
     const recorder = container.querySelector('[aria-label="Base Hotkey recorder input"]')!;
 
-    // Step 1: capture a bare modifier - gets rejected
     await fireEvent.focus(recorder);
     await fireEvent.keyDown(recorder, { key: "Meta", code: "MetaLeft" });
     await fireEvent.keyUp(recorder, { key: "Meta", code: "MetaLeft" });
     expect(await screen.findByText(/not accepted/i)).toBeTruthy();
 
-    // Step 2: re-capture the exact original combo - no-op, clears error
     await fireEvent.focus(recorder);
     await fireEvent.keyDown(recorder, { key: "Meta", code: "MetaLeft" });
     await fireEvent.keyDown(recorder, { key: " ", code: "Space" });
     await fireEvent.keyUp(recorder, { key: " ", code: "Space" });
 
     expect(screen.queryByText(/not accepted/i)).toBeNull();
-    // Only the first (rejected) capture called check_hotkey_keys; the re-record of original did not
     expect(keysCheckCalls).toHaveLength(1);
   });
 
@@ -827,8 +765,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
       ] as HotkeyBinding[];
     }
 
-    /// The dropdown only renders its options once opened, so every assertion
-    /// about what is on offer has to open it first.
     async function openGestureOptions(container: HTMLElement): Promise<string[]> {
       const field = Array.from(container.querySelectorAll("label")).find(l =>
         l.textContent?.includes("Input Gesture Style"),
@@ -857,9 +793,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
     });
 
     test("hides hold and double-tap when the desktop only reports key presses", async () => {
-      // A Cinnamon/MATE native shortcut runs a command on key-down and says
-      // nothing on key-up: a hold has no end and a tap cannot be told from a
-      // hold. Offering those would give the user a shortcut that does nothing.
       mockBindings = toggleBinding();
       mockHotkeyStatus = hotkeyStatus({
         backend: "mint_dbus",
@@ -875,7 +808,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
     });
 
     test("says why the missing styles are missing", async () => {
-      // Silently shrinking the list would read as a bug in the app.
       mockBindings = toggleBinding();
       mockHotkeyStatus = hotkeyStatus({
         backend: "mint_dbus",
@@ -889,9 +821,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
     });
 
     test("keeps a saved binding's unsupported gesture visible instead of rewriting it", async () => {
-      // The binding was configured under a backend that could serve it. Quietly
-      // changing the user's configuration would be a second invisible failure
-      // on top of the shortcut not firing.
       mockBindings = [{ ...toggleBinding()[0], gesture: "hold" }];
       mockHotkeyStatus = hotkeyStatus({
         backend: "mint_dbus",
@@ -908,9 +837,6 @@ describe("HotkeysTab.svelte Conflict Detection and Nested Modal", () => {
     });
 
     test("falls back to offering everything when the backend reports nothing", async () => {
-      // An older backend payload, or a status call that failed. Hiding every
-      // style would leave an empty dropdown, which is worse than showing one
-      // that might not work.
       mockBindings = toggleBinding();
       mockHotkeyStatus = hotkeyStatus({ supported_gestures: [] });
 

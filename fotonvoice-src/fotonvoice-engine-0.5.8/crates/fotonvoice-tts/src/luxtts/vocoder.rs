@@ -1,11 +1,4 @@
 //! Vocos output post-processing: the Linkwitz-Riley crossover merge.
-//!
-//! The dual-path vocoder emits a 48 kHz waveform and a 24 kHz waveform for the
-//! same utterance. The reference (`luxtts_onnx/inference.py::crossover_merge`)
-//! upsamples the 24 kHz leg to 48 kHz, then combines the two in the frequency
-//! domain with a 4th-order Linkwitz-Riley crossover (a Butterworth magnitude
-//! squared) at 12 kHz: the 24 kHz path feeds the lows, the 48 kHz path the
-//! highs. This module reproduces that FFT-based merge exactly.
 
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
@@ -15,15 +8,10 @@ const CROSSOVER_FREQ: f64 = 12_000.0;
 const SR_48K: f64 = 48_000.0;
 
 /// Resample `audio` from `orig` to `target` Hz with rubato's sinc resampler.
-///
-/// Used both directions: reference clips arrive at any rate and go to 24 kHz
-/// for mel extraction; the 24 kHz vocos leg goes to 48 kHz for the merge.
 pub fn resample(audio: &[f32], orig: u32, target: u32) -> Vec<f32> {
     if orig == target || audio.is_empty() {
         return audio.to_vec();
     }
-    // Integer 2x upsample (the merge path) through rubato's sinc; arbitrary
-    // ratios (reference loading) use the same machinery.
     let ratio = target as f64 / orig as f64;
     let chunk = 1024;
     let mut resampler = rubato::SincFixedIn::<f32>::new(
@@ -47,8 +35,6 @@ pub fn resample(audio: &[f32], orig: u32, target: u32) -> Vec<f32> {
     let mut pos = 0;
     while pos < audio.len() {
         let end = (pos + chunk).min(audio.len());
-        // SincFixedIn requires exactly `chunk` input frames; zero-pad the tail
-        // chunk and trim the matching tail from the output afterwards.
         let mut frame = audio[pos..end].to_vec();
         frame.resize(chunk, 0.0);
         let frame_out = match resampler.process(&[frame], None) {
@@ -58,17 +44,12 @@ pub fn resample(audio: &[f32], orig: u32, target: u32) -> Vec<f32> {
         out.extend_from_slice(&frame_out[0]);
         pos = end;
     }
-    // Trim to the exact expected length so both legs line up.
     let expected = (audio.len() as f64 * ratio).round() as usize;
     out.truncate(expected.max(1));
     out
 }
 
 /// FFT-based Linkwitz-Riley merge of the 48 kHz and 24 kHz paths.
-///
-/// 4th-order Butterworth magnitude squared = LR4: `low = sqrt(1/(1+r^8))`,
-/// `high = sqrt(1 - low^2)`. Both legs must already be at 48 kHz; lengths are
-/// truncated to their common length.
 pub fn crossover_merge(audio_48k: &[f32], audio_24k: &[f32]) -> Vec<f32> {
     let up = resample(audio_24k, 24_000, 48_000);
     let n = audio_48k.len().min(up.len());
@@ -97,16 +78,11 @@ pub fn crossover_merge(audio_48k: &[f32], audio_24k: &[f32]) -> Vec<f32> {
         let high_gain = (1.0 - butter_sq).max(0.0).sqrt();
         merged[b] = spec_24[b] * low_gain as f32 + spec_48[b] * high_gain as f32;
     }
-    // The reference (np.fft.rfft + irfft) treats the merged spectrum as
-    // conjugate-symmetric: irfft derives the upper half from the lower one.
-    // Gains must be mirrored there too - leaving the raw 48k bins in place
-    // injects unfiltered high-frequency content (harsh, "truly awful").
     for b in 1..n - bins + 1 {
         merged[n - b] = merged[b].conj();
     }
 
     ifft.process(&mut merged);
-    // rustfft's inverse leaves the result scaled by n.
     let scale = 1.0 / n as f32;
     merged
         .iter()
@@ -143,8 +119,6 @@ mod tests {
 
     #[test]
     fn test_merge_lows_come_from_24k_path() {
-        // A 100 Hz tone in both paths must survive the merge; the crossover at
-        // 12 kHz passes lows from the 24 kHz leg.
         let sr = 48_000.0f32;
         let audio_48k: Vec<f32> = (0..4800)
             .map(|i| (2.0 * std::f32::consts::PI * 100.0 * i as f32 / sr).sin())

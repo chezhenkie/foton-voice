@@ -1,23 +1,8 @@
 //! Portable root: the whole app file tree lives beside the exe.
-//!
-//! Every path the app reads or writes resolves under `app_root()`, the folder
-//! containing the running executable. Earlier builds scattered files across
-//! the platform data directories; `ensure_migrated()` copies whatever it finds
-//! there into the portable root exactly once, then never looks back.
 
 use std::path::{Path, PathBuf};
 
 /// The folder holding the running exe. Every app file lives under it.
-///
-/// Windows only, and deliberately so: the portable install (a folder copied
-/// between machines) is a Windows concept, and there the exe folder is
-/// writable. On Linux the exe lives somewhere read-only or root-owned - an
-/// AppImage's squashfs mount, or /usr/bin for a .deb - so the portable root
-/// would be unwritable and every config/model/log write would fail (observed:
-/// startup error log, overlays, and model lookup all failing against
-/// `/tmp/.mount_*/usr/bin`). There the tree lives in the per-user XDG data
-/// directory instead; `ensure_migrated` still runs once and copies any legacy
-/// per-user content into it, and its marker file is writable here.
 #[cfg(target_os = "windows")]
 pub fn app_root() -> PathBuf {
     std::env::current_exe()
@@ -49,9 +34,6 @@ fn legacy_local() -> PathBuf {
 }
 
 /// Copy `src` into `dst` when `dst` is missing and `src` exists.
-///
-/// `true` means nothing more to do here: copied, already present, or nothing
-/// to copy. `false` means the copy failed and a later run should retry.
 fn migrate_file(dst: &Path, src: &Path) -> bool {
     if dst.exists() || !src.is_file() {
         return true;
@@ -84,10 +66,6 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// Copy `src` into `dst` when `dst` is missing and `src` exists.
-///
-/// The copy lands at `<dst>.migrating` first and is renamed into place only
-/// once complete, so a failed copy leaves no half-populated `dst` that would
-/// make later runs skip the retry.
 fn migrate_dir(dst: &Path, src: &Path) -> bool {
     if dst.exists() || !src.is_dir() {
         return true;
@@ -114,11 +92,6 @@ fn migrate_dir(dst: &Path, src: &Path) -> bool {
 }
 
 /// One-time migration of legacy AppData content into the portable root.
-///
-/// Guarded by a `.portable-migrated` marker in the root: once it is written
-/// the app never reads the legacy directories again, so deleting a file from
-/// the root stays deleted. Migration is copy, not move - the legacy copy is
-/// left untouched for the user to remove once everything checks out.
 pub fn ensure_migrated() {
     let root = app_root();
     let marker = root.join(".portable-migrated");
@@ -164,7 +137,6 @@ mod tests {
         assert!(migrate_file(&dst, &src));
         assert!(dst.exists());
         assert_eq!(std::fs::read_to_string(&dst).unwrap(), "{}");
-        // Present dst is never overwritten, missing src is a no-op.
         std::fs::write(&dst, "kept").unwrap();
         assert!(migrate_file(&dst, &src));
         assert_eq!(std::fs::read_to_string(&dst).unwrap(), "kept");
@@ -182,9 +154,7 @@ mod tests {
         let dst = dir.join("out").join("models");
         assert!(migrate_dir(&dst, &src));
         assert!(dst.join("sub").join("a.bin").exists());
-        // Staging copy is renamed away once complete.
         assert!(!dst.with_extension("migrating").exists());
-        // Existing dst is never touched.
         std::fs::write(dst.join("sub").join("a.bin"), "kept").unwrap();
         assert!(migrate_dir(&dst, &src));
         assert_eq!(std::fs::read_to_string(dst.join("sub").join("a.bin")).unwrap(), "kept");

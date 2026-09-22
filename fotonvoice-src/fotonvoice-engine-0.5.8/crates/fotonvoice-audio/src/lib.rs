@@ -21,30 +21,14 @@ mod denoise;
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 
 /// Below this peak amplitude, a buffer is treated as silence when deciding
-/// whether the microphone is actually delivering signal.
-///
-/// Windows can deny microphone access *silently*: `build_input_stream` and
-/// `Stream::play()` both succeed, but every buffer that arrives is exact
-/// zeros. A tiny epsilon rather than a literal zero comparison catches that
-/// case (and any hardware that dithers in a few ULPs of noise) while staying
-/// far below the self-noise of a real microphone in a quiet room, so genuine
-/// quiet speech is never mistaken for a dead stream.
 const SILENCE_PEAK_EPSILON: f32 = 1e-4;
 
 /// Whether every sample in `data` falls within the noise floor a denied or
-/// dead input stream delivers.
 fn is_silent(data: &[f32]) -> bool {
     data.iter().all(|&s| s.abs() < SILENCE_PEAK_EPSILON)
 }
 
 /// How much of the audio from just *before* a recording started is kept and
-/// prepended to it.
-///
-/// People start talking as they press the shortcut, not after it, and the
-/// opening syllable is the one that carries the wake word. 300 ms covers a
-/// syllable or two at a cost of one buffer of memory - 57 KB at 48 kHz - and
-/// is short enough that the leading silence it usually contains cannot pull a
-/// quiet utterance under the noise gate.
 pub const PREROLL_MS: u32 = 300;
 
 /// A chunk of mono f32 audio at TARGET_SAMPLE_RATE Hz.
@@ -65,7 +49,6 @@ pub struct AudioRecorder {
     /// Live noise-suppression preference
     noise_suppression: Arc<AtomicBool>,
     /// Signalled when a flag this loop watches changes, so it reacts at once
-    /// instead of at the next poll. See [`AudioRecorder::with_wake`].
     wake: Option<Receiver<()>>,
 }
 
@@ -92,15 +75,6 @@ impl AudioRecorder {
     }
 
     /// Wake the capture supervisor the moment a flag changes, rather than
-    /// leaving it to notice on its next poll.
-    ///
-    /// In dynamic-stream mode the microphone is opened when recording starts,
-    /// so whatever the supervisor spends noticing is dead air at the front of
-    /// the utterance - the exact place the wake word lives. With a signal to
-    /// wait on, that cost goes to zero and the poll interval underneath can be
-    /// long, since it is only a backstop for changes nobody is timing.
-    ///
-    /// Optional: without it the loop polls as before.
     pub fn with_wake(mut self, wake: Receiver<()>) -> Self {
         self.wake = Some(wake);
         self
@@ -119,9 +93,6 @@ impl AudioRecorder {
     }
 
     /// Spawn the audio capture task. Returns a handle to stop it.
-    ///
-    /// Audio chunks are sent on `tx` only while `recording` is true.
-    /// The RMS level (0.0-1.0) is sent on `level_tx` continuously for VU meter.
     pub fn run(
         self,
         tx: Sender<AudioChunk>,
@@ -154,12 +125,10 @@ pub struct RecorderHandle {
     _thread: std::thread::JoinHandle<()>,
 }
 
-// -- Device testing at startup --------------------------------------------------
 
 pub fn test_and_detect_active_device(idx_opt: Option<u32>) -> Result<cpal::Device> {
     let host = cpal::default_host();
     
-    // 1. Try the configured input device if it exists
     if let Some(idx) = idx_opt {
         if let Ok(mut devices) = host.input_devices() {
             if let Some(device) = devices.nth(idx as usize) {
@@ -175,7 +144,6 @@ pub fn test_and_detect_active_device(idx_opt: Option<u32>) -> Result<cpal::Devic
         }
     }
 
-    // 2. Try default input device
     if let Some(device) = host.default_input_device() {
         if let Ok(config) = negotiate_config(&device) {
             if build_and_start_test_stream(&device, &config) {
@@ -187,7 +155,6 @@ pub fn test_and_detect_active_device(idx_opt: Option<u32>) -> Result<cpal::Devic
         }
     }
 
-    // 3. Fallback: search all available input devices for the first functional one
     if let Ok(devices) = host.input_devices() {
         for (idx, device) in devices.enumerate() {
             if let Ok(config) = negotiate_config(&device) {
@@ -199,18 +166,10 @@ pub fn test_and_detect_active_device(idx_opt: Option<u32>) -> Result<cpal::Devic
         }
     }
 
-    // 4. Default fallback
     host.default_input_device().context("no active or functional input device found at startup")
 }
 
 /// Build a throwaway input stream on `device` and briefly start it, then stop
-/// it - `true` if both succeeded.
-///
-/// A device can accept `build_input_stream` and still refuse to actually
-/// capture: some backends only surface a real failure from `Stream::play()`,
-/// not from building the stream. Validating with the same open-then-play
-/// sequence the real capture loop uses (see [`open_stream`]) catches that
-/// instead of reporting a device "functional" that never actually started.
 fn build_and_start_test_stream(device: &cpal::Device, config: &StreamConfig) -> bool {
     let Ok(stream) = device.build_input_stream(config, |_: &[f32], _| {}, |_| {}, None) else {
         return false;
@@ -222,7 +181,6 @@ fn build_and_start_test_stream(device: &cpal::Device, config: &StreamConfig) -> 
     true
 }
 
-// -- Capture processing --------------------------------------------------------
 
 /// What one captured buffer produced.
 #[derive(Debug)]
@@ -234,11 +192,6 @@ struct Captured {
 }
 
 /// The per-stream processing chain: gain, pre-roll, noise suppression and
-/// resampling, and the state each of those carries between buffers.
-///
-/// Separate from the cpal callback so it can be driven directly by tests -
-/// `cpal::InputCallbackInfo` cannot be constructed outside the crate that
-/// defines it, which would otherwise put all of this out of reach.
 struct CaptureProcessor {
     gain: Arc<AtomicU32>,
     recording: Arc<AtomicBool>,
@@ -247,31 +200,15 @@ struct CaptureProcessor {
     hw_rate: u32,
     needs_resample: bool,
     /// Built on the first buffer that actually needs it, so a stream that runs
-    /// with noise suppression off never pays for the model, and a mid-session
-    /// toggle still takes effect without rebuilding the stream.
     denoiser: Option<denoise::Denoiser>,
     denoising: bool,
     /// Reused across buffers so the gain stage never allocates on the audio
-    /// thread: a `malloc` here is both CPU the real-time deadline cannot spare
-    /// and a lock the allocator may block on, which is what an xrun sounds like.
     gained: Vec<f32>,
     /// The tail of what the microphone heard before recording began, at the
-    /// hardware rate and without gain applied - gain is whatever it is when the
-    /// recording actually starts. Allocated once and only written through, so
-    /// idling costs a memcpy per buffer and nothing else.
     preroll: VecDeque<f32>,
     preroll_cap: usize,
     was_recording: bool,
     /// Set once this stream has delivered a buffer that is not silence.
-    ///
-    /// Windows can deny microphone access without ever surfacing an error:
-    /// `build_input_stream` and `play()` both succeed, but the stream then
-    /// feeds nothing but exact zeros. Flipping "ready" the moment the stream
-    /// opens - which is all `open_stream` on its own can tell - would hide
-    /// exactly that case from the watchdog in `pipeline.rs`, so readiness
-    /// instead waits for proof that real audio is arriving. It is a one-way
-    /// latch for the life of the stream: once the mic has been heard from, a
-    /// quiet moment (the user pausing) must not un-ready it.
     audio_ready: Option<Arc<AtomicBool>>,
 }
 
@@ -304,65 +241,36 @@ impl CaptureProcessor {
     }
 
     fn feed(&mut self, data: &[f32]) -> Captured {
-        // Relaxed is enough for every flag read here: each one is an
-        // independent switch whose exact flip instant does not order any other
-        // memory, and a buffer either side of the change is equally correct.
         let is_recording = self.recording.load(Ordering::Relaxed);
         let current_gain = f32::from_bits(self.gain.load(Ordering::Relaxed));
 
-        // Latch readiness the first time this stream proves it is actually
-        // capturing, whether or not a recording is in progress - an always-on
-        // or monitoring-only stream is just as good a witness as a recording
-        // one, and waiting for a recording to start would only delay the
-        // watchdog that depends on this.
         if let Some(ref ready) = self.audio_ready {
             if !ready.load(Ordering::Relaxed) && !is_silent(data) {
                 ready.store(true, Ordering::Relaxed);
             }
         }
 
-        // The level feed only has consumers while the overlay is visualising a
-        // recording or the Audio tab is showing its VU meter. An always-on
-        // stream would otherwise push a level - and with it a Tauri event and
-        // a message to the overlay process - for every buffer, all day, with
-        // nothing on the other end to draw it.
-        //
-        // Gain is a scalar, so scaling the RMS is the same number as the RMS
-        // of the scaled samples - without touching the heap.
         let level = (is_recording || self.monitoring.load(Ordering::Relaxed))
             .then(|| rms(data) * current_gain);
 
         if !is_recording {
             self.was_recording = false;
-            // Only reachable while the stream is open - an always-on stream, or
-            // a dynamic one still up because the Audio tab is monitoring. A
-            // closed device hears nothing, so a dynamic recording opened from
-            // cold still starts at the moment the device does.
             self.preroll.extend(data.iter().copied());
             let excess = self.preroll.len().saturating_sub(self.preroll_cap);
             self.preroll.drain(..excess);
             return Captured { level, chunk: None };
         }
 
-        // Drop the denoiser when the setting goes off so its next run starts
-        // from a clean spectral estimate rather than one built minutes ago.
         let wants_denoise = self.noise_suppression.load(Ordering::Relaxed);
         if wants_denoise != self.denoising {
             self.denoiser = denoise::make_denoiser(wants_denoise, self.hw_rate);
             self.denoising = wants_denoise;
         }
 
-        // The first buffer of a recording carries the pre-roll ahead of it, so
-        // the utterance starts where the speaker did rather than where the
-        // shortcut landed. Draining leaves the ring empty for the rest of the
-        // recording, so this costs nothing after the opening buffer.
         let opening = !self.was_recording;
         self.was_recording = true;
         let carries_preroll = opening && !self.preroll.is_empty();
 
-        // The denoise and resample stages need a slice to borrow, and so does
-        // a buffer with the pre-roll in front of it. The straight-through case
-        // needs neither: it builds the one buffer handed downstream, no more.
         let processed = if self.denoiser.is_some() || self.needs_resample || carries_preroll {
             self.gained.clear();
             self.gained.reserve(self.preroll.len() + data.len());
@@ -375,8 +283,6 @@ impl CaptureProcessor {
                 None if self.needs_resample => {
                     resample_chunk(&self.gained, self.hw_rate, TARGET_SAMPLE_RATE)
                 }
-                // Once per recording at most: every later buffer takes a
-                // branch above or the straight-through one below.
                 None => self.gained.clone(),
             }
         } else {
@@ -390,14 +296,8 @@ impl CaptureProcessor {
     }
 }
 
-// -- Capture callback ----------------------------------------------------------
 
 /// Build the data callback cpal invokes for each captured buffer.
-///
-/// Every stream the capture loop opens - always-on, dynamic, and the one
-/// rebuilt after a device change - needs the same processing chain, and a
-/// denoiser of its own, so they all come from here rather than being written
-/// out three times.
 #[allow(clippy::too_many_arguments)]
 fn make_input_callback(
     gain: Arc<AtomicU32>,
@@ -431,14 +331,8 @@ fn make_input_callback(
     }
 }
 
-// -- Capture loop --------------------------------------------------------------
 
 /// Open and start an input stream on `device` with the standard processing
-/// chain, or `None` if the device refused it.
-///
-/// All three places the capture loop opens a stream - at startup, on the
-/// switch to always-on, and when a dynamic recording begins - want exactly
-/// this, so they share it rather than repeating the same twenty lines.
 #[allow(clippy::too_many_arguments)]
 fn open_stream(
     device: &cpal::Device,
@@ -498,7 +392,6 @@ fn capture_loop(
     let mut current_idx = input_device_index.load(Ordering::SeqCst);
     let idx_opt = if current_idx == u32::MAX { None } else { Some(current_idx) };
 
-    // Perform startup test to detect active device
     let mut device = match test_and_detect_active_device(idx_opt) {
         Ok(d) => d,
         Err(e) => {
@@ -519,11 +412,9 @@ fn capture_loop(
     let mut was_recording = false;
     let mut was_dynamic = dynamic_stream.load(Ordering::SeqCst);
 
-    // Initial setup based on current preference
     let active_init = recording.load(Ordering::SeqCst) || monitoring.load(Ordering::SeqCst);
     if was_dynamic {
         if active_init {
-            // Handled by dynamic loop below
         } else if let Some(ref ready) = audio_ready {
             ready.store(false, Ordering::SeqCst);
         }
@@ -534,10 +425,6 @@ fn capture_loop(
             &gain, &recording, &monitoring, &noise_suppression, &tx, &level_tx, &audio_ready,
         ) {
             current_stream = Some(stream);
-            // Not marked ready here: the stream opening only proves it was
-            // *allowed* to open. `audio_ready` is flipped by the capture
-            // callback itself, the first time a buffer arrives that isn't
-            // silence - see `CaptureProcessor::feed`.
             info!("Startup always-on stream successfully playing.");
         }
     }
@@ -549,7 +436,6 @@ fn capture_loop(
         let is_dynamic = dynamic_stream.load(Ordering::SeqCst);
         let live_idx = input_device_index.load(Ordering::SeqCst);
 
-        // Detect device change at runtime (live hot-reload!)
         if live_idx != current_idx {
             info!("Device index changed from {current_idx} to {live_idx}, hot-reloading audio device...");
             current_idx = live_idx;
@@ -564,9 +450,6 @@ fn capture_loop(
                         info!("Hot-reload: successfully negotiated new device '{}' ({} Hz)", device.name().unwrap_or_default(), hw_rate);
                         current_stream = None; // Drop old stream
                         was_recording = false; // Force rebuild
-                        // A new device has proven nothing yet - carrying the
-                        // old device's readiness forward would hide a switch
-                        // to a dead or silently-denied one.
                         if let Some(ref ready) = audio_ready {
                             ready.store(false, Ordering::SeqCst);
                         }
@@ -576,11 +459,9 @@ fn capture_loop(
             }
         }
 
-        // 1. Detect dynamic setting change at runtime (live hot-reload!)
         if is_dynamic != was_dynamic {
             info!("Dynamic stream preference changed at runtime to: {is_dynamic}");
             if is_dynamic {
-                // Changed to dynamic: turn off always-on stream if not currently active
                 if !active {
                     current_stream = None; // Closes device!
                     if let Some(ref ready) = audio_ready {
@@ -589,15 +470,12 @@ fn capture_loop(
                     was_recording = false;
                 }
             } else {
-                // Changed to always-on: start always-on stream if it isn't already active
                 if current_stream.is_none() {
                     if let Some(stream) = open_stream(
                         &device, &hw_config, hw_rate, needs_resample,
                         &gain, &recording, &monitoring, &noise_suppression, &tx, &level_tx, &audio_ready,
                     ) {
                         current_stream = Some(stream);
-                        // See the startup open above: readiness is earned by
-                        // the callback, not assumed here.
                         info!("Switched to always-on mode: stream successfully playing.");
                     }
                 }
@@ -605,7 +483,6 @@ fn capture_loop(
             was_dynamic = is_dynamic;
         }
 
-        // 2. Manage dynamic recording stream lifecycles
         if is_dynamic {
             if active && !was_recording {
                 info!("Dynamic microphone stream starting (Option A)...");
@@ -615,10 +492,6 @@ fn capture_loop(
                 ) {
                     Some(stream) => {
                         current_stream = Some(stream);
-                        // Left false until the callback confirms real audio -
-                        // this is exactly the case the Windows silent-denial
-                        // bug hits: the stream opens and plays fine, and the
-                        // only way to tell is whether any signal ever arrives.
                         info!("Dynamic microphone stream successfully playing (Option A).");
                         was_recording = true;
                     }
@@ -636,15 +509,6 @@ fn capture_loop(
             }
         }
 
-        // With a wake signal there is nothing left to poll *for* on a short
-        // interval: a recording that is about to start says so, and everything
-        // else this loop watches is a settings change nobody is timing. The
-        // interval is then only a backstop, so it can be long.
-        //
-        // Without one - an embedder that never called `with_wake` - a dynamic
-        // stream still has to notice a recording by looking, and every
-        // millisecond it spends looking is missing from the front of the
-        // utterance. That case keeps the old 30 ms.
         let backstop = if wake.is_some() || !is_dynamic {
             Duration::from_millis(200)
         } else {
@@ -653,15 +517,9 @@ fn capture_loop(
         match wake {
             Some(ref rx) => match rx.recv_timeout(backstop) {
                 Ok(()) => {
-                    // Collapse a burst (start then stop, say) into this one
-                    // pass; the flags are read fresh at the top of the loop.
                     while rx.try_recv().is_ok() {}
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                // The sender is gone - the app is shutting down around this
-                // thread. A disconnected channel returns immediately and
-                // forever, so waiting on it here would spin a core through
-                // teardown; go back to sleeping out the interval.
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                     std::thread::sleep(backstop)
                 }
@@ -689,14 +547,6 @@ fn rms(samples: &[f32]) -> f32 {
 }
 
 /// Linear resampling between two rates, appended to `out`.
-///
-/// The source position walks forward by a fixed step rather than being
-/// recomputed as `i / ratio` per output sample, which keeps this to one add,
-/// one truncate and one multiply-add per sample - it runs on the audio
-/// callback thread for every buffer a non-16 kHz device delivers.
-///
-/// Writing into a caller-owned buffer lets the denoiser resample twice per
-/// chunk without allocating twice per chunk.
 pub(crate) fn resample_into(input: &[f32], from_hz: u32, to_hz: u32, out: &mut Vec<f32>) {
     if input.is_empty() {
         return;
@@ -713,8 +563,6 @@ pub(crate) fn resample_into(input: &[f32], from_hz: u32, to_hz: u32, out: &mut V
     out.reserve(out_len);
     let mut src = 0.0f64;
     for _ in 0..out_len {
-        // Clamped because `src` is accumulated rather than recomputed: the
-        // drift is far too small to hear, but it must not index past the end.
         let lo = (src as usize).min(last);
         let frac = (src - lo as f64) as f32;
         let hi = (lo + 1).min(last);
@@ -729,7 +577,6 @@ fn resample_chunk(input: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
     out
 }
 
-// -- Device listing ------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct AudioDeviceInfo {
@@ -755,7 +602,6 @@ mod capture_tests {
     use super::*;
 
     /// A processor at the target rate, so buffer lengths pass through
-    /// unchanged and the pre-roll arithmetic is exact.
     fn processor(recording: &Arc<AtomicBool>) -> CaptureProcessor {
         CaptureProcessor::new(
             Arc::new(AtomicU32::new(1.0f32.to_bits())),
@@ -773,9 +619,6 @@ mod capture_tests {
     }
 
     /// The bug: dictation starts when the shortcut fires, but people are
-    /// already talking by then. Whatever the microphone heard just before has
-    /// to arrive in front of the recording, or the opening word - the one
-    /// carrying the wake word - is simply not in the audio.
     #[test]
     fn the_opening_buffer_carries_what_came_before_it() {
         let recording = Arc::new(AtomicBool::new(false));
@@ -788,7 +631,6 @@ mod capture_tests {
         recording.store(true, Ordering::SeqCst);
         let first = p.feed(&ramp(50, 1000.0)).chunk.expect("recording produced nothing");
 
-        // 210 buffered samples ahead of the 50 live ones.
         assert_eq!(first.len(), 260, "pre-roll was not prepended");
         assert_eq!(first[0], 0.0, "pre-roll did not start at the oldest sample");
         assert_eq!(first[199], 199.0, "pre-roll was not contiguous");
@@ -811,7 +653,6 @@ mod capture_tests {
     }
 
     /// The ring is the only thing here that grows, so it has to be bounded by
-    /// something other than how long the app has been idle.
     #[test]
     fn the_pre_roll_never_grows_past_its_window() {
         let recording = Arc::new(AtomicBool::new(false));
@@ -828,7 +669,6 @@ mod capture_tests {
     }
 
     /// A second recording must open with the audio from just before *it*, not
-    /// with leftovers from the previous one.
     #[test]
     fn a_later_recording_gets_its_own_pre_roll() {
         let recording = Arc::new(AtomicBool::new(false));
@@ -861,8 +701,6 @@ mod capture_tests {
     }
 
     /// The level feed exists for the VU meter and the overlay; with neither
-    /// watching it must stay silent, which is what keeps an idle always-on
-    /// stream from pushing a hundred IPC messages a second.
     #[test]
     fn levels_are_produced_only_for_someone_watching() {
         let recording = Arc::new(AtomicBool::new(false));
@@ -901,10 +739,6 @@ mod capture_tests {
     }
 
     /// The Windows bug this exists for: a stream can open and `play()`
-    /// successfully while WASAPI hands it nothing but zeros, with no error
-    /// anywhere. `audio_ready` must stay false until a buffer proves
-    /// otherwise, and - once it has - must not flap back to false just
-    /// because the user paused talking.
     #[test]
     fn audio_ready_latches_on_first_real_signal_and_not_before() {
         let recording = Arc::new(AtomicBool::new(true));

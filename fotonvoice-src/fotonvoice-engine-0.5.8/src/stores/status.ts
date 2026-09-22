@@ -32,7 +32,6 @@ export const mcpRecording = derived(status, ($s) => $s.mcp_recording);
 export const wordCount = derived(status, ($s) => $s.word_count);
 export const activeTargetLabel = derived(status, ($s) => $s.active_target_label ?? "Focused Window");
 
-// Listen to periodic status ticks from the Rust backend
 let lastTickAt = 0;
 
 listen<AppStatus>("status-tick", (event) => {
@@ -40,7 +39,6 @@ listen<AppStatus>("status-tick", (event) => {
   status.set(event.payload);
 });
 
-// Initial fetch
 invoke<AppStatus>("get_status").then(status.set).catch(console.error);
 
 /**
@@ -63,6 +61,5 @@ setInterval(() => {
   invoke<AppStatus>("get_status")
     .then(status.set)
     .catch(() => {
-      // Nothing useful to do: the next poll tries again.
     });
 }, POLL_INTERVAL_MS);

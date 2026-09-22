@@ -14,7 +14,6 @@ pub const TRAY_SETUP_OK: &str = "  Setup & Diagnostics";
 pub const TRAY_SETUP_BROKEN: &str = "!  Global shortcuts unavailable";
 
 /// Reflect setup state in the tray, which is the one piece of FotonVoice Engine UI that
-/// is always on screen.
 #[cfg(target_os = "linux")]
 pub fn update_tray_for_setup(app: &tauri::AppHandle, ok: bool) {
     let app = app.clone();
@@ -39,7 +38,6 @@ static TTS_MEMORY_MENU_ITEM: OnceLock<tauri::menu::CheckMenuItem<tauri::Wry>> = 
 pub const TRAY_TTS_MEMORY: &str = "  Unload TTS model when idle";
 
 /// Keep the tray checkbox in step with the setting, whichever side changed it
-/// (the tray item itself, or the TTS settings tab).
 pub fn update_tray_tts_memory(app: &tauri::AppHandle, on_demand: bool) {
     let app = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -50,8 +48,6 @@ pub fn update_tray_tts_memory(app: &tauri::AppHandle, on_demand: bool) {
 }
 
 /// Flip the TTS memory mode from the tray: persist it, tell the running worker
-/// (no restart - that would tear down the engine and its audio device), and
-/// mirror the new state back into the settings window.
 fn toggle_tts_memory_mode(app: &tauri::AppHandle) {
     use tauri::Manager;
 
@@ -107,8 +103,6 @@ pub fn create_tray(app: &tauri::App) -> Result<tauri::tray::TrayIcon, tauri::Err
         "tts_memory",
         TRAY_TTS_MEMORY,
         true,
-        // The real value is applied right after the tray is built (see
-        // `sync_tts_memory_item`); a `try_lock` here can miss at startup.
         false,
         None::<&str>,
     )?;
@@ -139,19 +133,6 @@ pub fn create_tray(app: &tauri::App) -> Result<tauri::tray::TrayIcon, tauri::Err
                     toggle_tts_memory_mode(app);
                 }
                 "quit" => {
-                    // Exit immediately. Do NOT await TTS engine teardown here:
-                    // a hanging audio/ORT session shutdown would block
-                    // app.exit(0) and leave a zombie process in the tray.
-                    // The worker processes are reaped by the OS on exit.
-                    //
-                    // Failsafe (2026-09-21): a kernel-stuck thread (cpal WASAPI
-                    // stream release or the WebGPU/D3D12 teardown path) can keep
-                    // the process alive after exit. Two mitigations, both
-                    // fire-and-forget so the Tray Quit Law stays synchronous:
-                    // 1. release the capture streams now (drop happens on the
-                    //    audio thread, not awaited here);
-                    // 2. a detached watchdog thread force-exits 2s later if the
-                    //    graceful exit has not completed by then.
                     if let Some(state) = app.try_state::<AppState>() {
                         state.recording.store(false, std::sync::atomic::Ordering::SeqCst);
                         state.monitoring.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -188,18 +169,6 @@ pub fn sync_tts_memory_item(app: tauri::AppHandle, state: Arc<AppState>) {
 }
 
 /// Emits `status-tick`, animates the tray icon, and builds the dictation
-/// overlay window if the startup pre-build failed (see `lib.rs`).
-///
-/// The overlay window is normally built during startup and kept for the rest
-/// of the session; this loop builds it on the first activation only if that
-/// failed. What is on screen is decided inside it by `Overlay.svelte`, which
-/// renders nothing while idle. The old Linux destroy/recreate per dictation
-/// (a WebKitGTK stale-frame workaround) is gone: its cause is fixed by the
-/// host-first WebKitGTK AppImage packaging (see
-/// `scripts/appimage-hooks/host-first-fallback.sh`), and rebuilding cost a
-/// black box flash plus a page load on every keybind press. Linux also gets
-/// the no-outputs suspend poll and the post-dictation repaint nudge, both
-/// cfg-gated here.
 pub fn spawn_status_ticker(
     handle: tauri::AppHandle,
     state_for_ticker: Arc<AppState>,
@@ -208,11 +177,7 @@ pub fn spawn_status_ticker(
     processing_frames: [tauri::image::Image<'static>; 6],
 ) {
     tokio::spawn(async move {
-        // The tray animation frame rate, and the ceiling on how quickly a
-        // state change reaches the UI.
         let mut interval = tokio::time::interval(Duration::from_millis(150));
-        // The status window falls back to polling when ticks stop arriving,
-        // so an idle app still sends one of these - just not seven a second.
         const HEARTBEAT: Duration = Duration::from_millis(900);
 
         let mut last_recording = false;
@@ -220,29 +185,16 @@ pub fn spawn_status_ticker(
         let mut frame_idx = 0;
         let mut last_pos: Option<(String, String)> = None;
         let mut startup_tick_count: u32 = 0;
-        // What the last emitted payload said, so a tick that changes nothing
-        // costs a few atomic loads instead of building a payload, two JSON
-        // encodes, a webview event and a message to the overlay process.
         let mut last_flags: Option<(bool, bool, bool, bool, bool, u32, bool)> = None;
         let mut last_emit = tokio::time::Instant::now() - HEARTBEAT;
-        // The label is derived from three rarely-changing strings; caching it
-        // keeps the common tick from rebuilding and re-joining it.
         let mut label_inputs: Option<(String, String, bool)> = None;
         let mut cached_label = String::new();
-        // Linux only: whether the overlay window has been built by this loop
-        // yet (the startup pre-build in lib.rs is not visible here; a failed
-        // pre-build is recovered on the first activation).
         #[cfg(target_os = "linux")]
         let mut overlay_built = false;
-        // Guards against a SIGFPE in the bundled WebKitGTK's vblank thread
-        // when the compositor briefly has zero outputs - see
-        // `window::suspend_overlay_without_outputs`. (upstream 64209ba)
         #[cfg(target_os = "linux")]
         let mut overlay_suspended_no_outputs = false;
         #[cfg(target_os = "linux")]
         let mut last_output_check = tokio::time::Instant::now() - crate::window::NO_OUTPUTS_POLL_INTERVAL;
-        // Whether the overlay had something to show on the previous tick -
-        // drives the post-dictation repaint nudge below. (upstream 769f6b1)
         #[cfg(target_os = "linux")]
         let mut was_showing_overlay = false;
 
@@ -252,14 +204,6 @@ pub fn spawn_status_ticker(
             let is_recording = state_for_ticker.is_recording();
             let is_processing = state_for_ticker.is_processing();
 
-            // Decide whether the tray icon needs updating this tick and,
-            // if so, which frame to show. The actual `set_icon` call must
-            // happen on the GTK main thread: on Linux the tray is backed by
-            // ayatana-appindicator/GTK, which is not thread-safe. Calling it
-            // from this Tokio worker thread makes icon updates unreliable -
-            // the animated icon flickers or disappears entirely on
-            // appindicator-based desktops (e.g. GNOME). `run_on_main_thread`
-            // marshals the update onto the loop that owns the tray.
             let next_icon: Option<tauri::image::Image<'static>> = if is_processing {
                 let icon = processing_frames[frame_idx].clone();
                 frame_idx = (frame_idx + 1) % 6;
@@ -283,8 +227,6 @@ pub fn spawn_status_ticker(
 
             last_recording = is_recording;
 
-            // Overlay placement follows the user's config, which is compared
-            // under the lock so an unchanged setting costs no allocation.
             let mut position_changed = false;
             {
                 let cfg = state_for_ticker.config.lock().await;
@@ -301,8 +243,6 @@ pub fn spawn_status_ticker(
                 }
             }
             if position_changed || startup_tick_count < 40 {
-                // Send the anchor + monitor; the overlay computes pixel
-                // coordinates itself using its own display scale.
                 let (position, monitor) = last_pos
                     .as_ref()
                     .map(|(pos, mon)| (pos.as_str(), mon.as_str()))
@@ -317,11 +257,6 @@ pub fn spawn_status_ticker(
                 }
             }
 
-            // -- Overlay window build fallback (Linux only) ------------------------
-            // Build the overlay window the first time there is anything to
-            // show, then keep it - normally lib.rs already built it at
-            // startup and this is a no-op fetch. Mirrors the same condition
-            // Overlay.svelte derives client-side for its own content.
             #[cfg(target_os = "linux")]
             let should_show_overlay = {
                 let cfg = state_for_ticker.config.lock().await;
@@ -344,11 +279,6 @@ pub fn spawn_status_ticker(
                 }
             }
 
-            // On some WebKitGTK/compositor combinations the overlay's client
-            // buffer never repaints back to blank once the last dictation's
-            // content is gone - see `window::nudge_overlay_repaint`. Nudging
-            // twice, at 1s then 3s after the transition to idle, mirrors the
-            // reporter's own timing; harmless when nothing was stuck.
             #[cfg(target_os = "linux")]
             if overlay_built && was_showing_overlay && !should_show_overlay {
                 let nudge_handle = handle.clone();
@@ -413,9 +343,6 @@ pub fn spawn_status_ticker(
                 };
             }
 
-            // Everything the payload carries, compared before one is built:
-            // the label and target id are the cached strings above, so an
-            // unchanged tick allocates nothing at all.
             let flags = (
                 is_recording,
                 is_processing,

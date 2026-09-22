@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-// -- Gesture types -------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -13,7 +12,6 @@ pub enum GestureType {
     DoubleTapHold,
 }
 
-// -- Hotkey binding ------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeyBinding {
@@ -59,11 +57,6 @@ impl HotkeyBinding {
     }
 
     /// Stable identity of the key combination this binding listens for,
-    /// independent of the order the keys were captured in.
-    ///
-    /// Two bindings that share a signature share a physical trigger, which is
-    /// what lets `double_tap` and `double_tap_hold` coexist on one key and what
-    /// lets the portal backend register a single system shortcut for both.
     pub fn trigger_signature(&self) -> String {
         let mut keys = self.keys.clone();
         keys.sort();
@@ -73,30 +66,15 @@ impl HotkeyBinding {
 }
 
 /// Id of the synthetic binding that carries the TTS stop key into the hotkey
-/// listener.
-///
-/// It is not one of the user's saved bindings: the app appends it, `pipeline`
-/// matches it to stop playback, and the portal backend uses it to tell the one
-/// shortcut it may hold transiently from a binding the user chose. Everything
-/// that needs to name it names this.
 pub const TTS_STOP_BINDING_ID: &str = "__tts_stop__";
 
 fn default_tap_ms() -> u32 {
-    // Gap allowed between releasing the first tap and pressing the second.
-    // 250ms was tight enough that a deliberate but unhurried double-tap missed;
-    // desktop double-click windows are typically 400-500ms, so this stays on
-    // the responsive side of convention without punishing a slower tap.
     300
 }
 fn default_hold_threshold_ms() -> u32 {
-    // Minimum press duration before a Hold gesture starts recording. Long
-    // enough to debounce accidental taps, short enough that pressing the
-    // hotkey gives near-immediate feedback - the previous 1000ms made a normal
-    // press look completely dead (no overlay, no recording) on fresh installs.
     200
 }
 
-// -- Delivery types ------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -116,7 +94,6 @@ pub enum DeliveryType {
     Command,
 }
 
-// -- Per-target processing overrides ------------------------------------------
 
 /// None = inherit global config; Some(x) = override for this target.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -136,7 +113,6 @@ impl TargetProcessingConfig {
     }
 }
 
-// -- Output target -------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputTarget {
@@ -144,18 +120,14 @@ pub struct OutputTarget {
     pub label: String,
     pub delivery: DeliveryType,
 
-    // Exec
     pub command: Option<String>,
 
-    // Pipe
     pub pipe_path: Option<String>,
 
-    // Socket
     pub socket_host: Option<String>,
     pub socket_port: Option<u16>,
     pub socket_unix: Option<String>,
 
-    // File
     pub file_path: Option<String>,
     #[serde(default)]
     pub file_prefix: String,
@@ -164,27 +136,22 @@ pub struct OutputTarget {
     #[serde(default = "default_file_mode")]
     pub file_mode: String,
 
-    // DBus
     pub dbus_signal: Option<String>,
 
-    // HTTP
     pub http_url: Option<String>,
     #[serde(default = "default_http_method")]
     pub http_method: String,
     pub http_headers: Option<HashMap<String, String>>,
     pub http_json_template: Option<serde_json::Value>,
 
-    // Webhook
     pub webhook_url: Option<String>,
     pub webhook_secret: Option<String>,
     pub webhook_json_template: Option<serde_json::Value>,
 
-    // MCP
     pub mcp_path: Option<String>,
     pub mcp_tool: Option<String>,
     pub mcp_args: Option<serde_json::Value>,
 
-    // Chat (OpenAI-compatible /v1/chat/completions, with conversation history)
     /// Base URL of the OpenAI-compatible server, with or without a `/v1` suffix.
     pub chat_url: Option<String>,
     pub chat_model: Option<String>,
@@ -201,24 +168,19 @@ pub struct OutputTarget {
     #[serde(default = "default_chat_reply_mode")]
     pub chat_reply_mode: String,
     /// Spoken phrase that clears this target's conversation history instead of
-    /// being sent to the model. Case- and punctuation-insensitive.
     pub chat_reset_phrase: Option<String>,
 
     /// strftime pattern for the timestamp the `file` target writes when
-    /// `file_timestamp` is on. An unusable pattern falls back to the default
-    /// rather than failing the delivery.
     #[serde(default = "crate::timestamp::default_file_timestamp_format")]
     pub file_timestamp_format: String,
 
     /// Flatten the transcript onto one line before delivering it. Honored by
-    /// the `inject` and `command` targets.
     #[serde(default)]
     pub strip_newlines: bool,
 
     #[serde(default)]
     pub processing: TargetProcessingConfig,
 
-    // TTS response loopback
     pub response_pipe: Option<String>,
 }
 
@@ -235,9 +197,6 @@ pub(crate) fn default_chat_max_history() -> u32 {
     20
 }
 pub(crate) fn default_chat_timeout_secs() -> u64 {
-    // Local models on modest hardware routinely take tens of seconds for a
-    // first token, so this is far more generous than the 5s used for the
-    // fire-and-forget HTTP target.
     120
 }
 pub(crate) fn default_chat_reply_mode() -> String {
@@ -286,7 +245,6 @@ impl OutputTarget {
     }
 }
 
-// -- Results -------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct DeliveryResult {

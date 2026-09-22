@@ -17,20 +17,12 @@ pub struct AppState {
     /// True while TTS is playing back
     pub speaking: Arc<AtomicBool>,
     /// Live mirror of `ui.show_overlay` so the hot status-forwarding loops can
-    /// gate the native overlay without locking the config on every audio sample.
     pub overlay_enabled: Arc<AtomicBool>,
     /// True while MCP server is actively recording/listening to the microphone
     pub mcp_recording: Arc<AtomicBool>,
     /// When the command-executed overlay pill should stop showing, if it's
-    /// currently active. Set by `services::register_command_trigger_target`
-    /// and read by `tray::spawn_status_ticker`'s overlay-visibility decision -
-    /// see that function's doc comment for why this needs to live in shared
-    /// state rather than only being a frontend timer.
     pub command_overlay_until: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     /// True while the user is recording a new keybind in the settings UI.
-    /// Any hotkey gesture event received while this is true is silently dropped,
-    /// so the user cannot accidentally trigger dictation while pressing keys
-    /// to set up a new binding.
     pub hotkeys_inhibited: Arc<AtomicBool>,
     /// True when dynamic stream has successfully opened and is active (Option A)
     pub audio_ready: Arc<AtomicBool>,
@@ -52,7 +44,6 @@ pub struct AppState {
     pub last_text: Arc<Mutex<String>>,
 
     /// Monotonic counter - incremented each time last_text is written.
-    /// MCP transcribe_voice uses this to detect a new result vs a stale one.
     pub last_text_version: Arc<std::sync::atomic::AtomicU64>,
 
     /// Currently active dictation target ID
@@ -70,9 +61,6 @@ pub struct AppState {
     /// Channel sender to send empty audio chunks as sentinels to unblock the coordinator thread
     pub audio_tx: crossbeam_channel::Sender<Vec<f32>>,
     /// Nudges the audio capture supervisor when a flag it watches changes, so
-    /// a dynamic stream opens the microphone on the keypress instead of on the
-    /// supervisor's next poll - the interval that used to eat the first
-    /// syllable of the utterance.
     pub audio_wake: crossbeam_channel::Sender<()>,
 
     /// Channel sender for notifying the inference worker thread of configuration changes
@@ -85,17 +73,9 @@ pub struct AppState {
     pub active_fifos: Arc<Mutex<HashSet<String>>>,
 
     /// True while the TTS stop key is part of the listener's binding set.
-    ///
-    /// Where the desktop owns the key grab, a standing registration on bare
-    /// Escape would take the key from every other app, so `stop_key` holds it
-    /// only while FotonVoice Engine speaks. `stop_key::spawn` is the only writer; every
-    /// reload path reads it, so a save from the settings window cannot drop a
-    /// grab that is in use or resurrect one that was given back.
     pub stop_key_held: Arc<AtomicBool>,
 
     /// Tells the stop-key arbiter that playback started or stopped. Set once,
-    /// when the arbiter starts; `set_speaking` is called from the playback
-    /// thread, so this has to be lock-free and usable without a tokio runtime.
     pub speaking_tx: Arc<std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<bool>>>,
 
     /// Channel for sending hotkey configurations directly to background threads
@@ -105,13 +85,9 @@ pub struct AppState {
     pub hotkey_gesture_tx: Arc<Mutex<Option<fotonvoice_hotkeys::GestureSender>>>,
 
     /// Live view of whether the global hotkey listener can actually see a
-    /// keyboard. Drives the "finish setup" warnings - without it a missing
-    /// permission is indistinguishable from a hotkey the user never pressed.
     pub hotkey_health: Arc<fotonvoice_hotkeys::ListenerHealth>,
 
     /// Channel sender for `{"type":"position",...}` messages that reposition
-    /// the dictation overlay window when `config.ui.overlay_position` /
-    /// `overlay_monitor` change - see its consumer in `lib.rs`.
     pub overlay_tx: crossbeam_channel::Sender<String>,
 }
 
@@ -150,8 +126,6 @@ impl AppState {
     }
 
     /// Tell the capture supervisor to look at its flags now. Never blocks: the
-    /// channel holds one pending nudge and a second one would say nothing the
-    /// first does not.
     fn wake_audio(&self) {
         let _ = self.audio_wake.try_send(());
     }
@@ -178,17 +152,6 @@ impl AppState {
     }
 
     /// Start capturing, and stop anything FotonVoice Engine is saying while it does.
-    ///
-    /// Every path that starts dictation goes through this rather than
-    /// `set_recording(true)`: the hotkey gesture, the settings window, the D-Bus
-    /// service a desktop shortcut pokes, and MCP voice capture. A user who
-    /// starts talking over a spoken response means to interrupt it - and
-    /// capturing while the speakers are still going also feeds FotonVoice Engine's own
-    /// voice back into the microphone.
-    ///
-    /// `TtsEngineHandle::stop` rather than the raw sink stop, so the generation
-    /// counter is bumped: a streaming engine would otherwise keep appending the
-    /// frames it already had in flight and pick the sentence back up.
     pub async fn begin_recording(&self) {
         if let Some(tts) = self.tts_handle.lock().await.as_ref() {
             tts.stop();
@@ -197,12 +160,8 @@ impl AppState {
     }
 
     /// Prefer `begin_recording` to start dictation - it also interrupts
-    /// playback. This is the plain flag, and the only way to clear it.
     pub fn set_recording(&self, v: bool) {
         self.recording.store(v, Ordering::SeqCst);
-        // Straight after the flag, and before anything else: in dynamic-stream
-        // mode this nudge is what opens the microphone, and the time until it
-        // does is missing from the front of what the user is already saying.
         self.wake_audio();
         if !v {
             let _ = self.audio_tx.send(Vec::new());
@@ -211,9 +170,6 @@ impl AppState {
 
     pub fn set_speaking(&self, v: bool) {
         self.speaking.store(v, Ordering::SeqCst);
-        // Wakes the stop-key arbiter so the grab is taken as playback starts
-        // rather than at the next tick. Nothing here can block: this runs on
-        // the playback thread, which has no tokio runtime and an audio deadline.
         if let Some(tx) = self.speaking_tx.get() {
             let _ = tx.send(v);
         }
@@ -257,12 +213,6 @@ impl AppState {
     }
 
     /// Start loading the TTS model now, before anything asks it to speak.
-    ///
-    /// Only meaningful in the on-demand memory mode, where the model is not
-    /// resident between uses: the load takes seconds, so kicking it off the
-    /// moment we know speech is coming (the user has just started dictating)
-    /// hides most of that behind the time they spend talking. In always-loaded
-    /// mode the model is already there and this is a no-op.
     pub async fn preload_tts(&self) {
         let unloads_when_idle = {
             let cfg = self.config.lock().await;
@@ -277,9 +227,6 @@ impl AppState {
     }
 
     /// True when dictating through `target_id` is likely to end in speech -
-    /// either the target speaks the transcript itself, or it has a response
-    /// pipe whose reply FotonVoice Engine reads back. Used to decide whether a recording
-    /// is worth pre-loading the TTS model for; dictating into an editor is not.
     pub async fn target_leads_to_speech(&self, target_id: &str) -> bool {
         use fotonvoice_routing::DeliveryType;
         let targets = self.targets.lock().await;

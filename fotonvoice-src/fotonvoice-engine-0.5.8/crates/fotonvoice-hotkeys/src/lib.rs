@@ -3,11 +3,6 @@ mod health;
 mod keys;
 pub mod trigger;
 /// The Windows key table and suppression rules. Compiled everywhere, not just
-/// on Windows, so its tests run on the Linux lane where the suite actually runs.
-///
-/// Its only non-test consumer is the Windows backend, so off Windows every item
-/// here is "unused" as far as a non-test build can tell - hence the allow. The
-/// tests are what keep it honest, and they run on both.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod win_keys;
 
@@ -42,18 +37,6 @@ pub fn channel() -> (GestureSender, GestureReceiver) {
 }
 
 /// Start the global hotkey listener. Bindings can be updated at runtime through
-/// the returned handle.
-///
-/// On Linux this prefers the XDG desktop portal, where the compositor owns the
-/// key grab and FotonVoice Engine is told nothing except that its own shortcut fired.
-/// Failing that it reads X11 raw key events, which any X client may ask for and
-/// which need no setup. The evdev fallback is only used when neither is
-/// available *and* the user has already given this process access to input
-/// devices - FotonVoice Engine never asks for that access, because granting it lets every
-/// program running as the user read the keyboard, not just this one.
-///
-/// `ListenerHandle::health` reports which of those happened, so the app can say
-/// so at launch instead of failing silently.
 pub fn start_listener(
     bindings: Vec<HotkeyBinding>,
     tx: GestureSender,

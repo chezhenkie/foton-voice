@@ -1,19 +1,4 @@
 //! eSpeak-NG phoneme frontend for Inflect-Micro-v2.
-//!
-//! Inflect keeps its English grapheme-to-phoneme step outside the neural graphs:
-//! the ONNX export starts at phoneme ids, so the frontend has to reproduce the
-//! same IPA that the model was trained on. That is eSpeak-NG's `en-us` voice in
-//! IPA mode, which is the same frontend Piper and the wider VITS ecosystem use.
-//!
-//! Two details matter for matching the training-time frontend:
-//!
-//! * **Punctuation survives.** `espeak-ng --ipa -q` drops terminators and emits
-//!   one line per clause, but VITS models are trained with `,`/`.`/`?`/`!` in the
-//!   phoneme vocabulary because they carry prosody. [`phonemize`] therefore
-//!   splits clauses itself and re-attaches each terminator after phonemizing.
-//! * **Ids are per character, not per token.** IPA output is a string of Unicode
-//!   scalars - including stress marks (`ˈ`, `ˌ`) and length (`ː`) - and each maps
-//!   to its own id. See [`PhonemeVocab`].
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,7 +10,6 @@ use anyhow::{bail, Context, Result};
 const ESPEAK_VOICE: &str = "en-us";
 
 /// Clause terminators kept as phonemes. Ordered longest-first so `...` is
-/// consumed before `.`.
 const TERMINATORS: [&str; 7] = ["...", ".", "!", "?", ";", ":", ","];
 
 /// A clause plus the punctuation that ended it (empty for a trailing fragment).
@@ -36,16 +20,11 @@ pub struct Clause {
 }
 
 /// True when the `espeak-ng` binary is callable. The frontend shells out rather
-/// than linking `libespeak-ng`, matching how the eSpeak engine in `engine.rs`
-/// already invokes it and keeping the crate free of a C dependency.
 pub fn espeak_available() -> bool {
     fotonvoice_config::find_in_path("espeak-ng").is_some()
 }
 
 /// Split `text` into clauses on terminator punctuation, keeping the terminator.
-///
-/// `...` is treated as a single terminator so an ellipsis doesn't become three
-/// separate pause phonemes.
 pub fn split_clauses(text: &str) -> Vec<Clause> {
     let chars: Vec<char> = text.chars().collect();
     let mut clauses = Vec::new();
@@ -84,9 +63,6 @@ pub fn split_clauses(text: &str) -> Vec<Clause> {
 }
 
 /// Phonemize one clause with eSpeak-NG, returning bare IPA with no terminator.
-///
-/// eSpeak may still split a clause across lines (it breaks on some conjunctions);
-/// those are rejoined with a space, which phonemizes to the same short pause.
 fn phonemize_clause(text: &str) -> Result<String> {
     let output = Command::new("espeak-ng")
         .arg("-v")
@@ -116,10 +92,6 @@ fn phonemize_clause(text: &str) -> Result<String> {
 }
 
 /// Convert `text` to the IPA phoneme string the model expects.
-///
-/// Each clause is phonemized in its own eSpeak invocation so its terminator can
-/// be re-attached reliably - phonemizing the whole text at once would make the
-/// clause-to-line mapping ambiguous whenever eSpeak introduces its own breaks.
 pub fn phonemize(text: &str) -> Result<String> {
     if !espeak_available() {
         bail!(
@@ -145,13 +117,8 @@ pub fn phonemize(text: &str) -> Result<String> {
     Ok(out)
 }
 
-// -- Phoneme vocabulary --------------------------------------------------------
 
 /// Maps IPA characters to the model's phoneme ids.
-///
-/// Ids come from the symbol's position in the export's ordered `symbols` list,
-/// so the list itself is the vocabulary - see [`PhonemeVocab::load`] for the
-/// file names and formats accepted.
 #[derive(Debug, Clone)]
 pub struct PhonemeVocab {
     map: HashMap<String, i64>,
@@ -162,9 +129,7 @@ pub struct PhonemeVocab {
 }
 
 /// File names checked first for the phoneme table. Not exhaustive - [`PhonemeVocab::load`]
-/// falls back to scanning every text file in the directory.
 pub const VOCAB_FILES: [&str; 6] = [
-    // The export derives ids from the ordered list in `text/symbols.py`.
     "symbols.py",
     "symbols.json",
     "phonemes.json",
@@ -177,8 +142,6 @@ pub const VOCAB_FILES: [&str; 6] = [
 const VOCAB_EXTENSIONS: [&str; 5] = ["json", "txt", "csv", "tsv", "py"];
 
 /// A phoneme table has to be big enough to cover an IPA inventory and made
-/// mostly of short symbols. This is what separates a real table from a
-/// `config.json` of hyperparameters, whose keys are long words.
 const MIN_VOCAB_ENTRIES: usize = 16;
 
 fn is_plausible_vocab(map: &HashMap<String, i64>) -> bool {
@@ -190,7 +153,6 @@ fn is_plausible_vocab(map: &HashMap<String, i64>) -> bool {
 }
 
 /// Well-known names first, then any other text file in the directory, so a table
-/// under an unexpected name is still found.
 fn candidate_vocab_paths(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<std::path::PathBuf> = VOCAB_FILES
         .iter()
@@ -210,7 +172,6 @@ fn candidate_vocab_paths(dir: &Path) -> Vec<std::path::PathBuf> {
                 && !paths.contains(p)
         })
         .collect();
-    // Deterministic order so the chosen table doesn't depend on directory iteration.
     extra.sort();
     paths.append(&mut extra);
     paths
@@ -218,22 +179,6 @@ fn candidate_vocab_paths(dir: &Path) -> Vec<std::path::PathBuf> {
 
 impl PhonemeVocab {
     /// Load the phoneme table from `dir`, trying each name in [`VOCAB_FILES`].
-    ///
-    /// Three on-disk shapes are accepted, covering how VITS exports usually ship
-    /// their table:
-    ///
-    /// * `{"phoneme_id_map": {"a": [1], ...}}` - Piper's config layout
-    /// * `{"a": 1, "b": 2, ...}` - a flat symbol->id object
-    /// * `a 1\nb 2\n` - whitespace-separated `tokens.txt`
-    ///
-    /// Returns `Ok(None)` when no file in `dir` parses as a phoneme table.
-    ///
-    /// The export's table is not reliably named, so rather than requiring a
-    /// specific filename this tries the well-known names first and then every
-    /// other text file in the directory, accepting the first whose contents
-    /// actually look like a phoneme table (see [`is_plausible_vocab`]). That
-    /// keeps a `config.json` full of model hyperparameters from being mistaken
-    /// for the vocabulary.
     pub fn load(dir: &Path) -> Result<Option<Self>> {
         for path in candidate_vocab_paths(dir) {
             let Ok(raw) = std::fs::read_to_string(&path) else { continue };
@@ -261,8 +206,6 @@ impl PhonemeVocab {
     }
 
     /// Build a table from an ordered symbol list, where a symbol's id is its
-    /// position - the same rule the export uses (`{symbol: index for index,
-    /// symbol in enumerate(symbols)}`).
     pub fn from_symbols<I, S>(symbols: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -285,24 +228,10 @@ impl PhonemeVocab {
     }
 
     /// Encode an IPA string into model input ids.
-    ///
-    /// Mirrors `phonemes_to_tokens` in the export's reference script exactly:
-    /// each symbol maps to its index in the ordered symbol list, and the result
-    /// is interleaved with blanks into `[0, s₀, 0, s₁, ..., sₙ₋₁, 0]` - length
-    /// `2n+1`. The blank is the literal id `0`, and there is **no** BOS/EOS
-    /// wrapper; the interleaved blanks are what the monotonic alignment attends
-    /// over, so the length has to come out exactly right.
-    ///
-    /// Characters absent from the vocabulary are skipped and reported in the
-    /// returned `skipped` list rather than failing the utterance - an unknown
-    /// symbol should cost one phoneme, not the whole sentence.
     pub fn encode(&self, ipa: &str) -> Encoded {
         let mut sequence = Vec::new();
         let mut skipped = Vec::new();
 
-        // Encoded into a stack buffer rather than a `String` per character:
-        // a sentence is hundreds of characters and only the unknown ones -
-        // rare, by construction - need to own their symbol.
         let mut buf = [0u8; 4];
         for c in ipa.chars() {
             let sym: &str = c.encode_utf8(&mut buf);
@@ -337,20 +266,6 @@ pub struct Encoded {
 }
 
 /// Parse an ordered symbol list out of a Python source file.
-///
-/// The export defines its inventory in `text/symbols.py` the way the tacotron
-/// lineage does - named string constants combined into one list:
-///
-/// ```text
-/// _pad = '_'
-/// _punctuation = ';:,.!?... '
-/// symbols = [_pad] + list(_punctuation) + list(_letters) + list(_letters_ipa)
-/// ```
-///
-/// so this resolves the constants and expands the concatenation. `[name]`
-/// contributes the constant as a single symbol; `list(name)` contributes one
-/// symbol per character. A plain list literal (`symbols = ['a', 'b']`) is also
-/// accepted, since other exports write it that way. Nothing is executed.
 fn parse_python_symbols(raw: &str) -> Result<Vec<String>> {
     let constants = python_string_constants(raw);
 
@@ -359,7 +274,6 @@ fn parse_python_symbols(raw: &str) -> Result<Vec<String>> {
         .map(str::trim)
         .find_map(|line| {
             let rest = line.strip_prefix("symbols")?.trim_start();
-            // Guards against `symbols_other = ...` and `symbols.index(...)`.
             rest.strip_prefix('=').map(str::trim)
         })
         .context("no `symbols = ...` assignment found")?;
@@ -403,14 +317,12 @@ fn expand_symbol_term(
 ) -> Result<()> {
     let term = term.trim();
 
-    // `list(X)` - one symbol per character of X.
     if let Some(inner) = term.strip_prefix("list(").and_then(|t| t.strip_suffix(')')) {
         let value = resolve_string(inner.trim(), constants)?;
         out.extend(value.chars().map(|c| c.to_string()));
         return Ok(());
     }
 
-    // `[...]` - either a single wrapped constant, or a literal list.
     if let Some(inner) = term.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
         for item in split_top_level(inner, ',') {
             out.push(resolve_string(item.trim(), constants)?);
@@ -433,10 +345,6 @@ fn resolve_string(token: &str, constants: &HashMap<String, String>) -> Result<St
 }
 
 /// Split on `separator` at bracket depth zero and outside quotes.
-///
-/// Quote tracking matters here: the inventory's punctuation constant contains a
-/// `"` inside single quotes, and the IPA constant contains `'` inside double
-/// quotes, so a naive split would tear those strings apart.
 fn split_top_level(text: &str, separator: char) -> Vec<String> {
     let mut items = Vec::new();
     let mut current = String::new();
@@ -469,7 +377,6 @@ fn split_top_level(text: &str, separator: char) -> Vec<String> {
                     depth = depth.saturating_sub(1);
                     current.push(c);
                 }
-                // A comment ends the expression.
                 '#' if depth == 0 => break,
                 c if c == separator && depth == 0 => {
                     if !current.trim().is_empty() {
@@ -512,7 +419,6 @@ fn unquote_python_string(token: &str) -> Result<String> {
             Some('t') => out.push('\t'),
             Some('r') => out.push('\r'),
             Some('u') => {
-                // \uXXXX - IPA symbols are commonly written this way.
                 let hex: String = chars.by_ref().take(4).collect();
                 let code = u32::from_str_radix(&hex, 16)
                     .with_context(|| format!("bad \\u escape in {token:?}"))?;
@@ -537,7 +443,6 @@ fn map_from_ordered(symbols: Vec<String>) -> HashMap<String, i64> {
 fn parse_json_vocab(raw: &str) -> Result<HashMap<String, i64>> {
     let value: serde_json::Value = serde_json::from_str(raw).context("invalid JSON")?;
 
-    // An ordered array is the same shape as `text/symbols.py`: id is position.
     if let Some(array) = value.as_array() {
         let symbols: Vec<String> = array
             .iter()
@@ -548,7 +453,6 @@ fn parse_json_vocab(raw: &str) -> Result<HashMap<String, i64>> {
         }
     }
 
-    // Piper-style config: the table lives under `phoneme_id_map`.
     let table = value
         .get("phoneme_id_map")
         .or_else(|| value.get("vocab"))
@@ -571,7 +475,6 @@ fn parse_json_vocab(raw: &str) -> Result<HashMap<String, i64>> {
 
     let mut map = HashMap::with_capacity(obj.len());
     for (symbol, id) in obj {
-        // Values are either a bare id or a single-element array (Piper's shape).
         let resolved = match id {
             serde_json::Value::Number(n) => n.as_i64(),
             serde_json::Value::Array(a) => a.first().and_then(|v| v.as_i64()),
@@ -591,7 +494,6 @@ fn parse_text_vocab(raw: &str) -> Result<HashMap<String, i64>> {
         if line.trim().is_empty() {
             continue;
         }
-        // `<symbol> <id>`; the symbol may itself be a space, so split from the right.
         let Some((symbol, id)) = line.rsplit_once(char::is_whitespace) else {
             bail!("line {} is not `<symbol> <id>`: {line:?}", line_no + 1);
         };
@@ -609,7 +511,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    // -- Clause splitting -----------------------------------------------------
 
     #[test]
     fn test_split_clauses_keeps_terminators() {
@@ -637,7 +538,6 @@ mod tests {
 
     #[test]
     fn test_split_clauses_ignores_empty_segments() {
-        // Repeated punctuation must not produce empty clauses.
         let clauses = split_clauses("Hi!!! There");
         assert_eq!(clauses.len(), 2);
         assert_eq!(clauses[0].text, "Hi");
@@ -658,10 +558,6 @@ mod tests {
         assert_eq!(clauses[2].terminator, ".");
     }
 
-    // -- Python symbol-list parsing -------------------------------------------
-    //
-    // The export's text/symbols.py builds its inventory from named constants
-    // rather than a literal list, in the tacotron style.
 
     const TACOTRON_SYMBOLS_PY: &str = r#"
 _pad        = '_'
@@ -681,8 +577,6 @@ SPACE_ID = symbols.index(" ")
         let symbols = parse_python_symbols(TACOTRON_SYMBOLS_PY).unwrap();
         assert_eq!(symbols[0], "_", "the pad constant comes first, as one symbol");
         assert_eq!(symbols[1], ";");
-        // 1 pad + 16 punctuation + 3 letters + 6 ipa (the ipa fixture is
-        // ɑ, ɐ, ', U+0329, ', ᵻ - the quotes are literal characters).
         assert_eq!(symbols.len(), 1 + 16 + 3 + 6);
     }
 
@@ -690,15 +584,11 @@ SPACE_ID = symbols.index(" ")
     fn test_parse_python_symbols_ids_match_position() {
         let map = map_from_ordered(parse_python_symbols(TACOTRON_SYMBOLS_PY).unwrap());
         assert_eq!(map.get("_"), Some(&0), "pad is id 0");
-        // The space is the last of the 16 punctuation characters.
         assert_eq!(map.get(" "), Some(&16), "matches the export's SPACE_ID");
     }
 
     #[test]
     fn test_parse_python_symbols_keeps_quotes_inside_strings() {
-        // _punctuation is single-quoted but contains a double quote, and
-        // _letters_ipa is double-quoted but contains single quotes. A splitter
-        // that ignored quoting would tear both apart.
         let symbols = parse_python_symbols(TACOTRON_SYMBOLS_PY).unwrap();
         assert!(symbols.contains(&"\"".to_string()), "kept the double quote");
         assert!(symbols.contains(&"'".to_string()), "kept the single quotes");
@@ -706,8 +596,6 @@ SPACE_ID = symbols.index(" ")
 
     #[test]
     fn test_parse_python_symbols_duplicate_takes_last_id() {
-        // The real inventory lists `'` twice; Python's dict comprehension keeps
-        // the later index, and so must this.
         let symbols = parse_python_symbols(TACOTRON_SYMBOLS_PY).unwrap();
         let positions: Vec<usize> = symbols
             .iter()
@@ -728,7 +616,6 @@ SPACE_ID = symbols.index(" ")
 
     #[test]
     fn test_parse_python_symbols_ignores_the_symbols_index_line() {
-        // `SPACE_ID = symbols.index(" ")` must not be mistaken for the assignment.
         let symbols = parse_python_symbols("symbols = ['a']\nSPACE_ID = symbols.index(\" \")\n").unwrap();
         assert_eq!(symbols, vec!["a"]);
     }
@@ -747,7 +634,6 @@ SPACE_ID = symbols.index(" ")
     fn test_split_top_level_respects_quotes_and_depth() {
         let parts = split_top_level("[_a] + list(_b) + list(_c)", '+');
         assert_eq!(parts, vec!["[_a]", "list(_b)", "list(_c)"]);
-        // A separator inside quotes is not a separator.
         assert_eq!(split_top_level("'a+b' + _c", '+'), vec!["'a+b'", "_c"]);
     }
 
@@ -766,7 +652,6 @@ SPACE_ID = symbols.index(" ")
         assert!(vocab.source.unwrap().ends_with("symbols.py"));
     }
 
-    // -- Vocabulary parsing ---------------------------------------------------
 
     #[test]
     fn test_parse_json_vocab_flat_object() {
@@ -791,7 +676,6 @@ SPACE_ID = symbols.index(" ")
 
     #[test]
     fn test_parse_text_vocab_handles_space_symbol() {
-        // The symbol itself can be a space, so parsing must split from the right.
         let map = parse_text_vocab("  4\n").unwrap();
         assert_eq!(map.get(" "), Some(&4));
     }
@@ -801,7 +685,6 @@ SPACE_ID = symbols.index(" ")
         assert!(parse_text_vocab("a notanumber\n").is_err());
     }
 
-    // -- Vocabulary loading ---------------------------------------------------
 
     #[test]
     fn test_vocab_load_returns_none_when_absent() {
@@ -849,8 +732,6 @@ SPACE_ID = symbols.index(" ")
 
     #[test]
     fn test_vocab_load_finds_table_under_unexpected_name() {
-        // The published export does not use any of the well-known names, so the
-        // table has to be found by parsing rather than by filename.
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("inflect_symbols.txt"), vocab_text()).unwrap();
         let vocab = PhonemeVocab::load(dir.path()).unwrap().unwrap();
@@ -891,8 +772,6 @@ SPACE_ID = symbols.index(" ")
 
     #[test]
     fn test_vocab_load_recovers_when_first_candidate_is_junk() {
-        // An unparseable well-known name must not stop a valid table elsewhere
-        // from being found.
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("phonemes.json"), "not json at all").unwrap();
         std::fs::write(dir.path().join("symbols.txt"), vocab_text()).unwrap();
@@ -900,7 +779,6 @@ SPACE_ID = symbols.index(" ")
         assert!(vocab.source.unwrap().ends_with("symbols.txt"));
     }
 
-    // -- Plausibility heuristic -----------------------------------------------
 
     #[test]
     fn test_is_plausible_vocab_rejects_small_tables() {
@@ -927,7 +805,6 @@ SPACE_ID = symbols.index(" ")
         assert!(is_plausible_vocab(&map));
     }
 
-    // -- Encoding -------------------------------------------------------------
 
     /// A small ordered inventory: ids are positions, so `_`=0, `a`=1, `b`=2.
     fn test_vocab() -> PhonemeVocab {
@@ -936,7 +813,6 @@ SPACE_ID = symbols.index(" ")
 
     #[test]
     fn test_encode_interleaves_blanks_without_bos_or_eos() {
-        // Reference: with_blanks[1::2] = sequence, length 2n+1, blank id 0.
         let encoded = test_vocab().encode("ab");
         assert_eq!(encoded.ids, vec![0, 1, 0, 2, 0]);
         assert!(encoded.skipped.is_empty());
@@ -952,7 +828,6 @@ SPACE_ID = symbols.index(" ")
 
     #[test]
     fn test_encode_reports_unknown_symbols_without_failing() {
-        // `%` is not in the inventory; it contributes no id and no blank.
         let encoded = test_vocab().encode("a%b");
         assert_eq!(encoded.skipped, vec!["%".to_string()]);
         assert_eq!(encoded.ids, vec![0, 1, 0, 2, 0]);
@@ -966,8 +841,6 @@ SPACE_ID = symbols.index(" ")
 
     #[test]
     fn test_encode_empty_input_yields_no_ids() {
-        // The reference raises on an empty sequence; returning empty lets the
-        // caller skip the chunk instead of failing the whole utterance.
         assert!(test_vocab().encode("").ids.is_empty());
         assert!(test_vocab().encode("%%%").ids.is_empty());
     }
@@ -985,10 +858,6 @@ SPACE_ID = symbols.index(" ")
         assert!(!PhonemeVocab::from_symbols(["_"]).from_file);
     }
 
-    // -- eSpeak-backed phonemization ------------------------------------------
-    //
-    // Gated on the binary being installed so the suite still passes on machines
-    // without eSpeak-NG.
 
     #[test]
     fn test_phonemize_produces_ipa_when_espeak_present() {
@@ -997,7 +866,6 @@ SPACE_ID = symbols.index(" ")
         }
         let ipa = phonemize("Hello world.").unwrap();
         assert!(!ipa.is_empty());
-        // eSpeak's en-us rendering of "hello world" contains a primary stress mark.
         assert!(ipa.contains('ˈ'), "expected stress mark in {ipa:?}");
         assert!(ipa.ends_with('.'), "terminator must survive: {ipa:?}");
     }

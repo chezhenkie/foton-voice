@@ -1,18 +1,4 @@
 //! Linux Mint (Cinnamon / MATE) native shortcut integration.
-//!
-//! Cinnamon and MATE serve no XDG `GlobalShortcuts` portal and have no plans
-//! to. On an X11 session that costs nothing - FotonVoice Engine reads raw XInput2 key
-//! events and every gesture works. This module is for the case where even that
-//! is unavailable (a Wayland Cinnamon session, or an X server without XInput2):
-//! it registers FotonVoice Engine's D-Bus interface as a *native* custom shortcut through
-//! `gsettings`, so the desktop itself owns the key grab.
-//!
-//! What that mechanism can express is strictly limited, and the limit is worth
-//! stating plainly because the rest of the app has to reflect it: a custom
-//! keybinding runs a command on key-**press** and reports nothing on release.
-//! There is no way to hold a key, and no way to tell a tap from a hold. Only
-//! `toggle` survives the trip, which is why `Backend::MintDbus` advertises that
-//! one gesture and the settings UI offers no others while it is running.
 
 use std::process::Command;
 
@@ -22,13 +8,10 @@ use fotonvoice_routing::{GestureType, HotkeyBinding};
 use crate::host_env::host_command;
 
 /// D-Bus address of the running instance. `zbus` publishes methods under their
-/// PascalCase names, so `toggle_binding` is `ToggleBinding` on the bus - a
-/// command naming the Rust spelling silently invokes nothing.
 const DBUS_DEST: &str = "ai.fotonvoice.Dictation";
 const DBUS_PATH: &str = "/ai/fotonvoice-engine/Dictation";
 
 /// Marks a custom keybinding as FotonVoice Engine's, so a sync can tell its own entries
-/// from the user's without depending on what they are named.
 const OWNED_COMMAND_MARKER: &str = "ai.fotonvoice.Dictation";
 
 /// The shortcut registered when there is no usable binding to mirror.
@@ -71,11 +54,6 @@ pub fn is_mint_desktop() -> bool {
 }
 
 /// Run `gsettings` with the host's environment rather than the bundle's.
-///
-/// Inside the AppImage a plain `Command::new("gsettings")` inherits
-/// `GSETTINGS_SCHEMA_DIR` pointing into the AppDir, so it cannot see the
-/// Cinnamon schemas and reports that this desktop has no keybinding support -
-/// which reads exactly like running on a desktop that genuinely has none.
 fn gsettings() -> Command {
     host_command("gsettings")
 }
@@ -140,7 +118,6 @@ pub fn parse_custom_keybindings_list(raw: &str) -> Vec<String> {
         return Vec::new();
     }
 
-    // Extract items between quotes inside brackets
     let mut items = Vec::new();
     let mut current = String::new();
     let mut in_quote = false;
@@ -172,14 +149,6 @@ pub fn format_custom_keybindings_list(items: &[String]) -> String {
 }
 
 /// Pick gsettings slots for `needed` shortcuts, reusing FotonVoice Engine's own and never
-/// touching anyone else's.
-///
-/// Cinnamon's Keyboard applet enumerates custom keybindings as `custom0`,
-/// `custom1`, ... and does not list an entry named anything else, so a shortcut
-/// FotonVoice Engine registered under its own name would be invisible - and unfixable -
-/// in System Settings. Numbered slots are also why this has to allocate rather
-/// than hardcode: writing `custom0` blind would overwrite whatever custom
-/// shortcut the user already had there.
 pub fn allocate_slots(existing: &[String], owned: &[String], needed: usize) -> Vec<String> {
     let mut slots: Vec<String> = owned.iter().take(needed).cloned().collect();
 
@@ -199,11 +168,6 @@ pub fn allocate_slots(existing: &[String], owned: &[String], needed: usize) -> V
 }
 
 /// The gesture styles this backend can serve, as a predicate over bindings.
-///
-/// A custom keybinding fires a command on key-press and says nothing on
-/// release, so a hold has no end and a double-tap cannot be told from two
-/// separate presses. Registering those anyway would give the user a shortcut
-/// that starts a recording nothing ever stops.
 fn is_mirrorable(binding: &HotkeyBinding) -> bool {
     !binding.disabled && !binding.keys.is_empty() && binding.gesture == GestureType::Toggle
 }
@@ -243,10 +207,6 @@ fn slot_binding(schema: &str, slot: &str) -> Option<String> {
 }
 
 /// True when a gsettings `binding` value names an actual key.
-///
-/// Cinnamon stores an unbound shortcut as `['']` or `@as []` and MATE as `''`.
-/// Treating those as bound is what let a half-written registration report
-/// itself as working.
 pub fn binding_value_is_set(raw: &str) -> bool {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed == "@as []" || trimmed == "[]" || trimmed == "''" {
@@ -300,10 +260,6 @@ pub fn is_mint_shortcut_registered() -> bool {
     let raw = String::from_utf8_lossy(&out.stdout);
     let existing = parse_custom_keybindings_list(&raw);
 
-    // A slot in the list whose command is ours but whose `binding` was never
-    // written fires on no key at all. Reporting that as registered is what made
-    // the setup window say "FotonVoice Engine is ready" on a machine where no shortcut
-    // could work.
     owned_slots(schema, &existing).iter().any(|slot| {
         slot_binding(schema, slot)
             .map(|b| binding_value_is_set(&b))
@@ -312,25 +268,15 @@ pub fn is_mint_shortcut_registered() -> bool {
 }
 
 /// Mirror the user's toggle bindings into Cinnamon/MATE system shortcuts.
-///
-/// Returns what was registered, so the caller can tell the user which of their
-/// bindings this desktop is actually serving.
 pub fn sync_mint_shortcuts(bindings: &[HotkeyBinding]) -> Result<Vec<NativeShortcut>, String> {
     write_shortcuts(mirrorable_shortcuts(bindings))
 }
 
 /// The `(binding id, GTK accelerator)` pairs this desktop can actually serve.
-///
-/// Falls back to a single toggle on `FALLBACK_ACCEL` when the user has no
-/// binding that survives the trip, so a fresh install still has *some* working
-/// shortcut rather than none.
 fn mirrorable_shortcuts(bindings: &[HotkeyBinding]) -> Vec<(String, String)> {
     let mut wanted: Vec<(String, String)> = Vec::new();
     for b in bindings.iter().filter(|b| is_mirrorable(b)) {
         let Ok(portal_accel) = fotonvoice_hotkeys::trigger::accelerator(&b.keys) else {
-            // A bare modifier or a two-key combo has no accelerator, so the
-            // desktop cannot bind it. Skipping is right: the settings UI has
-            // already told the user this combination needs a regular key.
             continue;
         };
         wanted.push((b.id.clone(), convert_to_gtk_accelerator(&portal_accel)));
@@ -362,10 +308,6 @@ fn write_shortcuts(wanted: Vec<(String, String)>) -> Result<Vec<NativeShortcut>,
     let owned = owned_slots(schema, &existing);
     let slots = allocate_slots(&existing, &owned, wanted.len());
 
-    // Write every child key *before* the slot joins the list. The settings
-    // daemon reacts to the list changing by reading the entry it names, and an
-    // entry it reads first and finds empty stays unbound: nothing re-notifies
-    // it for a slot it has already seen.
     let mut registered = Vec::new();
     for (slot, (binding_id, accel)) in slots.iter().zip(wanted.iter()) {
         write_slot(schema, slot, binding_id, accel)?;
@@ -376,9 +318,6 @@ fn write_shortcuts(wanted: Vec<(String, String)>) -> Result<Vec<NativeShortcut>,
         });
     }
 
-    // A slot we used to own but no longer need is cleared as well as delisted.
-    // Leaving a stale accelerator in dconf means a shortcut the user cannot see
-    // in System Settings would come back the moment anything re-listed it.
     for slot in owned.iter().filter(|s| !slots.contains(s)) {
         let (child_schema, path) = child_schema_and_path(schema, slot);
         let target = format!("{child_schema}:{path}");
@@ -387,8 +326,6 @@ fn write_shortcuts(wanted: Vec<(String, String)>) -> Result<Vec<NativeShortcut>,
         }
     }
 
-    // Our stale slots are dropped from the list; everyone else's are kept in
-    // their original order.
     let mut new_list: Vec<String> = existing
         .iter()
         .filter(|s| !owned.contains(s) || slots.contains(s))
@@ -438,7 +375,6 @@ fn write_slot(schema: &str, slot: &str, binding_id: &str, accel: &str) -> Result
         .args(["set", &target, "command", &toggle_command(binding_id)])
         .output();
 
-    // Cinnamon's `binding` is an array of accelerators; MATE's is a single one.
     let binding_val = if is_cinnamon {
         format!("['{accel}']")
     } else {
@@ -458,11 +394,6 @@ fn write_slot(schema: &str, slot: &str, binding_id: &str, accel: &str) -> Result
 }
 
 /// Register FotonVoice Engine's native shortcut into Cinnamon or MATE system settings.
-///
-/// Kept for the callers that have no bindings to hand - the first-run installer
-/// and the setup window's "Approve Shortcuts" button. Where the user's own
-/// bindings are available, `sync_mint_shortcuts` mirrors those instead of
-/// inventing a shortcut they did not choose.
 pub fn register_mint_shortcut(preferred_binding: Option<&str>) -> Result<String, String> {
     let wanted = match preferred_binding {
         Some(accel) => vec![(String::new(), accel.to_string())],
@@ -569,10 +500,6 @@ mod tests {
 
     #[test]
     fn the_dbus_command_names_the_method_zbus_actually_publishes() {
-        // zbus exposes `toggle_binding` as `ToggleBinding`. A command naming the
-        // Rust spelling invokes nothing at all, which is exactly how the old
-        // `toggle_recording` command failed: registration looked fine and the
-        // shortcut did nothing.
         let cmd = toggle_command("dictate");
         assert!(cmd.contains("ai.fotonvoice.Dictation.ToggleBinding"), "{cmd}");
         assert!(cmd.contains("string:'dictate'"), "{cmd}");
@@ -580,7 +507,6 @@ mod tests {
 
     #[test]
     fn slots_never_overwrite_a_shortcut_the_user_created() {
-        // custom0 and custom1 belong to the user; FotonVoice Engine has to go around them.
         let existing = vec!["custom0".to_string(), "custom1".to_string()];
         let slots = allocate_slots(&existing, &[], 2);
         assert_eq!(slots, vec!["custom2", "custom3"]);
@@ -588,8 +514,6 @@ mod tests {
 
     #[test]
     fn a_resync_reuses_the_slots_fotonvoice_already_owns() {
-        // Otherwise every save leaks a new custom keybinding into the user's
-        // System Settings.
         let existing = vec!["custom0".to_string(), "custom1".to_string()];
         let owned = vec!["custom1".to_string()];
         assert_eq!(allocate_slots(&existing, &owned, 1), vec!["custom1"]);
@@ -598,8 +522,6 @@ mod tests {
 
     #[test]
     fn slots_are_numbered_so_cinnamons_settings_panel_lists_them() {
-        // Cinnamon's Keyboard applet enumerates `customN` and shows nothing
-        // else, so a name of our own would be invisible and unfixable there.
         for slot in allocate_slots(&[], &[], 3) {
             assert!(slot.starts_with("custom"), "{slot}");
             assert!(slot["custom".len()..].chars().all(|c| c.is_ascii_digit()), "{slot}");
@@ -608,7 +530,6 @@ mod tests {
 
     #[test]
     fn an_unwritten_binding_value_does_not_count_as_registered() {
-        // The half-written state that used to report "FotonVoice Engine is ready".
         assert!(!binding_value_is_set("@as []"));
         assert!(!binding_value_is_set("[]"));
         assert!(!binding_value_is_set("['']"));
@@ -621,8 +542,6 @@ mod tests {
 
     #[test]
     fn only_toggle_bindings_are_mirrored_to_the_desktop() {
-        // A custom keybinding reports no key release, so a hold registered here
-        // would start a recording that nothing ever ends.
         assert!(is_mirrorable(&binding("t", GestureType::Toggle, &["KEY_LEFTCTRL", "KEY_D"])));
         for gesture in [
             GestureType::Hold,

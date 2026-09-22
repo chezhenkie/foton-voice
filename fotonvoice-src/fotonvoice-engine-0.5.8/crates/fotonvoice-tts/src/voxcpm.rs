@@ -1,12 +1,4 @@
 //! VoxCPM2 neural text-to-speech engine support, via the shared audio.cpp
-//! runtime (see `audiocpp.rs`).
-//!
-//! Model repository: <https://huggingface.co/openbmb/VoxCPM2>
-//! Open-source model weights released under the Apache-2.0 License.
-//!
-//! VoxCPM2 supports Voice Design (natural-language prompts) and Voice Cloning
-//! (reference .wav clips), including Ultimate Cloning with a paired
-//! audio + transcript for higher-fidelity cloning.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,7 +34,6 @@ pub fn is_vox_cpm_2_ready(model_dir: &str) -> bool {
 }
 
 /// Downloads the VoxCPM2 GGUF model into `model_dir`. Ungated, so `hf_token`
-/// is accepted for parity with the other engines but not required.
 pub async fn download_vox_cpm_2_assets(model_dir: &str, hf_token: Option<String>) -> Result<()> {
     if audiocpp::audiocpp_binary().is_none() {
         audiocpp::download_audiocpp_binary().await.context("download audio.cpp runtime")?;
@@ -82,9 +73,6 @@ pub fn read_voice_transcript_file(wav_path_str: &str) -> Option<String> {
 }
 
 /// Resolves the clone-mode reference clip + optional transcript, or `None`
-/// when the config calls for Voice Design instead (which the UI no longer
-/// offers for VoxCPM2 - see the module docs above - but a config predating
-/// that change could still have it set).
 fn resolve_clone_reference(
     cfg: &fotonvoice_config::VoxCpm2Config,
     hf_token: Option<&str>,
@@ -117,12 +105,6 @@ fn speaker_ref<'a>(
     match clone_ref {
         Some((path, _)) => SpeakerRef::Clone(path),
         None => {
-            // Confirmed against audio.cpp v0.8.0: `instruct` is accepted for
-            // voxcpm2's `tts` task but produces byte-identical output
-            // regardless of prompt content - Voice Design isn't actually
-            // wired up for this family yet, despite being advertised in its
-            // model spec. Not something FotonVoice Engine can work around; flagging it
-            // loudly here so it isn't mistaken for our own bug.
             tracing::warn!(
                 "VoxCPM2 Voice Design prompt is currently ignored by audio.cpp \
                  (a known upstream limitation) - synthesis will use its default voice"
@@ -133,8 +115,6 @@ fn speaker_ref<'a>(
 }
 
 /// Ensures a resident audio.cpp session is loaded and warm for VoxCPM2.
-/// Called from `TtsCommand::Preload` - see [`crate::pocket::ensure_pocket_tts_loaded`]
-/// for why this needs its own dummy request rather than reusing `speak_vox_cpm_2`.
 pub(crate) fn ensure_vox_cpm_2_loaded(
     config: &TtsConfig,
     session: &mut Option<AudioCppSession>,
@@ -157,9 +137,6 @@ pub(crate) fn ensure_vox_cpm_2_loaded(
 }
 
 /// Called from `TtsEngineWorker::run` when `config.engine ==
-/// TtsEngine::VoxCpm2`. Takes the worker's audio.cpp session by mutable
-/// reference so it persists (and the underlying model stays loaded) across
-/// calls for the worker's lifetime, or until idle-unload drops it.
 pub(crate) fn speak_vox_cpm_2(
     config: &TtsConfig,
     u: &Utterance,

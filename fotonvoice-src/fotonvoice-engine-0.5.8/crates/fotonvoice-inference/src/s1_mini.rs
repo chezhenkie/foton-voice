@@ -1,7 +1,4 @@
 //! S1-mini GGUF dictation cleanup processor.
-//!
-//! Uses Candle to run Superwhisper's s1-mini-q4_k_m.gguf model locally
-//! in pure Rust with zero external process dependencies and zero C symbol collisions.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -203,7 +200,6 @@ impl S1MiniEngine {
         let t0 = Instant::now();
         let prompt_len = prompt_tokens.len();
 
-        // Feed entire prompt in forward pass with offset 0
         let input_tensor = Tensor::new(&prompt_tokens[..], &self.device)?.unsqueeze(0)?;
         let logits = self.model.forward(&input_tensor, 0)?;
 
@@ -407,7 +403,6 @@ fn clean_via_sidecar(
     ) {
         Ok(r) => r,
         Err(e) => {
-            // Drop process so next call can try respawning
             *guard = None;
             return Err(e);
         }
@@ -422,7 +417,6 @@ fn clean_via_sidecar(
     Ok(cleaned)
 }
 
-// Global cached engine instance
 static GLOBAL_ENGINE: std::sync::OnceLock<Arc<Mutex<Option<S1MiniEngine>>>> =
     std::sync::OnceLock::new();
 
@@ -431,7 +425,6 @@ fn global_engine_cell() -> &'static Arc<Mutex<Option<S1MiniEngine>>> {
 }
 
 /// Run text cleanup through S1-mini, lazily loading the model if needed.
-/// Falls back to the original text on any error.
 pub fn clean_dictation(text: &str, styling: &str, custom_dir: Option<&str>) -> String {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -443,7 +436,6 @@ pub fn clean_dictation(text: &str, styling: &str, custom_dir: Option<&str>) -> S
         return text.to_string();
     }
 
-    // 1. Attempt accelerated cleanup via the LLM sidecar if available
     if find_llm_sidecar_binary().is_some() {
         match clean_via_sidecar(text, styling, custom_dir) {
             Ok(cleaned) => {
@@ -459,7 +451,6 @@ pub fn clean_dictation(text: &str, styling: &str, custom_dir: Option<&str>) -> S
         }
     }
 
-    // 2. Fall back to in-process Candle CPU engine
     let cell = global_engine_cell();
     let mut guard = match cell.lock() {
         Ok(g) => g,
@@ -482,7 +473,6 @@ pub fn clean_dictation(text: &str, styling: &str, custom_dir: Option<&str>) -> S
         match engine.process(text, styling) {
             Ok(cleaned) => {
                 if cleaned.is_empty() && !text.trim().is_empty() {
-                    // S1-mini returned empty (e.g. input was only fillers/noise); return empty string
                     String::new()
                 } else {
                     cleaned

@@ -7,7 +7,6 @@ use fotonvoice_routing::{HotkeyBinding, OutputTarget};
 
 use crate::state::AppState;
 
-// -- Status --------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusPayload, String> {
@@ -50,13 +49,9 @@ pub struct StatusPayload {
     pub active_target_id: String,
     pub active_target_label: String,
     /// True when the global-shortcut listener can actually deliver a key right
-    /// now. False while an elevated window has the hook blinded (Windows) or
-    /// no backend is available, so a running dictation cannot be stopped with
-    /// its keybind and a new one cannot be started either.
     pub hotkeys_active: bool,
 }
 
-// -- Recording control ---------------------------------------------------------
 
 #[tauri::command]
 pub async fn start_recording(state: State<'_, Arc<AppState>>) -> Result<(), String> {
@@ -87,7 +82,6 @@ pub async fn toggle_recording(state: State<'_, Arc<AppState>>) -> Result<bool, S
     Ok(!was)
 }
 
-// -- Config --------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn get_config(state: State<'_, Arc<AppState>>) -> Result<AppConfig, String> {
@@ -101,14 +95,12 @@ pub async fn save_config(
     app: tauri::AppHandle,
     new_config: AppConfig,
 ) -> Result<(), String> {
-    // Update live dynamic stream state, input device index, and gain in AppState
     state.set_dynamic_stream(new_config.audio.dynamic_stream);
     state.set_input_device_index(new_config.audio.input_device_index);
     state.set_gain(new_config.audio.gain);
     state.set_noise_suppression(new_config.audio.noise_suppression);
     state.set_overlay_enabled(new_config.ui.show_overlay);
 
-    // Dynamic TTS engine lifecycle management
     {
         let mut handle = state.tts_handle.lock().await;
         let mut need_restart = true;
@@ -154,7 +146,6 @@ pub async fn save_config(
     guard.save().map_err(|e| e.to_string())?;
     info!("Config saved");
 
-    // Hot-reload inference engine configuration
     let _ = state.inference_config_tx.send(Arc::new(new_config.clone()));
 
     let (overlay_position, overlay_monitor) = (
@@ -162,13 +153,8 @@ pub async fn save_config(
         guard.data.ui.overlay_monitor.clone(),
     );
 
-    // Hot-reload the stop key binding in the listener if tts.stop_key changed.
-    // The config lock has to go first: assembling the set reads the stop key
-    // back out of it.
     drop(guard);
     if stop_key_changed {
-        // A set that could not be read is not worth reloading: the listener
-        // keeps the shortcuts it already has instead of losing all of them.
         if let Some(bindings) = crate::stop_key::listener_bindings_from_disk(&state).await {
             let reloader_guard = state.hotkey_reloader.lock().await;
             if let Some(reloader) = &*reloader_guard {
@@ -177,10 +163,8 @@ pub async fn save_config(
         }
     }
 
-    // Keep the tray checkbox in step with the TTS memory setting.
     crate::tray::update_tray_tts_memory(&app, new_config.tts.unloads_when_idle());
 
-    // Emit config-changed event to all windows to enable instant reactivity
     let _ = app.emit("config-changed", new_config);
 
     let pos_msg = serde_json::json!({
@@ -207,22 +191,14 @@ pub async fn stop_tts(
     Ok(())
 }
 
-// -- Build info ----------------------------------------------------------------
 
 /// Returns true when this binary was compiled with the `cuda` cargo feature.
-/// The frontend uses this to show or hide the CUDA device option.
 #[tauri::command]
 pub fn cuda_enabled() -> bool {
     cfg!(feature = "cuda")
 }
 
 /// What this build can actually offload to a GPU, per engine.
-///
-/// Both fields are decided at compile time and neither can be inferred from the
-/// other: the Vulkan build gives whisper.cpp the GPU and leaves Moonshine on the
-/// CPU, because ONNX Runtime has no Vulkan execution provider. The Engine tab
-/// asks for this so it can offer the device options the build can honour, and
-/// name the engine that cannot use the GPU at all.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AcceleratorSupport {
     /// `"cuda"`, `"vulkan"`, or `None` on a CPU-only build.
@@ -232,8 +208,6 @@ pub struct AcceleratorSupport {
     /// `"cuda"`, `"coreml"`, `"webgpu"`, or `None`.
     pub parakeet_gpu: Option<String>,
     /// True when the GPU backend is compiled in and a device is present at
-    /// runtime; the UI uses this to disable the Parakeet GPU toggle on
-    /// machines without a usable accelerator.
     pub parakeet_gpu_present: bool,
     /// Same providers as `parakeet_gpu`, for the Nemotron streaming lane.
     pub nemotron_streaming_gpu: Option<String>,
@@ -256,7 +230,6 @@ pub fn accelerator_support() -> AcceleratorSupport {
     }
 }
 
-// -- Routing -------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn get_targets(
@@ -274,14 +247,11 @@ pub async fn save_targets(
     let dir = fotonvoice_routing::config_dir();
     fotonvoice_routing::save_targets(&targets, &dir).map_err(|e| e.to_string())?;
     
-    // Update the in-memory targets cache
     *state.targets.lock().await = targets.clone();
 
-    // Hot-reload the router
     state.router.reload(targets).await;
     info!("Targets saved and router reloaded");
 
-    // Dynamically spawn new FIFO response pipe listeners if TTS is active
     let tts_handle_opt = {
         let guard = state.tts_handle.lock().await;
         guard.clone()
@@ -310,9 +280,6 @@ pub async fn save_bindings(
     fotonvoice_routing::save_bindings(&bindings, &dir).map_err(|e| e.to_string())?;
     info!("Bindings saved");
     
-    // Hot reload the bindings in the active listener threads, re-injecting the
-    // stop key when it is currently held - `stop_key`'s arbiter decides that,
-    // and a save must not take a grab it released or drop one it is using.
     let all_bindings = crate::stop_key::listener_bindings(&state, bindings.clone()).await;
     let reloader_guard = state.hotkey_reloader.lock().await;
     if let Some(reloader) = &*reloader_guard {
@@ -323,12 +290,6 @@ pub async fn save_bindings(
         }
     }
     
-    // Where the desktop owns the key grab, the saved bindings have to be pushed
-    // to it - nothing else will notice they changed. Narrowly gated: the Mint
-    // route is only right when it is already in use, or when nothing else
-    // worked at all. Registering it alongside a backend that watches the keys
-    // itself would fire every shortcut twice, and `Starting` has not finished
-    // deciding yet.
     let backend = state.hotkey_health.backend();
     if backend == fotonvoice_hotkeys::Backend::MintDbus
         || (backend == fotonvoice_hotkeys::Backend::None
@@ -363,10 +324,6 @@ pub async fn reset_chat_conversation(
 }
 
 /// Probe a Chat target's endpoint and list the models it serves.
-///
-/// Takes an unsaved target so the settings UI can test edits before persisting
-/// them. Routed through Rust rather than `fetch` in the webview because the
-/// endpoint is a third-party server that need not send CORS headers.
 #[tauri::command]
 pub async fn test_chat_target(target: OutputTarget) -> Result<OpenAiTestResult, String> {
     use fotonvoice_config::OpenAiConfig;
@@ -440,21 +397,12 @@ pub async fn download_voice(voice_name: String, voice_dir: String) -> Result<(),
 }
 
 /// Render a file target's timestamp format so the Settings UI can preview it
-/// and report a bad pattern before the target is saved.
-///
-/// chrono is the authority on what a `strftime` pattern means, so the preview
-/// comes from the same code the file target writes with rather than from a
-/// second implementation in TypeScript.
 #[tauri::command]
 pub async fn preview_timestamp_format(format: String) -> Result<String, String> {
     fotonvoice_routing::render_timestamp(&format, chrono::Utc::now())
 }
 
 /// The HuggingFace token exported into the environment, if any.
-///
-/// The UI shows it in place of the configured one and stops editing, because
-/// `HF_TOKEN` wins at download time - a value typed over it would be saved and
-/// then ignored, which is worse than not offering the field.
 #[tauri::command]
 pub async fn hf_token_env() -> Option<String> {
     fotonvoice_tts::hf_token_from_env()
@@ -507,8 +455,6 @@ pub async fn list_pocket_tts_voices(voice_dir: String) -> Result<Vec<fotonvoice_
 }
 
 /// Whether the Inflect-Micro-v2 ONNX engine was compiled into this build. The UI
-/// uses this to warn that selecting the engine in a build without it will fail,
-/// rather than letting the failure surface only on the first utterance.
 #[tauri::command]
 pub fn inflect_micro_available() -> bool {
     fotonvoice_tts::INFLECT_MICRO_COMPILED
@@ -527,10 +473,6 @@ pub async fn download_inflect_micro(model_dir: String) -> Result<(), String> {
 }
 
 /// Report the tensor names a downloaded Inflect-Micro-v2 export actually
-/// declares. This is the diagnostic path for a graph whose naming doesn't match
-/// what `inflect::model` binds against: it loads the graphs without building a
-/// synthesis plan, so it still returns a useful answer when loading for playback
-/// would fail.
 #[tauri::command]
 pub async fn inflect_micro_inspect(model_dir: String) -> Result<serde_json::Value, String> {
     #[cfg(feature = "inflect-micro")]
@@ -556,8 +498,6 @@ pub async fn check_model_downloaded(model_size: String, model_dir: Option<String
 }
 
 /// Whether the LuxTTS ONNX engine was compiled into this build. The UI uses
-/// this to warn that selecting the engine in a build without it will fail,
-/// rather than letting the failure surface only on the first utterance.
 #[tauri::command]
 pub fn lux_tts_available() -> bool {
     fotonvoice_tts::LUX_TTS_COMPILED
@@ -584,8 +524,6 @@ pub async fn delete_model(model_size: String, model_dir: String) -> Result<(), S
 }
 
 /// Whether the Moonshine ONNX backend was compiled into this build. The UI uses
-/// this to decide whether selecting Moonshine actually runs Moonshine (vs.
-/// transparently falling back to whisper-cpp).
 #[tauri::command]
 pub fn moonshine_available() -> bool {
     fotonvoice_inference::MOONSHINE_COMPILED
@@ -634,8 +572,6 @@ pub async fn delete_moonshine_model(model_size: String) -> Result<(), String> {
 }
 
 /// Whether the Parakeet ONNX backend was compiled into this build. The UI uses
-/// this to decide whether selecting Parakeet actually runs Parakeet (vs.
-/// transparently falling back to whisper-cpp).
 #[tauri::command]
 pub fn parakeet_available() -> bool {
     fotonvoice_inference::PARAKEET_COMPILED
@@ -767,16 +703,13 @@ fn expand_tilde(path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(path)
 }
 
-// -- Overlay window ------------------------------------------------------------
 
 /// The resolved, absolute path to the shared voice-cloning reference-clip
-/// folder (Pocket-TTS, Breeze-TTS-2, VoxCPM2), for display in Settings.
 #[tauri::command]
 pub fn get_cloned_tts_voices_dir() -> String {
     fotonvoice_tts::cloned_tts_voices_dir().display().to_string()
 }
 
-// -- Audio devices ------------------------------------------------------------
 
 #[tauri::command]
 pub async fn start_monitoring_audio(state: State<'_, Arc<AppState>>) -> Result<(), String> {
@@ -793,8 +726,6 @@ pub async fn stop_monitoring_audio(state: State<'_, Arc<AppState>>) -> Result<()
 }
 
 /// Tell the gesture handler to silently drop any incoming hotkey events.
-/// Called when the user opens the keybind recorder in Settings so they cannot
-/// accidentally trigger dictation while pressing keys for a new binding.
 #[tauri::command]
 pub async fn set_hotkeys_inhibited(
     inhibited: bool,
@@ -891,31 +822,22 @@ pub struct HotkeyStatusPayload {
     /// Global shortcuts can fire right now.
     pub is_active: bool,
     /// Which mechanism is delivering them: `portal`, `evdev`, `windows_hook`,
-    /// `starting` or `none`.
     pub backend: String,
     /// FotonVoice Engine receives only its own shortcuts and can read no keystrokes.
-    /// True on the portal and the Windows hook; false on the evdev fallback.
     pub is_private: bool,
     /// Why the desktop portal is not in use, when it is not.
     pub portal_error: Option<String>,
     /// The portal exists and refused FotonVoice Engine, rather than being absent. Needs
-    /// different advice: switching desktops would not help.
     pub portal_refused: bool,
     /// What the compositor actually bound, which may differ from what FotonVoice Engine
-    /// asked for - the user gets the final say in the portal's own dialog.
     pub shortcuts: Vec<fotonvoice_hotkeys::BoundShortcut>,
     /// Gesture styles the running backend can actually deliver, as the same
-    /// snake_case names the bindings file uses. The settings UI offers exactly
-    /// these, so a user is never shown a gesture that silently does nothing.
     pub supported_gestures: Vec<fotonvoice_routing::GestureType>,
     /// Why the X11 backend was not used, when it was not. Distinct from
-    /// `portal_error`: a Wayland Cinnamon user needs both reasons to make sense
-    /// of why neither worked.
     pub x11_error: Option<String>,
     /// `wayland`, `x11` or whatever `XDG_SESSION_TYPE` says.
     pub session_type: String,
     /// `/dev/input/event*` nodes present, and how many FotonVoice Engine could open.
-    /// Only meaningful for the evdev fallback.
     pub devices_total: u32,
     pub devices_readable: u32,
     /// The user has to do something outside FotonVoice Engine for shortcuts to work.
@@ -923,30 +845,18 @@ pub struct HotkeyStatusPayload {
     /// One-line, human-readable explanation of the state above.
     pub detail: String,
     /// KDE registers portal shortcuts into System Settings in a *disabled*
-    /// state - the user must open Shortcuts, tick each one, and click Apply
-    /// before it fires. This is a confirmed upstream xdg-desktop-portal-kde
-    /// bug (bugs.kde.org #483639), not something FotonVoice Engine's registration got
-    /// wrong, and the portal protocol has no "enabled" bit for FotonVoice Engine to
-    /// check - so this is a standing warning on KDE + portal, not a detected
-    /// fact about any particular shortcut.
     pub needs_manual_enable: bool,
     /// What to tell the user about `needs_manual_enable`, and how to fix it.
-    /// `None` when `needs_manual_enable` is false.
     pub manual_enable_hint: Option<String>,
     /// Running on Linux Mint's Cinnamon or MATE desktop environment.
     pub is_mint_desktop: bool,
     /// FotonVoice Engine's native D-Bus shortcut is registered in Mint's gsettings registry.
     pub mint_shortcut_registered: bool,
     /// Windows only: the focused window belongs to a process elevated above
-    /// our own, so the keyboard hook cannot see keys typed there. UIPI,
-    /// not a failure - the hook stays installed and would otherwise look
-    /// indistinguishable from "everything is fine".
     pub elevated_window_focused: bool,
 }
 
 /// `XDG_CURRENT_DESKTOP` is a colon-separated list (e.g. `ubuntu:GNOME`); any
-/// entry can match. `KDE_FULL_SESSION` is a legacy fallback Plasma still sets
-/// when the desktop-name entry is missing or non-standard.
 #[cfg(target_os = "linux")]
 fn desktop_environment() -> Option<String> {
     let current = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
@@ -987,9 +897,6 @@ fn session_type() -> String {
 }
 
 /// Returns `(total, readable)` counts of `/dev/input/event*` nodes.
-///
-/// Only used to explain the evdev fallback. On the portal path FotonVoice Engine opens
-/// none of these.
 #[cfg(target_os = "linux")]
 fn count_input_devices() -> (u32, u32) {
     let Ok(entries) = std::fs::read_dir("/dev/input") else {
@@ -1020,12 +927,6 @@ fn count_input_devices() -> (u32, u32) {
 }
 
 /// How FotonVoice Engine is receiving global shortcuts, and what - if anything - is
-/// stopping it.
-///
-/// This replaced a udev/`input`-group audit. FotonVoice Engine no longer configures
-/// keyboard access at all, so the question is no longer "did our setup run?"
-/// but "does this desktop offer the shortcuts portal, and if not, can we fall
-/// back to access the user has already granted themselves?".
 pub fn hotkey_status(health: &fotonvoice_hotkeys::ListenerHealth) -> HotkeyStatusPayload {
     if let Ok(override_val) = std::env::var("FOTONVOICE_TEST_HOTKEY_STATUS") {
         if let Some(payload) = test_override(&override_val) {
@@ -1042,8 +943,6 @@ pub fn hotkey_status(health: &fotonvoice_hotkeys::ListenerHealth) -> HotkeyStatu
         false
     };
 
-    // A Mint shortcut that is registered and bound is a working backend even if
-    // the listener never claimed one - the desktop, not FotonVoice Engine, is holding it.
     let effective_backend = if backend == fotonvoice_hotkeys::Backend::None && mint_shortcut_registered
     {
         fotonvoice_hotkeys::Backend::MintDbus
@@ -1054,8 +953,6 @@ pub fn hotkey_status(health: &fotonvoice_hotkeys::ListenerHealth) -> HotkeyStatu
     let needs_manual_enable = backend == fotonvoice_hotkeys::Backend::Portal
         && desktop.as_deref() == Some("KDE");
     let (devices_total, devices_readable) = match effective_backend {
-        // None of these open an input device, so a device count would only
-        // invite the user to fix a permission problem they do not have.
         fotonvoice_hotkeys::Backend::Portal
         | fotonvoice_hotkeys::Backend::WindowsHook
         | fotonvoice_hotkeys::Backend::X11
@@ -1178,7 +1075,6 @@ pub fn hotkey_status(health: &fotonvoice_hotkeys::ListenerHealth) -> HotkeyStatu
 }
 
 /// Developer/test override so the setup window can be exercised in every state
-/// without a desktop session to match.
 fn test_override(value: &str) -> Option<HotkeyStatusPayload> {
     let base = HotkeyStatusPayload {
         is_active: true,
@@ -1273,18 +1169,6 @@ fn test_override(value: &str) -> Option<HotkeyStatusPayload> {
 }
 
 /// Launch the desktop's own global-shortcuts settings panel, best-effort.
-///
-/// Exists for the KDE `needs_manual_enable` case - there is no D-Bus verb that
-/// flips a portal shortcut from disabled to enabled, so the fix genuinely is
-/// "open this panel yourself". Tries the KDE System Settings module directly
-/// first (skips the home screen the user would otherwise have to navigate
-/// through by hand, which is the whole point of the button), then falls back
-/// to whatever System Settings binary exists, then to GNOME's keyboard panel
-/// on the off chance this is ever needed there too.
-///
-/// Errors only when nothing in the list is installed - a real signal the user
-/// is not actually on the desktop this feature assumes, worth surfacing
-/// rather than silently doing nothing.
 #[tauri::command]
 pub async fn open_shortcut_settings() -> Result<(), String> {
     #[cfg(not(target_os = "linux"))]
@@ -1354,9 +1238,6 @@ pub async fn retry_portal_shortcuts(state: State<'_, Arc<AppState>>) -> Result<(
 }
 
 /// Tried in order: the KDE System Settings module directly (skips the home
-/// screen the user would otherwise navigate through by hand - the whole point
-/// of the button), then whichever System Settings binary exists, then GNOME's
-/// keyboard panel on the off chance this is ever needed there too.
 #[cfg(target_os = "linux")]
 fn shortcut_settings_candidates() -> &'static [(&'static str, &'static [&'static str])] {
     &[
@@ -1369,14 +1250,6 @@ fn shortcut_settings_candidates() -> &'static [(&'static str, &'static [&'static
 }
 
 /// Fire-and-forget: these are GUI apps meant to stay open long after this
-/// command returns, so there is nothing useful to await here.
-///
-/// These are host desktop binaries (`kcmshell6`, `systemsettings`,
-/// `gnome-control-center`), not part of the bundle, so they are launched
-/// through `host_env::host_command` rather than `std::process::Command`
-/// directly: inside the AppImage, a plain `Command::new` hands them the
-/// bundle's `LD_LIBRARY_PATH`, and a host binary then resolves libraries
-/// from the bundle and can abort before showing a window. (upstream 5077423)
 #[cfg(target_os = "linux")]
 fn spawn_shortcut_settings(bin: &str, args: &[&str]) -> Result<(), String> {
     #[cfg(test)]
@@ -1398,14 +1271,10 @@ pub struct HotkeyKeysCheck {
     /// The combination can be saved as-is.
     pub accepted: bool,
     /// True when a rejection is binding rather than advisory - i.e. shortcuts
-    /// are delivered by the desktop portal, which cannot register this. On the
-    /// evdev fallback and on Windows, FotonVoice Engine watches the keys itself and a
-    /// bare modifier works fine, so the same combination is merely flagged.
     pub enforced: bool,
     /// The shortcut as the desktop will see it, e.g. `LOGO+space`.
     pub accelerator: Option<String>,
     /// Machine-readable problem: `modifiers_only`, `multiple_keys`,
-    /// `unsupported_key` or `empty`.
     pub problem: Option<String>,
     /// What to tell the user, and what to press instead.
     pub message: Option<String>,
@@ -1424,15 +1293,6 @@ impl HotkeyKeysCheck {
 }
 
 /// A combination the desktop can bind, plus a warning when *holding* it would
-/// cost the rest of the desktop the key.
-///
-/// A binding here is registered for as long as FotonVoice Engine runs, and where the
-/// compositor owns the grab that registration is exclusive: bare Escape would
-/// reach FotonVoice Engine and nothing else, so menus would stop closing everywhere. It
-/// is still the user's call - they may genuinely want Escape to start dictation
-/// - so this is advice, not a refusal. The TTS stop key is the case that must
-/// not carry this cost silently, and it does not: `stop_key` holds it only
-/// while FotonVoice Engine is speaking.
 fn standing_grab_check(
     keys: &[String],
     accelerator: String,
@@ -1444,8 +1304,6 @@ fn standing_grab_check(
         return HotkeyKeysCheck::ok(Some(accelerator));
     }
     HotkeyKeysCheck {
-        // It genuinely works. Refusing it would be a lie, and the cost is the
-        // user's to weigh.
         accepted: true,
         enforced: false,
         accelerator: Some(accelerator),
@@ -1462,10 +1320,6 @@ fn standing_grab_check(
 }
 
 /// Can this key combination be registered as a global shortcut?
-///
-/// The settings UI calls this instead of reimplementing the rules, so the key
-/// recorder and the portal registration can never disagree about what is
-/// valid. `fotonvoice_hotkeys::accelerator` is the single definition.
 pub fn check_hotkey_keys_with(
     keys: &[String],
     health: &fotonvoice_hotkeys::ListenerHealth,
@@ -1477,10 +1331,6 @@ pub fn check_hotkey_keys_with(
         Err(problem) => problem,
     };
 
-    // Only the backends that hand the grab to the desktop actually cannot
-    // deliver these. Blocking them everywhere would break bare-modifier
-    // shortcuts on the backends where FotonVoice Engine watches the keys itself - X11,
-    // evdev and the Windows hook - where they work perfectly well.
     let enforced = !health.backend().sees_raw_keys();
 
     let hint = match problem {
@@ -1509,8 +1359,6 @@ pub fn check_hotkey_keys_with(
     }
 
     HotkeyKeysCheck {
-        // Advisory-only rejections still save: the combination genuinely works
-        // on this machine, and refusing it would be a lie.
         accepted: !enforced,
         enforced,
         accelerator: None,
@@ -1573,9 +1421,6 @@ pub async fn approve_shortcuts(
 }
 
 /// Install the host packages FotonVoice Engine needs to type text into other windows.
-///
-/// Never touches keyboard permissions - global shortcuts come from the desktop
-/// portal, which needs none.
 #[tauri::command]
 pub async fn install_system_integration(
     state: tauri::State<'_, std::sync::Arc<crate::state::AppState>>,
@@ -1585,11 +1430,6 @@ pub async fn install_system_integration(
 }
 
 /// The keystroke-injection helper this session needs, if it is not installed.
-///
-/// The package step of the setup script is deliberately best-effort (a stale
-/// mirror must not block the permission fix), so it really can leave a system
-/// with working hotkeys and no way to type the transcription anywhere. That
-/// failure is otherwise invisible: dictation appears to do nothing at all.
 pub fn missing_injection_tool() -> Option<&'static str> {
     #[cfg(not(target_os = "linux"))]
     {
@@ -1611,13 +1451,10 @@ pub fn missing_injection_tool() -> Option<&'static str> {
 }
 
 /// Everything first-run setup depends on, in one call: how global shortcuts are
-/// being delivered, whether text can be typed anywhere, and whether a speech
-/// model is on disk.
 #[derive(serde::Serialize)]
 pub struct SetupStatusPayload {
     pub hotkeys: HotkeyStatusPayload,
     /// Shortcuts can fire right now. Mirrors `hotkeys.is_active` so the UI can
-    /// gate on it without reaching into the nested payload.
     pub hotkeys_active: bool,
     pub model_ready: bool,
     pub model_size: String,
@@ -1628,7 +1465,6 @@ pub struct SetupStatusPayload {
     /// Graphical privilege escalation is available for the one-click install.
     pub pkexec_available: bool,
     /// Commands that install the host packages by hand, for machines with no
-    /// polkit agent. Empty when the distro is unknown.
     pub manual_package_commands: String,
     pub is_complete: bool,
 }
@@ -1679,10 +1515,6 @@ pub async fn get_setup_status(
 }
 
 /// Download whichever speech model the config currently selects.
-///
-/// The setup window has no business knowing the model directory layout, and
-/// asking the user to pick a model before they have used the app once is the
-/// step this whole flow is trying to remove.
 #[tauri::command]
 pub async fn download_configured_model(
     state: tauri::State<'_, std::sync::Arc<crate::state::AppState>>,
@@ -1700,19 +1532,12 @@ pub async fn download_configured_model(
 }
 
 /// Open the settings window on a specific tab. Used by the setup window so
-/// "choose a different model" lands the user on the right screen instead of
-/// making them find it.
 #[tauri::command]
 pub async fn open_settings_tab(app: tauri::AppHandle, tab: String) -> Result<(), String> {
     let existed = app.get_webview_window("settings").is_some();
     let window = crate::window::open_settings_window(&app)?;
     let _ = window.emit("focus-settings-tab", tab.clone());
 
-    // A window built just now has no listener registered yet, so the first
-    // emit lands before anything is listening. Repeating it once the frontend
-    // has had a moment to mount costs nothing - selecting the same tab twice
-    // is idempotent - and is the difference between landing on the right tab
-    // and landing on the default one.
     if !existed {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
@@ -1765,12 +1590,6 @@ pub async fn get_available_monitors(app: tauri::AppHandle) -> Result<Vec<Monitor
 }
 
 /// The overlay's frontend reporting that it has painted a frame.
-///
-/// The overlay window is built fully transparent so the user never sees it
-/// during the tens-to-hundreds of milliseconds it takes to create the
-/// webview, load `/overlay` and mount - see `window::reveal_overlay`. This
-/// takes it off the safety-net timeout and shows it as soon as there is
-/// something to look at. (upstream 9e33af5)
 #[tauri::command]
 pub fn overlay_content_ready(app: tauri::AppHandle) {
     crate::window::reveal_overlay(&app);

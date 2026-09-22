@@ -1,12 +1,4 @@
 //! The Windows keyboard vocabulary, kept off the platform gate on purpose.
-//!
-//! Everything here is pure data and pure logic - no Win32 call, no `windows-sys`
-//! type - so it compiles and its tests run on every platform. That is the point:
-//! the table below is the part of the Windows backend most likely to drift out
-//! of agreement with the rest of the app, and the way the previous backend
-//! failed. Gating it behind `cfg(target_os = "windows")` would have meant the
-//! Linux test lane, which is where nearly every test actually runs, could never
-//! catch that.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -16,65 +8,28 @@ use crate::trigger::is_modifier;
 
 pub mod keymap {
     //! Win32 keyboard identity -> the evdev key name the rest of FotonVoice Engine speaks.
-    //!
-    //! Bindings are stored in evdev vocabulary everywhere: the router seeds
-    //! `KEY_LEFTMETA`/`KEY_SPACE` (`fotonvoice-routing::loader`), the settings UI
-    //! records the same names from `KeyboardEvent.code`, and the X11 backend
-    //! translates keycodes into them so both Linux backends agree. Windows has to
-    //! land on that same vocabulary or nothing a user records can ever match.
-    //!
-    //! # Why scan codes rather than virtual keys
-    //!
-    //! Virtual-key codes are *layout-dependent*: on AZERTY the physical `Q` key
-    //! reports `VK_A`. `KeyboardEvent.code` - what the settings UI captures - is
-    //! positional, so a binding recorded on the key left of `S` must fire from the
-    //! key left of `S` whatever the layout calls it. Set-1 scan codes are that same
-    //! physical position, and Linux's evdev keycodes were derived from them, so the
-    //! mapping below is largely an identity.
-    //!
-    //! Virtual keys are still consulted for the few keys whose scan code is
-    //! ambiguous (Pause shares `0x45` with NumLock) and for keys that have no
-    //! meaningful position (media keys).
-    //!
-    //! # Left and right
-    //!
-    //! Modifiers keep their side: right Ctrl is `KEY_RIGHTCTRL`, not `KEY_LEFTCTRL`.
-    //! That matches evdev and the X11 backend exactly. The settings UI collapses
-    //! both sides to the left name when recording, so a binding captured on right
-    //! Ctrl fires only from left Ctrl - surprising, but it is precisely what Linux
-    //! does today, and diverging here would make the platforms disagree.
 
     /// Every key FotonVoice Engine can name, in a fixed order. The index into this table is
-    /// the compact key id used by the hook's lock-free pressed/suppressed arrays.
     pub const NAMES: &[&str] = &[
-        // -- Row 1 ----------------------------------------------------------------
         "KEY_ESC", "KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_6", "KEY_7",
         "KEY_8", "KEY_9", "KEY_0", "KEY_MINUS", "KEY_EQUAL", "KEY_BACKSPACE",
-        // -- Row 2 ----------------------------------------------------------------
         "KEY_TAB", "KEY_Q", "KEY_W", "KEY_E", "KEY_R", "KEY_T", "KEY_Y", "KEY_U",
         "KEY_I", "KEY_O", "KEY_P", "KEY_LEFTBRACE", "KEY_RIGHTBRACE", "KEY_ENTER",
-        // -- Row 3 ----------------------------------------------------------------
         "KEY_LEFTCTRL", "KEY_A", "KEY_S", "KEY_D", "KEY_F", "KEY_G", "KEY_H",
         "KEY_J", "KEY_K", "KEY_L", "KEY_SEMICOLON", "KEY_APOSTROPHE", "KEY_GRAVE",
-        // -- Row 4 ----------------------------------------------------------------
         "KEY_LEFTSHIFT", "KEY_BACKSLASH", "KEY_Z", "KEY_X", "KEY_C", "KEY_V",
         "KEY_B", "KEY_N", "KEY_M", "KEY_COMMA", "KEY_DOT", "KEY_SLASH",
         "KEY_RIGHTSHIFT",
-        // -- Row 5 and locks ------------------------------------------------------
         "KEY_KPASTERISK", "KEY_LEFTALT", "KEY_SPACE", "KEY_CAPSLOCK",
-        // -- Function keys --------------------------------------------------------
         "KEY_F1", "KEY_F2", "KEY_F3", "KEY_F4", "KEY_F5", "KEY_F6", "KEY_F7",
         "KEY_F8", "KEY_F9", "KEY_F10", "KEY_F11", "KEY_F12",
-        // -- Keypad ---------------------------------------------------------------
         "KEY_NUMLOCK", "KEY_SCROLLLOCK", "KEY_KP7", "KEY_KP8", "KEY_KP9",
         "KEY_KPMINUS", "KEY_KP4", "KEY_KP5", "KEY_KP6", "KEY_KPPLUS", "KEY_KP1",
         "KEY_KP2", "KEY_KP3", "KEY_KP0", "KEY_KPDOT", "KEY_102ND",
-        // -- Extended (E0-prefixed) -----------------------------------------------
         "KEY_KPENTER", "KEY_RIGHTCTRL", "KEY_KPSLASH", "KEY_SYSRQ", "KEY_RIGHTALT",
         "KEY_HOME", "KEY_UP", "KEY_PAGEUP", "KEY_LEFT", "KEY_RIGHT", "KEY_END",
         "KEY_DOWN", "KEY_PAGEDOWN", "KEY_INSERT", "KEY_DELETE", "KEY_LEFTMETA",
         "KEY_RIGHTMETA", "KEY_COMPOSE", "KEY_PAUSE",
-        // -- Media and browser keys, which have no useful position ----------------
         "KEY_MUTE", "KEY_VOLUMEDOWN", "KEY_VOLUMEUP", "KEY_NEXTSONG",
         "KEY_PREVIOUSSONG", "KEY_STOPCD", "KEY_PLAYPAUSE",
     ];
@@ -105,12 +60,10 @@ pub mod keymap {
         (0x4B, "KEY_KP4"), (0x4C, "KEY_KP5"), (0x4D, "KEY_KP6"),
         (0x4E, "KEY_KPPLUS"), (0x4F, "KEY_KP1"), (0x50, "KEY_KP2"),
         (0x51, "KEY_KP3"), (0x52, "KEY_KP0"), (0x53, "KEY_KPDOT"),
-        // The extra key ISO keyboards carry beside left Shift or Enter.
         (0x56, "KEY_102ND"), (0x57, "KEY_F11"), (0x58, "KEY_F12"),
     ];
 
     /// `(scan_code, name)` for keys the hook reports with `LLKHF_EXTENDED`. These
-    /// are the E0-prefixed codes; the hook hands over only the byte after the E0.
     const EXTENDED: &[(u32, &str)] = &[
         (0x1C, "KEY_KPENTER"), (0x1D, "KEY_RIGHTCTRL"), (0x35, "KEY_KPSLASH"),
         (0x37, "KEY_SYSRQ"), (0x38, "KEY_RIGHTALT"), (0x47, "KEY_HOME"),
@@ -121,7 +74,6 @@ pub mod keymap {
     ];
 
     /// `(virtual_key, name)` consulted before the scan-code tables for keys whose
-    /// position is ambiguous, and after them for keys that have none.
     const BY_VIRTUAL_KEY: &[(u32, &str)] = &[
         (0x13, "KEY_PAUSE"),          // VK_PAUSE - shares scan code 0x45 with NumLock
         (0x90, "KEY_NUMLOCK"),        // VK_NUMLOCK
@@ -136,18 +88,12 @@ pub mod keymap {
     ];
 
     /// Virtual keys resolved before the scan-code tables, because their scan code
-    /// collides with another key's.
     const VK_WINS_OVER_SCANCODE: &[u32] = &[0x13, 0x90, 0x2C];
 
     /// `VK_PACKET` - the virtual key Windows reports for a `KEYEVENTF_UNICODE`
-    /// event. Its "scan code" is a character, not a position, so it must never
-    /// reach the tables above. FotonVoice Engine's own text injection generates these.
     pub const VK_PACKET: u32 = 0xE7;
 
     /// Resolve one hook event to a compact key id, or `None` for a key FotonVoice Engine has
-    /// no name for.
-    ///
-    /// Callable from the hook procedure: it allocates nothing and takes no lock.
     pub fn lookup(scan_code: u32, extended: bool, virtual_key: u32) -> Option<usize> {
         if virtual_key == VK_PACKET {
             return None;
@@ -175,7 +121,6 @@ pub mod keymap {
     }
 
     /// The key id for an evdev name, for turning saved bindings into ids the hook
-    /// can test with an array index.
     pub fn index_of(name: &str) -> Option<usize> {
         NAMES.iter().position(|n| *n == name)
     }
@@ -189,9 +134,6 @@ pub mod keymap {
 
         #[test]
         fn the_default_binding_resolves() {
-            // Super+Space is what a fresh install ships with. The previous backend
-            // derived names from rdev's Debug spelling and produced KEY_METALEFT
-            // and KEY_SPACE, so this combination could never fire on Windows.
             assert_eq!(resolve(0x5B, true, 0x5B), Some("KEY_LEFTMETA"));
             assert_eq!(resolve(0x39, false, 0x20), Some("KEY_SPACE"));
         }
@@ -208,23 +150,17 @@ pub mod keymap {
 
         #[test]
         fn letters_are_positional_not_layout_dependent() {
-            // The scan code left of `S` is `KEY_A` whatever the layout calls it -
-            // matching `KeyboardEvent.code`, which is what the settings UI records.
-            // Resolving by virtual key would name this KEY_Q on AZERTY.
             assert_eq!(resolve(0x1E, false, 0x41), Some("KEY_A"));
             assert_eq!(resolve(0x1E, false, 0x51), Some("KEY_A"));
         }
 
         #[test]
         fn escape_is_evdevs_shorter_spelling() {
-            // KEY_ESC, not KEY_ESCAPE: the settings UI emits the short form and the
-            // rest of the app matches on it.
             assert_eq!(resolve(0x01, false, 0x1B), Some("KEY_ESC"));
         }
 
         #[test]
         fn pause_does_not_masquerade_as_numlock() {
-            // Both arrive on scan code 0x45, so the virtual key has to break the tie.
             assert_eq!(resolve(0x45, false, 0x13), Some("KEY_PAUSE"));
             assert_eq!(resolve(0x45, false, 0x90), Some("KEY_NUMLOCK"));
         }
@@ -240,9 +176,6 @@ pub mod keymap {
 
         #[test]
         fn injected_unicode_is_not_a_key() {
-            // FotonVoice Engine types transcriptions with KEYEVENTF_UNICODE, which reports
-            // VK_PACKET and carries a character in the scan-code field. Reading that
-            // as a position would fire bindings from the app's own output.
             assert_eq!(lookup(u32::from('a'), false, VK_PACKET), None);
             assert_eq!(lookup(u32::from('%'), false, VK_PACKET), None);
         }
@@ -273,13 +206,6 @@ pub mod keymap {
 
         #[test]
         fn every_key_the_settings_ui_can_record_is_reachable() {
-            // `mapBrowserKeyToEvdev` in HotkeysTab.svelte turns a KeyboardEvent into
-            // one of these names. A name it can emit that no scan code resolves to
-            // is a binding the user can save and never trigger - which is exactly
-            // how the rdev backend failed. Punctuation is deliberately absent: the
-            // UI emits KEY_BACKQUOTE and KEY_QUOTE where evdev says KEY_GRAVE and
-            // KEY_APOSTROPHE, a mismatch that predates this backend and affects
-            // Linux identically, so it is not papered over here.
             let recordable = [
                 "KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_LEFTSHIFT", "KEY_LEFTMETA",
                 "KEY_SPACE", "KEY_ENTER", "KEY_ESC", "KEY_TAB", "KEY_BACKSPACE",
@@ -298,10 +224,6 @@ pub mod keymap {
 }
 
 /// What the hook needs to know to decide suppression, rebuilt on every reload.
-///
-/// One entry per enabled binding: the ids of its keys, and whether each is a
-/// modifier. Small enough (bindings are a handful of keys) that scanning it in
-/// the hook costs nothing measurable.
 #[derive(Default)]
 pub struct SuppressPlan {
     /// `(key ids of the binding, whether each id is a modifier)`.
@@ -319,8 +241,6 @@ impl SuppressPlan {
             for k in &b.keys {
                 match keymap::index_of(k) {
                     Some(id) => ids.push((id, is_modifier(k))),
-                    // A binding naming a key this backend cannot see can never
-                    // fire, so it can never need suppressing either.
                     None => {
                         ids.clear();
                         break;
@@ -335,13 +255,6 @@ impl SuppressPlan {
     }
 
     /// Whether pressing `id` - with `pressed` describing what is already held -
-    /// completes a binding and should be swallowed.
-    ///
-    /// Modifiers are never swallowed. Eating a bare Ctrl or Super would break
-    /// every other shortcut on the machine, and a binding that is only
-    /// modifiers has nothing else to take. So for `Super+Space` the Space is
-    /// swallowed - which is what stops Windows opening Search underneath the
-    /// dictation - and the Super passes through untouched.
     pub fn should_swallow(&self, id: usize, pressed: &[AtomicBool]) -> bool {
         self.combos.iter().any(|combo| {
             let Some(&(_, this_is_modifier)) = combo.iter().find(|(k, _)| *k == id) else {
@@ -398,19 +311,12 @@ mod suppress_tests {
 
     #[test]
     fn the_finishing_key_of_a_combo_is_swallowed() {
-        // Super+Space is the shipped default. Without swallowing the Space,
-        // Windows opens Search - or cycles the keyboard layout - underneath
-        // every dictation.
         let plan = SuppressPlan::build(&[binding("b", &["KEY_LEFTMETA", "KEY_SPACE"])]);
         assert!(plan.should_swallow(id("KEY_SPACE"), &held(&["KEY_LEFTMETA"])));
     }
 
     #[test]
     fn a_modifier_is_never_swallowed() {
-        // Eating a bare Super or Ctrl would break every other shortcut on the
-        // machine, so a modifier reaches the desktop even when it completes a
-        // binding - including a binding made only of modifiers, which is a
-        // gesture style FotonVoice Engine deliberately supports.
         let combo = SuppressPlan::build(&[binding("b", &["KEY_LEFTMETA", "KEY_SPACE"])]);
         assert!(!combo.should_swallow(id("KEY_LEFTMETA"), &held(&["KEY_SPACE"])));
 
@@ -440,8 +346,6 @@ mod suppress_tests {
 
     #[test]
     fn a_binding_naming_a_key_this_backend_cannot_see_takes_nothing() {
-        // It can never fire, so swallowing on its behalf would only break the
-        // desktop's own use of the other keys.
         let plan = SuppressPlan::build(&[binding("b", &["KEY_NOT_A_REAL_KEY", "KEY_SPACE"])]);
         assert!(!plan.should_swallow(id("KEY_SPACE"), &held(&[])));
     }

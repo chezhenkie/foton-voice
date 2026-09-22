@@ -1,22 +1,9 @@
 //! Mel-spectrogram extraction matching the reference pipeline choice for choice.
-//!
-//! `luxtts_onnx/inference.py::extract_mel_features` calls librosa with
-//! `power=1` (magnitude), `center=True`, `norm=None`, `htk=True`, 100 mels,
-//! then `log(clamp(1e-7))` and a 0.1 feature scale. Every one of those choices
-//! matters - `norm='slaney'` alone shifts magnitudes by 33x and produces
-//! silence - so this module reproduces each one:
-//!
-//! * periodic Hann window (librosa's `fftbins=True` default),
-//! * reflect padding on both sides (`center=True`),
-//! * magnitude spectrum (`|X|`, not power),
-//! * HTK mel filterbank, no slaney normalization, triangles over
-//!   `fmin=0 .. fmax=sr/2`.
 
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
 
 /// Everything downstream is fixed to this rate: prompts, the flow model, and
-/// the 24 kHz leg of the vocoder.
 pub const SAMPLE_RATE: u32 = 24_000;
 pub const N_MELS: usize = 100;
 pub const N_FFT: usize = 1024;
@@ -40,9 +27,6 @@ fn mel_to_hz_htk(mel: f64) -> f64 {
 }
 
 /// Triangular HTK filterbank, `norm=None` (no slaney area normalization).
-///
-/// N_MELS+2 edge frequencies are linearly spaced on the mel scale between
-/// fmin and fmax; each row is a triangle between three consecutive edges.
 fn mel_filterbank_htk() -> Vec<Vec<f64>> {
     let fmax = SAMPLE_RATE as f64 / 2.0;
     let mel_min = hz_to_mel_htk(0.0);
@@ -79,7 +63,6 @@ fn reflect_pad(data: &[f32], pad: usize) -> Vec<f32> {
     }
     let idx = |i: usize| i.min(n - 1);
     let mut out = Vec::with_capacity(n + 2 * pad);
-    // Mirror without repeating the edge sample: [1,2,3] pad 2 -> [3,2,1,2,3,2,1].
     for i in 0..pad {
         out.push(data[idx(pad - i)]);
     }
@@ -91,7 +74,6 @@ fn reflect_pad(data: &[f32], pad: usize) -> Vec<f32> {
 }
 
 /// Magnitude STFT of `audio` (already feature-rate compatible): returns
-/// `[n_frames][n_bins]` with `n_bins = N_FFT/2 + 1`.
 fn magnitude_stft(audio: &[f32]) -> Vec<Vec<f32>> {
     let window = hann_periodic(N_FFT);
     let n_bins = N_FFT / 2 + 1;
@@ -117,7 +99,6 @@ fn magnitude_stft(audio: &[f32]) -> Vec<Vec<f32>> {
 }
 
 /// Extract `[T][N_MELS]` log-mel features scaled by `FEAT_SCALE`, the exact
-/// tensor layout the reference feeds its graphs (`[1, T, 100]` once batched).
 pub fn extract_mel_features(audio: &[f32]) -> Vec<Vec<f32>> {
     let padded = reflect_pad(audio, N_FFT / 2);
     let mags = magnitude_stft(&padded);
@@ -145,7 +126,6 @@ mod tests {
 
     #[test]
     fn test_mel_frame_rate_matches_hop() {
-        // One second of audio: T frames ~= sr / hop + 1 (center padding).
         let audio = vec![0.0f32; SAMPLE_RATE as usize];
         let feats = extract_mel_features(&audio);
         let expected = SAMPLE_RATE as usize / HOP_LENGTH + 1;
@@ -175,7 +155,6 @@ mod tests {
 
     #[test]
     fn test_sine_gives_peak_at_its_bin() {
-        // 1 kHz tone at 24 kHz sr: the mel row nearest 1 kHz must dominate.
         let sr = SAMPLE_RATE as f32;
         let audio: Vec<f32> = (0..SAMPLE_RATE as usize)
             .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / sr).sin())
@@ -188,7 +167,6 @@ mod tests {
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .unwrap()
             .0;
-        // 1 kHz sits in the low third of the 0..12 kHz mel range.
         assert!(peak < N_MELS / 3, "peak mel row {peak} too high for a 1 kHz tone");
     }
 }

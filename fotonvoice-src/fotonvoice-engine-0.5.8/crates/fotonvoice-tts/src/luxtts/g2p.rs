@@ -1,11 +1,4 @@
 //! LuxTTS text frontend: eSpeak-NG phonemization and the token vocabulary.
-//!
-//! Mirrors `luxtts_onnx/tokenizer.py`'s English path: normalize punctuation,
-//! phonemize with eSpeak-NG (`en-us`), then map each phoneme symbol to its id in
-//! `tokens.txt`. Symbols absent from the vocabulary are skipped, exactly like
-//! the reference tokenizer does - degraded pronunciation instead of a hard
-//! failure. The vocabulary also carries the reserved symbols the sampler needs:
-//! `_` (padding), `^` (start-of-sequence) and `$` (end-of-sequence).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -37,7 +30,6 @@ impl TokenVocab {
             .with_context(|| format!("read token vocabulary {}", path.display()))?;
         let mut token2id = HashMap::new();
         for line in text.lines() {
-            // The symbol itself may be a single space, so split from the right.
             let Some((symbol, id)) = line.rsplit_once('\t') else {
                 continue;
             };
@@ -62,7 +54,6 @@ impl TokenVocab {
     }
 
     /// Map phoneme symbols to ids, skipping unknown ones. Returns the ids and
-    /// the skipped symbols so the caller can log them.
     pub fn encode(&self, symbols: &[String]) -> (Vec<i64>, Vec<String>) {
         let mut ids = Vec::with_capacity(symbols.len());
         let mut skipped = Vec::new();
@@ -77,7 +68,6 @@ impl TokenVocab {
 }
 
 /// Replaces fullwidth/CJK punctuation and dot-leaders with their ASCII forms,
-/// mirroring `EmiliaTokenizer::map_punctuations`.
 pub fn map_punctuations(text: &str) -> String {
     text.replace('，', ",")
         .replace('。', ".")
@@ -97,11 +87,6 @@ pub fn map_punctuations(text: &str) -> String {
 }
 
 /// Split `text` into clauses on terminator punctuation, keeping the terminator.
-///
-/// Same clause shape the Inflect frontend uses: phonemizing per clause keeps
-/// eSpeak's own line breaks from being misattributed to the wrong terminator.
-/// `map_punctuations` has already collapsed `...` to a single ellipsis char, so
-/// each terminator is exactly one character.
 pub struct Clause {
     pub text: String,
     pub terminator: String,
@@ -135,19 +120,10 @@ pub fn espeak_available() -> bool {
 }
 
 /// The espeak-ng command with a portable data-dir override.
-///
-/// Portable Windows installs bundle `espeak-ng.exe` next to the engine binary
-/// together with an `espeak-ng-data` folder, but the official Windows build has
-/// no compiled-in data path (`/usr/share/espeak-ng-data`), so the spawn must
-/// point `ESPEAK_DATA_PATH` at the folder that contains `espeak-ng-data`.
-/// System-installed espeak-ng (Linux packages, Homebrew) already knows where
-/// its data lives, and no local data folder exists next to it, so nothing is
-/// overridden there.
 fn espeak_command() -> Command {
     let mut command = Command::new("espeak-ng");
     #[cfg(target_os = "windows")]
     {
-        // CLI helpers spawned per clause must not flash a console window.
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
@@ -193,10 +169,6 @@ fn phonemize_clause(text: &str) -> Result<String> {
 }
 
 /// Convert one clause to the phoneme symbol list the vocabulary expects.
-///
-/// eSpeak's IPA output is a character stream - stress marks, diacritics and
-/// phonemes are each a single vocabulary symbol. Whitespace is part of the
-/// vocabulary (word gaps), so it passes through like any other character.
 pub fn clause_to_symbols(clause: &Clause) -> Vec<String> {
     let Ok(ipa) = phonemize_clause(&clause.text) else {
         return Vec::new();

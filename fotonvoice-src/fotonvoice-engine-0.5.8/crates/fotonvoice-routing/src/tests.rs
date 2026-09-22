@@ -71,14 +71,12 @@ async fn test_mcp_delivery_handshake() {
     let socket_path = format!("/tmp/fotonvoice-mcp-test-{}.sock", chrono::Utc::now().timestamp_millis());
     let socket_path_clone = socket_path.clone();
 
-    // 1. Start a mock MCP server that implements the handshake protocol
     let server = tokio::spawn(async move {
         let listener = UnixListener::bind(&socket_path_clone).unwrap();
         let (stream, _) = listener.accept().await.unwrap();
         let (reader, mut writer) = tokio::io::split(stream);
         let mut lines = BufReader::new(reader).lines();
 
-        // Receive initialize
         let line = lines.next_line().await.unwrap().unwrap();
         assert!(line.contains("initialize"));
         let init_res = serde_json::json!({
@@ -93,11 +91,9 @@ async fn test_mcp_delivery_handshake() {
         writer.write_all((serde_json::to_string(&init_res).unwrap() + "\n").as_bytes()).await.unwrap();
         writer.flush().await.unwrap();
 
-        // Receive notifications/initialized
         let line = lines.next_line().await.unwrap().unwrap();
         assert!(line.contains("notifications/initialized"));
 
-        // Receive tools/call
         let line = lines.next_line().await.unwrap().unwrap();
         assert!(line.contains("tools/call"));
         assert!(line.contains("speak_text"));
@@ -116,10 +112,8 @@ async fn test_mcp_delivery_handshake() {
         writer.flush().await.unwrap();
     });
 
-    // Give the server a small moment to bind
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // 2. Deliver the text via McpTarget
     let config = OutputTarget {
         id: "mcp_test".into(),
         label: "Test MCP".into(),
@@ -213,33 +207,20 @@ fn test_hotkey_binding_multi_target_roundtrip() {
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
-// -- Target Delivery Success & Failure Tests ----------------------------------
 
 /// `PATH` and `WAYLAND_DISPLAY` are process-global, but cargo runs tests in
-/// parallel threads within one process. Tests that install a mock `wtype` /
-/// `wl-copy` on `PATH` must therefore not overlap with each other, nor with
-/// tests that merely *read* those variables - otherwise a reader can observe a
-/// writer's half-applied environment and assert against a world that has
-/// already been torn down.
 fn env_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    // A tokio mutex rather than std: it is held across `.await` points, and it
-    // does not poison, so one failing test does not cascade into the others.
     LOCK.get_or_init(Default::default)
 }
 
 /// Restores an environment variable to its prior value (including "was unset")
-/// on drop, so a panicking test cannot leak its mock environment to the rest of
-/// the suite.
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<std::ffi::OsString>,
 }
 
 impl EnvVarGuard {
-    // Only the Linux clipboard/injection tests set a variable; on Windows the
-    // guard is still constructed by `prepend_to_path`, so the type is used but
-    // this constructor is not.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn set(key: &'static str, value: &str) -> Self {
         let previous = std::env::var_os(key);
@@ -266,7 +247,6 @@ fn prepend_to_path(dir: &std::path::Path) -> EnvVarGuard {
     EnvVarGuard { key: "PATH", previous }
 }
 
-// 1. Inject Target
 #[tokio::test]
 async fn test_inject_target_success_and_failure() {
     let _env = env_lock().lock().await;
@@ -298,9 +278,7 @@ async fn test_inject_target_success_and_failure() {
     drop(path_guard);
     let _ = std::fs::remove_dir_all(&temp_dir);
 
-    // In a test environment, if PATH was prepended successfully, it should succeed
     if res.success {
-        // Delivered text carries the trailing space the inject path appends.
         assert_eq!(res.delivered_text.as_deref(), Some("Test Input "));
     } else {
         println!("Inject success path skipped or failed gracefully: {:?}", res.error);
@@ -309,8 +287,6 @@ async fn test_inject_target_success_and_failure() {
 
 #[tokio::test]
 async fn test_inject_target_failure_no_injection() {
-    // Probes the environment like its siblings, so it takes the same lock:
-    // observing another test's mock half-installed proves nothing either way.
     let _env = env_lock().lock().await;
     let mut config = OutputTarget::default_inject();
     config.delivery = DeliveryType::Inject;
@@ -320,26 +296,10 @@ async fn test_inject_target_failure_no_injection() {
     assert!(res.delivered_text.is_some() || res.error.is_some());
 }
 
-// 2. Clipboard Target
 #[tokio::test]
 async fn test_clipboard_target_success() {
-    // Held for the whole test: `deliver` and `test` both probe the environment,
-    // and they must agree on what it contains. Without the lock a sibling test's
-    // temporary mock `wl-copy` could satisfy `deliver` and then vanish before
-    // `test` runs, which is exactly how this failed intermittently on headless CI.
     let _env = env_lock().lock().await;
 
-    // The lock is necessary but not sufficient, because the *ambient*
-    // environment is not a fixed thing either: which of the three delivery
-    // paths runs depends on `WAYLAND_DISPLAY`, on what is installed, and - for
-    // the `arboard` fallback - on a display connection that can be there for
-    // one call and not the next. Two probes a moment apart were being asked to
-    // agree about a machine that was free to change its mind in between, and on
-    // a headless runner they sometimes disagreed.
-    //
-    // So the test brings its own environment. What is under test is that
-    // delivery and the reachability probe agree about the same known clipboard,
-    // not what this particular machine happens to have installed.
     #[cfg(target_os = "linux")]
     let mock = MockClipboardTool::install();
 
@@ -347,10 +307,6 @@ async fn test_clipboard_target_success() {
     config.delivery = DeliveryType::Clipboard;
     let target = build_target(config);
     let res = target.deliver("Test Clipboard").await;
-    // The mock makes the success path the one that runs here, rather than
-    // whatever this machine happens to support - without this, a mock that
-    // stopped being found would quietly send the test down the `else` branch,
-    // where it asserts almost nothing.
     #[cfg(target_os = "linux")]
     assert!(
         res.success,
@@ -358,9 +314,6 @@ async fn test_clipboard_target_success() {
         res.error
     );
     if res.success {
-        // Clipboard delivery ends its text with one space, exactly like inject:
-        // dictation arrives an utterance at a time, and without it the next one
-        // starts flush against this one's last word.
         assert_eq!(res.delivered_text.as_deref(), Some("Test Clipboard "));
         let test_res = target.test().await;
         assert!(
@@ -370,8 +323,6 @@ async fn test_clipboard_target_success() {
             test_res.detail
         );
     } else {
-        // Only reachable off Linux, where the test installs no mock and the
-        // machine may genuinely have no clipboard.
         assert!(res.error.is_some());
     }
 
@@ -380,7 +331,6 @@ async fn test_clipboard_target_success() {
 }
 
 /// A stand-in `wl-copy` on `PATH`, with `WAYLAND_DISPLAY` set so the Linux
-/// clipboard path chooses it. Restores both on drop.
 #[cfg(target_os = "linux")]
 struct MockClipboardTool {
     _wayland: EnvVarGuard,
@@ -398,8 +348,6 @@ impl MockClipboardTool {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("wl-copy");
-        // Reads stdin so the delivery side sees the same "consumed the text and
-        // exited 0" it would from the real tool.
         std::fs::write(&bin, "#!/bin/sh\ncat > /dev/null\nexit 0\n").unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let _wayland = EnvVarGuard::set("WAYLAND_DISPLAY", "mock-display");
@@ -423,7 +371,6 @@ async fn test_clipboard_target_linux_cli() {
     let temp_dir = std::env::temp_dir().join(format!("fotonvoice_clipboard_test_{}", chrono::Utc::now().timestamp_millis()));
     std::fs::create_dir_all(&temp_dir).unwrap();
 
-    // Mock wl-copy that writes its input to a file so we can assert it was called with the right data.
     let mock_wl_copy = temp_dir.join("wl-copy");
     let test_output_file = temp_dir.join("test_clipboard_output.txt");
     let script = format!(
@@ -465,7 +412,6 @@ async fn test_clipboard_target_failure_empty_text() {
     assert!(res.success || res.error.is_some());
 }
 
-// 3. Exec Target
 #[tokio::test]
 async fn test_exec_target_success() {
     let mut config = OutputTarget::default_inject();
@@ -537,7 +483,6 @@ async fn test_exec_target_failure_nonexistent_binary() {
     assert!(!res.error.as_ref().unwrap().is_empty());
 }
 
-// 4. Pipe Target
 #[tokio::test]
 async fn test_pipe_target_success_using_regular_file() {
     let temp_dir = std::env::temp_dir();
@@ -583,7 +528,6 @@ async fn test_pipe_target_failure_no_path() {
     assert_eq!(res.error.as_deref(), Some("No pipe_path configured"));
 }
 
-// 5. Socket Target
 #[tokio::test]
 async fn test_socket_target_success_tcp() {
     use tokio::net::TcpListener;
@@ -669,14 +613,12 @@ async fn test_socket_target_failure_unix_not_exist() {
     assert!(res.error.is_some());
 }
 
-// 6. File Target
 #[tokio::test]
 async fn test_file_target_success_append_and_prepend() {
     let temp_dir = std::env::temp_dir();
     let test_file = temp_dir.join(format!("fotonvoice_file_test_{}.log", chrono::Utc::now().timestamp_millis()));
     println!("TEST FILE PATH: {:?}", test_file);
 
-    // Success Append
     let mut config = OutputTarget::default_inject();
     config.delivery = DeliveryType::File;
     config.file_path = Some(test_file.to_string_lossy().to_string());
@@ -689,14 +631,12 @@ async fn test_file_target_success_append_and_prepend() {
     println!("FILE TARGET APPEND RESULT: {:?}", res);
     assert!(res.success, "File append failed: {:?}", res.error);
 
-    // Sleep a tiny bit to let OS write flush
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let content = std::fs::read_to_string(&test_file).unwrap();
     println!("FILE APPEND CONTENT: {:?}", content);
     assert_eq!(content, ">>> Hello File\n");
 
-    // Success Prepend
     config.file_mode = "prepend".into();
     config.file_prefix = "### ".into();
     let target_prepend = build_target(config);
@@ -766,7 +706,6 @@ async fn file_target_uses_the_configured_timestamp_format() {
 }
 
 /// A pattern that cannot be rendered must not cost the user the dictation -
-/// the line is still written, with the default timestamp.
 #[tokio::test]
 async fn file_target_falls_back_when_the_timestamp_format_is_unusable() {
     let test_file = std::env::temp_dir().join(format!(
@@ -803,7 +742,6 @@ async fn test_file_target_failure_no_path() {
     assert_eq!(res.error.as_deref(), Some("No file_path configured"));
 }
 
-// 7. DBus Target
 #[tokio::test]
 async fn test_dbus_target_platform_unsupported_on_non_linux() {
     let mut config = OutputTarget::default_inject();
@@ -856,14 +794,12 @@ fn init_test_env() {
     });
 }
 
-// 8. HTTP Target
 #[tokio::test]
 async fn test_http_target_success_and_failure() {
     init_test_env();
     use tokio::net::TcpListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // 1. Success path: Server responds 200 OK
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
@@ -923,7 +859,6 @@ async fn test_http_target_success_and_failure() {
 
     server.await.unwrap();
 
-    // 2. Failure path: Server responds 500 Internal Server Error
     let listener_fail = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port_fail = listener_fail.local_addr().unwrap().port();
 
@@ -1051,7 +986,6 @@ async fn test_http_target_failure_no_url() {
     assert_eq!(res.error.as_deref(), Some("No http_url configured"));
 }
 
-// 9. Webhook Target
 #[tokio::test]
 async fn test_webhook_target_success_and_failure() {
     init_test_env();
@@ -1117,7 +1051,6 @@ async fn test_webhook_target_success_and_failure() {
 
     server.await.unwrap();
 
-    // Failure Path: Missing secret
     config.webhook_secret = None;
     let target_fail = build_target(config);
     let res_fail = target_fail.deliver("Hello").await;
@@ -1185,7 +1118,6 @@ async fn test_webhook_target_failure_http_error() {
     server.await.unwrap();
 }
 
-// 10. MCP Target Failure Tests
 #[tokio::test]
 async fn test_mcp_delivery_failure_connect_error() {
     let mut config = OutputTarget::default_inject();
@@ -1196,8 +1128,6 @@ async fn test_mcp_delivery_failure_connect_error() {
     let target = build_target(config);
     let res = target.deliver("Hello").await;
     assert!(!res.success);
-    // The message names the transport, and the transport differs: a Unix
-    // socket on Linux, a named pipe on Windows.
     let expected = if cfg!(target_os = "windows") {
         "Failed to connect to MCP named pipe"
     } else {
@@ -1225,11 +1155,9 @@ async fn test_mcp_delivery_failure_server_error() {
         let (reader, mut writer) = tokio::io::split(stream);
         let mut lines = BufReader::new(reader).lines();
 
-        // 1. Receive initialize
         let line = lines.next_line().await.unwrap().unwrap();
         assert!(line.contains("initialize"));
         
-        // Respond with an initialization error
         let init_err = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -1242,7 +1170,6 @@ async fn test_mcp_delivery_failure_server_error() {
         writer.flush().await.unwrap();
     });
 
-    // Give the server a small moment to bind
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let config = OutputTarget {
@@ -1355,7 +1282,6 @@ fn test_example_configurations_load() {
 
     let examples_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
 
-    // Test bindings-multi.toml
     let bindings_src = examples_path.join("bindings-multi.toml");
     let bindings_dest = temp_dir.join("bindings.toml");
     std::fs::copy(&bindings_src, &bindings_dest).unwrap();
@@ -1364,7 +1290,6 @@ fn test_example_configurations_load() {
     let loaded_bindings = loaded_bindings.unwrap();
     assert!(!loaded_bindings.is_empty(), "bindings-multi.toml was parsed empty");
 
-    // Test targets examples
     let targets_files = vec![
         "targets-basic.toml",
         "targets-multi.toml",
@@ -1394,9 +1319,6 @@ fn test_example_configurations_load() {
 fn test_hold_threshold_default() {
     use crate::loader::default_bindings;
     
-    // Default bindings use a 200ms hold threshold: long enough to debounce
-    // accidental taps, short enough that a normal hotkey press gives feedback
-    // (the old 1000ms default made a press look completely dead).
     let bindings = default_bindings();
     for binding in bindings {
         assert_eq!(binding.hold_threshold_ms, 200);
@@ -1409,7 +1331,6 @@ async fn test_speak_target_success() {
     let mut config = OutputTarget::default_inject();
     config.delivery = DeliveryType::Speak;
     
-    // Set mock speak callback
     let spoken = Arc::new(Mutex::new(String::new()));
     let spoken_clone = spoken.clone();
     crate::targets::set_speak_callback(Arc::new(move |text| {
@@ -1422,14 +1343,11 @@ async fn test_speak_target_success() {
     assert_eq!(*spoken.lock().unwrap(), "Hello speak target");
 }
 
-// -- shellexpand_tilde tests ---------------------------------------------------
 
 #[test]
 fn test_shellexpand_tilde_bare_tilde_does_not_panic() {
-    // Bug fix regression: bare "~" must not panic with byte-index-out-of-bounds.
     use crate::targets::shellexpand_tilde_pub;
     let result = shellexpand_tilde_pub("~");
-    // Result must be a valid path (either home dir or "~" if home is unavailable).
     assert!(!result.is_empty());
 }
 
@@ -1469,16 +1387,13 @@ fn test_shellexpand_tilde_relative_path_unchanged() {
 #[test]
 fn test_shellexpand_tilde_no_tilde_prefix_unchanged() {
     use crate::targets::shellexpand_tilde_pub;
-    // "~something" (no slash) is NOT a home-dir expansion - keep as-is.
     let path = "~something";
     assert_eq!(shellexpand_tilde_pub(path), path);
 }
 
 
-// -- Chat target ---------------------------------------------------------------
 
 /// Minimal OpenAI-compatible mock. Serves `reply_count` chat completions, each
-/// answering with "reply N", and hands back every request body it received.
 async fn spawn_mock_chat_server(
     reply_count: usize,
 ) -> (String, tokio::task::JoinHandle<Vec<serde_json::Value>>) {
@@ -1494,7 +1409,6 @@ async fn spawn_mock_chat_server(
             let mut raw = Vec::new();
             let mut buf = [0u8; 1024];
 
-            // Read until the body is complete, using Content-Length to know when.
             loop {
                 let n = sock.read(&mut buf).await.unwrap();
                 if n == 0 {
@@ -1545,8 +1459,6 @@ fn chat_target(id: &str, url: &str) -> OutputTarget {
         chat_url: Some(url.into()),
         chat_model: Some("hermes-test".into()),
         chat_system_prompt: Some("You are helpful.".into()),
-        // Keep the reply out of TTS/injection so the test asserts on the
-        // returned text only.
         chat_reply_mode: "none".into(),
         ..OutputTarget::default_inject()
     }
@@ -1569,13 +1481,11 @@ async fn test_chat_target_accumulates_conversation_history() {
     let bodies = server.await.unwrap();
     assert_eq!(bodies.len(), 2);
 
-    // Turn 1: system + user.
     let first_msgs = bodies[0]["messages"].as_array().unwrap();
     assert_eq!(first_msgs.len(), 2);
     assert_eq!(first_msgs[0]["role"], "system");
     assert_eq!(first_msgs[1]["content"], "What is the weather?");
 
-    // Turn 2 carries the whole exchange, which is the point of this target.
     let second_msgs = bodies[1]["messages"].as_array().unwrap();
     assert_eq!(second_msgs.len(), 4);
     assert_eq!(second_msgs[1]["content"], "What is the weather?");
@@ -1594,7 +1504,6 @@ async fn test_chat_history_survives_router_reload() {
     let router = crate::router::OutputTargetRouter::new(vec![chat_target(&id, &url)]);
     assert!(router.deliver(&id, "first question").await.success);
 
-    // Saving settings rebuilds every target - the conversation must not reset.
     router.reload(vec![chat_target(&id, &url)]).await;
     assert!(router.deliver(&id, "second question").await.success);
 
@@ -1607,8 +1516,6 @@ async fn test_chat_history_survives_router_reload() {
 
 #[tokio::test]
 async fn test_chat_reset_phrase_clears_history_without_calling_api() {
-    // Two replies for three deliveries: the reset phrase must not reach the API,
-    // otherwise the last turn finds no server left to answer it.
     let (url, server) = spawn_mock_chat_server(2).await;
     let id = format!("chat_reset_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap());
     let mut config = chat_target(&id, &url);
@@ -1618,7 +1525,6 @@ async fn test_chat_reset_phrase_clears_history_without_calling_api() {
     assert!(target.deliver("remember the number seven").await.success);
     assert_eq!(crate::targets::chat_history(&id).await.len(), 2);
 
-    // Punctuation and casing from the transcriber must not defeat the match.
     let reset = target.deliver("New conversation.").await;
     assert!(reset.success);
     assert!(crate::targets::chat_history(&id).await.is_empty());
@@ -1638,11 +1544,6 @@ async fn test_chat_target_reports_http_errors_and_rolls_back_turn() {
     tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.unwrap();
 
-        // Drain the request before answering. A server that writes a response
-        // and closes without reading gives the client a connection reset on
-        // Windows, so the target reported a transport error instead of the 404
-        // this test is about. The other mock servers in this file already read
-        // first; this one did not.
         {
             use tokio::io::AsyncReadExt;
             let mut buf = [0u8; 4096];
@@ -1678,7 +1579,6 @@ async fn test_chat_target_reports_http_errors_and_rolls_back_turn() {
 
     assert!(!res.success);
     assert!(res.error.unwrap().contains("404"));
-    // A failed turn must not poison the next request with an unanswered question.
     assert!(crate::targets::chat_history(&id).await.is_empty());
 }
 
@@ -2136,10 +2036,8 @@ async fn test_command_trigger_callback_notification() {
     let _ = std::fs::remove_file(temp_path);
 }
 
-// -- Trailing space and single-line mode --------------------------------------
 
 /// Runs a delivery through a mocked `wtype` and returns the text the target
-/// says it delivered - i.e. the payload after strip/spacing.
 #[cfg(target_os = "linux")]
 async fn delivered_via_inject(mut config: OutputTarget, text: &str) -> Option<String> {
     let temp_dir = std::env::temp_dir().join(format!(
@@ -2167,7 +2065,6 @@ async fn delivered_via_inject(mut config: OutputTarget, text: &str) -> Option<St
 }
 
 /// Dictation arrives one utterance at a time, so each delivery ends with a
-/// space - never the newline the old `append_newline` field used to add.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn inject_appends_a_trailing_space_not_a_newline() {
@@ -2191,7 +2088,6 @@ async fn trailing_space_is_not_doubled() {
 }
 
 /// Single-line mode is honored by `command` targets too, which deliver through
-/// the same path as `inject`.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn command_targets_honor_strip_newlines() {

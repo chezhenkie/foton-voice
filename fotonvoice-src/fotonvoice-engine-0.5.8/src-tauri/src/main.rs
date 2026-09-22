@@ -1,4 +1,3 @@
-// Prevents additional console window on Windows in release builds
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(target_os = "linux")]
@@ -20,19 +19,14 @@ fn init_x11_threads() {
 }
 
 fn main() {
-    // Initialize X11 thread safety BEFORE any GTK/WebKit/X11 windows open.
     #[cfg(target_os = "linux")]
     {
         init_x11_threads();
-        // Disable DMA-BUF renderer to fix black transparent background on Nvidia/proprietary drivers.
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
     let args: Vec<String> = std::env::args().collect();
 
-    // Answered before anything else starts up, so it works on a machine where
-    // the app itself cannot run. This is how a packaged build is asked which
-    // commit it came from.
     if args.len() > 1 && matches!(args[1].as_str(), "--version" | "-V" | "version") {
         println!("{}", fotonvoice_app_lib::version_string());
         std::process::exit(0);
@@ -46,7 +40,6 @@ fn main() {
         std::process::exit(0);
     }
 
-    // Tokio runtime wraps the Tauri event loop so async tasks work everywhere.
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()

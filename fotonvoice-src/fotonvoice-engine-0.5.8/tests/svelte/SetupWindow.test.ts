@@ -68,8 +68,6 @@ describe("Setup window", () => {
   });
 
   test("tells the user their desktop owns the shortcuts and FotonVoice Engine reads nothing", async () => {
-    // The reassurance is the point of the whole first-launch screen: on the
-    // portal path there is no permission to grant and no keyboard being read.
     mockStatus();
 
     render(UdevWarning);
@@ -80,9 +78,6 @@ describe("Setup window", () => {
   });
 
   test("never offers to grant keyboard access", async () => {
-    // Regression guard for the change this screen exists to make. Whatever the
-    // state, the setup window must not present a button that widens the
-    // machine's input permissions.
     for (const backend of ["portal", "x11", "mint_dbus", "evdev", "none", "starting"]) {
       invoke.mockReset();
       mockStatus({

@@ -1,23 +1,4 @@
 //! Linux hotkey backends.
-//!
-//! Three of them, tried in order:
-//!
-//! 1. The XDG `GlobalShortcuts` portal. The compositor grabs the keys and tells
-//!    FotonVoice Engine only that its own shortcut fired. No device access, no permission
-//!    setup, nothing to install.
-//! 2. X11 raw key events (XInput2). No portal, but also no permissions: any X
-//!    client may ask for them. This is what covers the X11 desktops that have
-//!    no shortcuts portal and are not getting one - Cinnamon, MATE, Xfce.
-//! 3. Reading `/dev/input/event*` with evdev - used only when neither of the
-//!    above is available *and* the user has already arranged for this process
-//!    to be able to read input devices.
-//!
-//! FotonVoice Engine never installs the udev rule that would make (3) work. That rule
-//! grants every process running as the user the ability to read every keystroke
-//! on the system, which is a change to the machine's security posture that an
-//! app should not be making on the user's behalf - systemd's own defaults
-//! deliberately withhold it. When neither backend is available the app says so
-//! at launch rather than quietly widening access.
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
@@ -33,7 +14,6 @@ use crate::{
 /// How often the supervisor rescans `/dev/input` while it has no keyboard.
 const RESCAN_BLOCKED_INTERVAL: Duration = Duration::from_secs(2);
 /// Rescan interval once at least one keyboard is being read - this only picks
-/// up newly plugged-in keyboards, so it can be lazy.
 const RESCAN_HEALTHY_INTERVAL: Duration = Duration::from_secs(10);
 
 /// What a key-reading backend's threads report to the coordinator.
@@ -54,8 +34,6 @@ pub fn start(
 
     let rt_handle = tokio::runtime::Handle::try_current().ok();
     let Some(rt) = rt_handle else {
-        // Every gesture timer is a tokio task; without a runtime nothing can
-        // fire, and failing loudly beats a listener that silently does nothing.
         health.set_backend_failed("no async runtime available for the hotkey listener".into());
         tracing::error!("Hotkey listener started outside a tokio runtime");
         return;
@@ -63,17 +41,12 @@ pub fn start(
 
     rt.spawn(async move {
         match portal_start(bindings.clone(), tx.clone(), rx_reload.clone(), health.clone()).await {
-            // The portal backend claims `Backend::Portal` itself, before its
-            // listener task can fail - setting it here would race that.
             Ok(()) => {}
             Err(e) => {
                 tracing::info!("Desktop portal shortcuts unavailable ({e})");
                 health.set_portal_error(e.to_string());
                 health.set_portal_refused(matches!(e, crate::portal::PortalError::Rejected(_)));
 
-                // X11 before evdev: it needs no permissions at all, so it works
-                // on a stock desktop where the evdev path can only report that
-                // it is locked out.
                 match crate::x11::start(
                     bindings.clone(),
                     tx.clone(),
@@ -133,7 +106,6 @@ pub async fn retry_portal(
     }
 }
 
-// -- evdev fallback ------------------------------------------------------------
 
 fn start_evdev(
     bindings: Vec<HotkeyBinding>,
@@ -167,10 +139,6 @@ fn start_evdev(
 }
 
 /// Owns the reader threads for the lifetime of the process.
-///
-/// Rescanning rather than opening devices once at startup means a user who
-/// grants input access while FotonVoice Engine is running gets working hotkeys within a
-/// couple of seconds instead of having to relaunch the app.
 fn run_supervisor(
     device_path: Option<String>,
     event_tx: crossbeam_channel::Sender<ReaderEvent>,
@@ -181,7 +149,6 @@ fn run_supervisor(
     let mut warned_blocked = false;
 
     loop {
-        // Reap readers whose device went away so a re-plug reopens it.
         while let Ok(path) = exit_rx.try_recv() {
             running.remove(&path);
         }
@@ -261,14 +228,10 @@ fn run_reader(device_path: String, event_tx: crossbeam_channel::Sender<ReaderEve
                         evdev::InputEventKind::Key(key) => format!("{:?}", key),
                         _ => format!("{:?}", ev.code()),
                     };
-                    // Trimmed in place: this runs for every key the user
-                    // presses anywhere on the desktop, so the second string is
-                    // worth not allocating.
                     if key_name.starts_with("Key(") && key_name.ends_with(')') {
                         key_name.pop();
                         key_name.drain(..4);
                     }
-                    // 2 is auto-repeat, which is not a new press.
                     let down = match ev.value() {
                         1 => true,
                         0 => false,
@@ -281,15 +244,11 @@ fn run_reader(device_path: String, event_tx: crossbeam_channel::Sender<ReaderEve
                         })
                         .is_err()
                     {
-                        // Coordinator thread has shut down, exit
                         return;
                     }
                 }
             }
             Err(e) => {
-                // An unplugged keyboard errors forever. Give the device back to
-                // the supervisor so it is reopened if it ever returns, instead
-                // of spinning on a dead file descriptor for the whole session.
                 if !std::path::Path::new(&device_path).exists() {
                     tracing::info!("evdev device {device_path} disappeared; releasing it");
                     let _ = event_tx.send(ReaderEvent::SourceLost);
@@ -317,8 +276,6 @@ pub(crate) fn run_coordinator(
                 match new_bindings {
                     Ok(new_bindings) => {
                         tracing::info!("evdev hotkeys: reloading {} bindings", new_bindings.len());
-                        // Stop anything in flight before the binding it belongs
-                        // to disappears, or its recording never ends.
                         engine.reset(&tx);
                         engine.reload(new_bindings.clone());
                         matcher.reload(new_bindings);
@@ -334,7 +291,6 @@ pub(crate) fn run_coordinator(
                         }
                     }
                     Ok(ReaderEvent::SourceLost) => {
-                        // The key-up for anything held on that device is gone.
                         for (id, transition) in matcher.clear() {
                             engine.apply(&id, transition, &tx);
                         }
@@ -353,7 +309,6 @@ pub(crate) fn run_coordinator(
     }
 }
 
-// -- Device selection ----------------------------------------------------------
 
 fn open_device(preferred: &Option<String>) -> Option<evdev::Device> {
     if let Some(path) = preferred {
@@ -376,9 +331,6 @@ pub(crate) struct InputScan {
 }
 
 /// True for an evdev device FotonVoice Engine is willing to read hotkeys from.
-///
-/// Virtual/synthetic devices are skipped so FotonVoice Engine never reacts to the
-/// keystrokes it (or another automation tool) injects itself.
 pub(crate) fn is_eligible_keyboard(name: &str, has_key_a: bool) -> bool {
     if is_synthetic_device_name(name) {
         return false;
@@ -387,11 +339,6 @@ pub(crate) fn is_eligible_keyboard(name: &str, has_key_a: bool) -> bool {
 }
 
 /// True for a device that reports keystrokes some program injected rather than
-/// keystrokes a person typed.
-///
-/// Shared with the X11 backend, which filters the same devices by `sourceid`:
-/// both would otherwise read back the transcription FotonVoice Engine types out and
-/// retrigger the hotkey inside it.
 pub(crate) fn is_synthetic_device_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     name.contains("virtual")
@@ -401,12 +348,6 @@ pub(crate) fn is_synthetic_device_name(name: &str) -> bool {
 }
 
 /// Sweep `/dev/input` for keyboards, counting the devices that exist but are
-/// unreadable.
-///
-/// `evdev::enumerate()` alone cannot answer "is this machine missing a
-/// keyboard, or is FotonVoice Engine just not allowed to read it?" - it silently drops
-/// every device it fails to open. Opening the nodes directly keeps that
-/// distinction, which is what lets the app explain itself.
 pub(crate) fn scan_input_devices(preferred: Option<&str>) -> InputScan {
     let mut scan = InputScan {
         keyboards: Vec::new(),
@@ -414,13 +355,9 @@ pub(crate) fn scan_input_devices(preferred: Option<&str>) -> InputScan {
         total: 0,
     };
 
-    // An explicitly configured device is the only one we consider.
     if let Some(path) = preferred {
         scan.total = 1;
         match std::fs::File::open(path) {
-            // Opening as a real evdev device, not just a file: otherwise a
-            // stale or misconfigured path is reported as a working keyboard and
-            // the supervisor respawns a reader for it on every sweep.
             Ok(_) => match evdev::Device::open(path) {
                 Ok(_) => scan.keyboards.push(path.to_string()),
                 Err(e) => warn!("Configured evdev device {path} is not usable: {e}"),
@@ -483,8 +420,6 @@ mod tests {
 
     #[test]
     fn synthetic_devices_are_never_used_as_hotkey_sources() {
-        // Reading back our own injected keystrokes would retrigger the very
-        // hotkey that produced them.
         for name in [
             "FotonVoice Engine Virtual Keyboard",
             "py-evdev-uinput",
@@ -503,8 +438,6 @@ mod tests {
 
     #[test]
     fn scanning_a_missing_configured_device_reports_it_as_unusable() {
-        // Not a permission problem - the app must not tell the user to fix
-        // permissions when their saved device simply no longer exists.
         let scan = scan_input_devices(Some("/dev/input/does-not-exist-fotonvoice-test"));
         assert_eq!(scan.total, 1);
         assert_eq!(scan.denied, 0);
@@ -558,7 +491,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_real_double_tap_on_a_bare_modifier_starts_recording() {
-        // The gesture this app is built around, driven by raw evdev events.
         let (tx, mut rx) = crate::channel();
         let bindings = vec![binding("dt", GestureType::DoubleTap, &["KEY_LEFTMETA"])];
         let mut engine = GestureEngine::new(bindings.clone());
@@ -576,8 +508,6 @@ mod tests {
 
     #[tokio::test]
     async fn auto_repeat_between_taps_does_not_break_the_gesture() {
-        // Holding the first tap emits repeats at value 2, which the reader drops
-        // before the coordinator ever sees them. Simulate the surviving stream.
         let (tx, mut rx) = crate::channel();
         let bindings = vec![binding("dth", GestureType::DoubleTapHold, &["KEY_LEFTMETA"])];
         let mut engine = GestureEngine::new(bindings.clone());
@@ -596,8 +526,6 @@ mod tests {
 
     #[tokio::test]
     async fn losing_the_keyboard_mid_hold_stops_the_recording() {
-        // Regression: an unplugged keyboard used to leave the key "held"
-        // forever, so recording ran until something else stopped it.
         let (tx, mut rx) = crate::channel();
         let bindings = vec![binding("h", GestureType::Hold, &["KEY_LEFTALT"])];
         let mut engine = GestureEngine::new(bindings.clone());

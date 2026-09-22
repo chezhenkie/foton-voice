@@ -1,18 +1,4 @@
 //! RNNoise noise suppression for the capture path, behind the `noisereduce`
-//! cargo feature.
-//!
-//! RNNoise is fixed to 48 kHz and works on 480-sample frames of 16-bit-scaled
-//! PCM, none of which matches what the microphone hands us: the hardware runs
-//! at whatever rate it negotiated, cpal delivers arbitrarily sized buffers of
-//! `[-1.0, 1.0]` floats, and inference wants 16 kHz. [`Denoiser`] absorbs all
-//! three mismatches - feed it a chunk at the hardware rate and it returns the
-//! cleaned audio already resampled to [`TARGET_SAMPLE_RATE`], so it drops into
-//! the capture callback in place of the plain resample.
-//!
-//! Samples that do not fill a whole 480-sample frame are held back and
-//! prepended to the next chunk, so a frame is never zero-padded (which RNNoise
-//! hears as a click). At most one frame - 10 ms - is therefore still buffered
-//! when a recording ends.
 
 #[cfg(feature = "noisereduce")]
 use crate::{resample_into, TARGET_SAMPLE_RATE};
@@ -22,15 +8,10 @@ use crate::{resample_into, TARGET_SAMPLE_RATE};
 const RNNOISE_SAMPLE_RATE: u32 = 48_000;
 
 /// RNNoise wants `f32`s that came from 16-bit integers, i.e. the
-/// `[-32768.0, 32767.0]` range rather than cpal's `[-1.0, 1.0]`.
 #[cfg(feature = "noisereduce")]
 const I16_SCALE: f32 = 32_768.0;
 
 /// A stateful RNNoise denoiser for one capture stream.
-///
-/// RNNoise carries state between frames, so each stream needs its own - and a
-/// rebuilt stream must start a fresh one rather than continuing with the
-/// spectral estimate of the device it just left.
 #[cfg(feature = "noisereduce")]
 pub struct Denoiser {
     state: Box<nnnoiseless::DenoiseState<'static>>,
@@ -39,7 +20,6 @@ pub struct Denoiser {
     /// 48 kHz samples in i16 scale that did not fill a frame last time.
     pending: Vec<f32>,
     /// Reused across chunks so the two resamples and the frame assembly on the
-    /// audio callback thread never touch the allocator.
     at_48k: Vec<f32>,
     cleaned: Vec<f32>,
     /// The first frame out of RNNoise contains fade-in artifacts.
@@ -47,7 +27,6 @@ pub struct Denoiser {
 }
 
 /// Without the `noisereduce` feature there is no denoiser to construct, so the
-/// type is uninhabited and every `Option<Denoiser>` is `None`.
 #[cfg(not(feature = "noisereduce"))]
 pub enum Denoiser {}
 
@@ -65,11 +44,6 @@ impl Denoiser {
     }
 
     /// Denoise one capture chunk (at the hardware rate) and return it at
-    /// [`TARGET_SAMPLE_RATE`].
-    ///
-    /// The result is shorter or longer than a plain resample of `input` would
-    /// be, because whole frames are what RNNoise consumes; the caller must not
-    /// assume a fixed ratio between input and output length.
     pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
         const FRAME: usize = nnnoiseless::DenoiseState::FRAME_SIZE;
 
@@ -84,8 +58,6 @@ impl Denoiser {
         let mut consumed = 0;
 
         while self.pending.len() - consumed >= FRAME {
-            // Copy the frame out first: `process_frame` borrows `self.state`
-            // mutably, so it cannot also hold a slice of `self.pending`.
             frame.copy_from_slice(&self.pending[consumed..consumed + FRAME]);
             self.state.process_frame(&mut out, &frame);
             consumed += FRAME;
@@ -117,7 +89,6 @@ impl Denoiser {
 }
 
 /// Build a denoiser for a stream capturing at `input_rate`, or `None` when
-/// noise suppression is off or this build has no RNNoise compiled in.
 pub fn make_denoiser(enabled: bool, input_rate: u32) -> Option<Denoiser> {
     if !enabled {
         return None;
@@ -165,10 +136,6 @@ mod tests {
     }
 
     /// The point of RNNoise is discrimination, not blanket attenuation: a
-    /// steady tone (a stand-in for voiced speech) must come through intact
-    /// while broadband noise is pulled down. Both halves matter - a denoiser
-    /// fed samples at the wrong scale still "attenuates", it just wrecks the
-    /// signal too.
     #[test]
     fn keeps_tone_and_attenuates_noise() {
         let seconds = 3;
@@ -198,7 +165,6 @@ mod tests {
 
     #[test]
     fn resamples_to_target_rate() {
-        // 44.1 kHz in, one second of it; out must be ~16 kHz worth of samples.
         let mut d = Denoiser::new(44_100);
         let out = d.process(&noise(44_100));
         let expected = TARGET_SAMPLE_RATE as usize;
@@ -212,8 +178,6 @@ mod tests {
 
     #[test]
     fn carries_partial_frames_between_chunks() {
-        // 100-sample chunks never line up with RNNoise's 480-sample frame, so
-        // this only produces output at all if the remainder is carried over.
         let mut d = Denoiser::new(48_000);
         let input = noise(4_800);
         let produced: usize = input.chunks(100).map(|c| d.process(c).len()).sum();

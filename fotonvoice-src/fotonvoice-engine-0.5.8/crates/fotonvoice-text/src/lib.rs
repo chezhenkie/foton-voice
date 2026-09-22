@@ -1,9 +1,4 @@
 //! Shared text-processing helpers used by both the speech-recognition
-//! post-processing pipeline (`fotonvoice-inference`) and the TTS engine
-//! (`fotonvoice-tts`). Both crates apply the same snippet expansion and
-//! custom-vocabulary fuzzy correction to user text - this crate is the
-//! single source of truth for that logic so a fix or tuning change only
-//! needs to happen once.
 
 #[cfg(test)]
 mod reference;
@@ -14,7 +9,6 @@ use std::collections::HashMap;
 use regex::Regex;
 
 /// Classic Levenshtein (edit) distance between two strings, computed over
-/// `char`s rather than bytes so it works correctly with non-ASCII input.
 pub fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     distance_within(s1, s2, usize::MAX).unwrap_or(usize::MAX)
 }
@@ -26,9 +20,6 @@ fn within(s1: &str, s2: &str, max: usize) -> bool {
 
 thread_local! {
     /// Scratch space for the distance routine: the two character buffers and
-    /// the two DP rows. Vocabulary correction runs this once per word per
-    /// vocabulary entry, so allocating four buffers per call would cost more
-    /// than the arithmetic it exists for.
     static SCRATCH: std::cell::RefCell<Scratch> = const {
         std::cell::RefCell::new(Scratch {
             a: Vec::new(),
@@ -47,12 +38,6 @@ struct Scratch {
 }
 
 /// Levenshtein distance between `s1` and `s2`, abandoned as soon as every
-/// path through the table is known to exceed `max`.
-///
-/// Returns `None` when the distance is greater than `max`. That early exit is
-/// what makes vocabulary correction cheap: nearly every comparison is between
-/// two unrelated words, and those are rejected after a row or two instead of
-/// filling the whole table.
 fn distance_within(s1: &str, s2: &str, max: usize) -> Option<usize> {
     SCRATCH.with(|cell| match cell.try_borrow_mut() {
         Ok(mut guard) => {
@@ -63,8 +48,6 @@ fn distance_within(s1: &str, s2: &str, max: usize) -> Option<usize> {
             s.b.extend(s2.chars());
             distance_rows(&s.a, &s.b, max, &mut s.prev, &mut s.cur)
         }
-        // A re-entrant call (there is none today) would find the buffers
-        // borrowed; fall back to fresh ones rather than panicking.
         Err(_) => {
             let (a, b): (Vec<char>, Vec<char>) = (s1.chars().collect(), s2.chars().collect());
             distance_rows(&a, &b, max, &mut Vec::new(), &mut Vec::new())
@@ -113,8 +96,6 @@ fn distance_rows(
 }
 
 /// Replaces short trigger words/phrases in `text` with their configured
-/// expansions (case-insensitive, word-boundary matched). Used for both
-/// dictation snippets (STT output) and spoken-text shortcuts (TTS input).
 pub fn expand_snippets(text: &str, snippets: &HashMap<String, String>) -> String {
     if snippets.is_empty() {
         return text.to_string();
@@ -135,11 +116,6 @@ pub fn expand_snippets(text: &str, snippets: &HashMap<String, String>) -> String
 }
 
 /// Hands `f` the compiled word-boundary regex for `trigger`, compiling it on
-/// first use and keeping it for the rest of the session.
-///
-/// Snippet triggers change only when the user edits their settings, so
-/// recompiling every one of them on every transcription - regex compilation
-/// costs orders of magnitude more than the match itself - was pure waste.
 fn with_trigger_regex<R>(trigger: &str, f: impl FnOnce(Option<&Regex>) -> R) -> R {
     static CACHE: std::sync::OnceLock<std::sync::RwLock<HashMap<String, Option<Regex>>>> =
         std::sync::OnceLock::new();
@@ -154,8 +130,6 @@ fn with_trigger_regex<R>(trigger: &str, f: impl FnOnce(Option<&Regex>) -> R) -> 
     let compiled = Regex::new(&format!(r"(?i)\b{}\b", regex::escape(trigger))).ok();
     let mut map = match cache.write() {
         Ok(map) => map,
-        // A poisoned lock only means some other thread panicked mid-write;
-        // the entry is still worth using, just not worth caching.
         Err(_) => return f(compiled.as_ref()),
     };
     f(map.entry(trigger.to_string()).or_insert(compiled).as_ref())
@@ -174,21 +148,10 @@ fn brand_re() -> &'static Regex {
 }
 
 /// Fuzzy-corrects occurrences of `custom_vocab` entries in `text` using
-/// Levenshtein distance, so phonetic mis-transcriptions/mis-readings of
-/// proper nouns and domain-specific terms get normalized back to the
-/// configured spelling.
-///
-/// Multi-word phrases are corrected first (longest phrase first, so a
-/// longer match "wins" over a shorter one contained within it), followed
-/// by single-word corrections. The allowed edit distance scales with word
-/// length: exact match only for 1-3 chars, distance <= 1 for mid-length
-/// words, distance <= 2 for longer words.
 pub fn correct_custom_vocabulary(text: &str, custom_vocab: &[String]) -> String {
     let mut result = text.to_string();
 
     let mut multi_word: Vec<&String> = Vec::new();
-    // Lowercased once here rather than once per (word, entry) comparison
-    // inside the replace loop below.
     let mut single_word: Vec<(&str, String)> = Vec::new();
     for vocab_word in custom_vocab {
         if vocab_word.trim().is_empty() {
@@ -201,7 +164,6 @@ pub fn correct_custom_vocabulary(text: &str, custom_vocab: &[String]) -> String 
         }
     }
 
-    // 1. Process multi-word phrases first (longest first)
     multi_word.sort_by(|a, b| b.len().cmp(&a.len()));
 
     if !multi_word.is_empty() {
@@ -259,7 +221,6 @@ pub fn correct_custom_vocabulary(text: &str, custom_vocab: &[String]) -> String 
         }
     }
 
-    // 2. Process single-word corrections
     if !single_word.is_empty() {
         result = word_re()
             .replace_all(&result, |caps: &regex::Captures| {
@@ -284,8 +245,6 @@ pub fn correct_custom_vocabulary(text: &str, custom_vocab: &[String]) -> String 
                     } else {
                         2
                     };
-                    // Nothing under `best_dist` can be found above it either,
-                    // so the search narrows as a better match is found.
                     let ceiling = max_allowed.min(best_dist.saturating_sub(1));
 
                     if let Some(dist) = distance_within(&matched_lower, vocab_lower, ceiling) {
@@ -303,21 +262,6 @@ pub fn correct_custom_vocabulary(text: &str, custom_vocab: &[String]) -> String 
 }
 
 /// Rewrite a mis-heard "<word> control" to the brand name.
-///
-/// Speech recognisers hear "FotonVoice Engine" as two words far more often than as one,
-/// and the voice-command router only strips a wake word it recognises - so a
-/// transcript that says "vax control" is a command the user spoke and the app
-/// silently typed out instead. Any "<word> control/ctrl/ctl/kontrol" phrase
-/// within one edit of "vox control" becomes "FotonVoice Engine".
-///
-/// This used to be the tail of [`correct_custom_vocabulary`], which the
-/// pipeline calls only when the user has a custom vocabulary - so the users
-/// most likely to hit the mis-hearing, the ones who had configured nothing,
-/// were the only ones it never ran for. It stands alone so it can run for
-/// everyone.
-///
-/// Borrows when there is nothing to rewrite, which is almost every
-/// transcript: the regex needs a literal "control"-ish word to match at all.
 pub fn normalize_brand_name(text: &str) -> Cow<'_, str> {
     brand_re().replace_all(text, |caps: &regex::Captures| {
         let matched = caps.get(0).unwrap().as_str();
@@ -372,25 +316,20 @@ mod tests {
             "Vox Ctrl".to_string(),
         ];
 
-        // Exact case-insensitive matches should capitalize correctly
         assert_eq!(correct_custom_vocabulary("hello waylin", &vocab), "hello Waylin");
         assert_eq!(correct_custom_vocabulary("RUFER is here", &vocab), "Rufer is here");
         assert_eq!(correct_custom_vocabulary("kenz", &vocab), "Kenz");
 
-        // Fuzzy matches (edit distance <= 2 for long words, <= 1 for mid-length)
         assert_eq!(correct_custom_vocabulary("Hello Waylan!", &vocab), "Hello Waylin!");
         assert_eq!(correct_custom_vocabulary("this is Enoll", &vocab), "this is Enola");
         assert_eq!(correct_custom_vocabulary("my friend kens", &vocab), "my friend Kenz");
 
-        // Short words and distant words should not trigger false positives
         assert_eq!(correct_custom_vocabulary("in", &vocab), "in");
-        // Normal speech phrases containing "control" must not be modified
         assert_eq!(correct_custom_vocabulary("The foxes control the hen house", &vocab), "The foxes control the hen house");
         assert_eq!(correct_custom_vocabulary("The foxes control the hen house", &[]), "The foxes control the hen house");
     }
 
     /// The textbook full-table implementation, kept here as the reference the
-    /// rolling-row version with its early exit has to agree with.
     fn naive_distance(s1: &str, s2: &str) -> usize {
         let a: Vec<char> = s1.chars().collect();
         let b: Vec<char> = s2.chars().collect();
@@ -433,8 +372,6 @@ mod tests {
 
     #[test]
     fn the_early_exit_never_changes_the_answer() {
-        // `within` may stop filling the table as soon as the budget is blown;
-        // whether it stops or not, its verdict has to match the real distance.
         for x in SAMPLES {
             for y in SAMPLES {
                 let real = naive_distance(x, y);
@@ -456,9 +393,6 @@ mod tests {
 
     #[test]
     fn brand_name_is_repaired_without_any_custom_vocabulary() {
-        // The bug this fixes: the repair used to live inside
-        // `correct_custom_vocabulary`, which the pipeline skips when no
-        // vocabulary is configured - so it never ran for the default install.
         for heard in ["vox control", "vax control", "Vox Control", "box control"] {
             assert_eq!(
                 normalize_brand_name(&format!("{heard} say hello")),
@@ -469,8 +403,6 @@ mod tests {
     }
 
     /// "vox ctrl" is already the brand with a space in it, and the voice-command
-    /// router accepts that spelling verbatim as an exact trigger - so it is
-    /// deliberately left alone rather than rewritten.
     #[test]
     fn the_already_spelled_brand_is_untouched() {
         for spelled in ["FotonVoice Engine", "Vox Ctrl", "vox ctrl"] {
@@ -492,8 +424,6 @@ mod tests {
 
     #[test]
     fn brand_repair_borrows_when_there_is_nothing_to_do() {
-        // Every transcript runs through this, so the no-match path must not
-        // allocate a copy of the text.
         assert!(matches!(
             normalize_brand_name("nothing to see here"),
             Cow::Borrowed(_)

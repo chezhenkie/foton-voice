@@ -1,11 +1,4 @@
 //! End-to-end LuxTTS probe: real ONNX graphs, real reference clip, real espeak.
-//!
-//! Ignored by default (needs model files + espeak-ng); run with:
-//! `cargo test -p fotonvoice-tts --features luxtts -- --ignored --nocapture`
-//!
-//! Point LUX_PROBE_DIR at the folder holding text_encoder.onnx, fm_decoder.onnx
-//! (+ _int8 variants), vocos.onnx and tokens.txt; LUX_PROBE_CLIP at a
-//! reference .wav, LUX_PROBE_TRANSCRIPT at its .txt.
 
 use std::path::PathBuf;
 

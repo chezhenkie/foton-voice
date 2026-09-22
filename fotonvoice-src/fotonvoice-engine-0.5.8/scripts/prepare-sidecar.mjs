@@ -1,17 +1,4 @@
 #!/usr/bin/env node
-// Stage the freshly-built `fotonvoice-llm-sidecar` binary as a Tauri sidecar so
-// it gets bundled *inside* the AppImage / deb / installer next to the main app.
-//
-// Tauri's `externalBin` mechanism expects each sidecar to be named with the
-// host target triple suffix (e.g. `fotonvoice-llm-sidecar-x86_64-unknown-linux-gnu`).
-// At bundle time Tauri strips the triple and drops the sidecar alongside the
-// main `fotonvoice-engine` binary. Without this the sidecar is missing from packaged
-// builds and the app silently falls back to a stale dev binary (or none at all).
-//
-// Run from beforeBuildCommand/beforeDevCommand *after* the sidecar binary has
-// been compiled. The crate's build.rs writes a placeholder so plain cargo
-// builds still compile; this script replaces that placeholder with the real
-// binary before Tauri bundles.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, copyFileSync, chmodSync } from 'node:fs';
@@ -20,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-// Resolve the host target triple from rustc (e.g. "x86_64-unknown-linux-gnu").
 function hostTriple() {
   const out = execFileSync('rustc', ['-vV'], { encoding: 'utf8' });
   const match = out.match(/^host:\s*(\S+)$/m);
@@ -60,7 +46,6 @@ if (isDirectRun) {
   const destDir = join(repoRoot, 'src-tauri', 'binaries');
   mkdirSync(destDir, { recursive: true });
 
-  // Stage fotonvoice-llm-sidecar
   const llmCandidates = [
     join(repoRoot, 'target', 'release', `fotonvoice-llm-sidecar${exeSuffix}`),
     join(repoRoot, 'target', 'debug', `fotonvoice-llm-sidecar${exeSuffix}`),

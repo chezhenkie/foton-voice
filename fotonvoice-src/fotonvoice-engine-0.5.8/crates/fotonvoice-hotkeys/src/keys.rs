@@ -1,9 +1,4 @@
 //! Turns a stream of raw key presses and releases into per-binding trigger
-//! transitions.
-//!
-//! Only the backends that see individual keys need this - evdev on Linux and
-//! the Win32 hook on Windows. The portal backend is handed whole shortcuts by
-//! the compositor and talks to the gesture engine directly.
 
 use std::collections::HashSet;
 
@@ -28,7 +23,6 @@ impl KeyMatcher {
     }
 
     /// Swap in new bindings. The caller is expected to have reset the gesture
-    /// engine, so no trigger is considered active afterwards.
     pub fn reload(&mut self, bindings: Vec<HotkeyBinding>) {
         self.bindings = bindings;
         self.pressed.clear();
@@ -36,9 +30,6 @@ impl KeyMatcher {
     }
 
     /// Every trigger that is currently active, as `Released` transitions.
-    ///
-    /// Used when the key source disappears: whatever is held will never be seen
-    /// coming back up.
     pub fn clear(&mut self) -> Vec<(String, Transition)> {
         let mut out = Vec::new();
         for id in std::mem::take(&mut self.active) {
@@ -61,10 +52,6 @@ impl KeyMatcher {
     }
 
     fn on_press(&mut self, key: &str) -> Vec<(String, Transition)> {
-        // Shadowing is resolved at press time only. Deliberately: if it were
-        // re-evaluated on release, letting go of Ctrl during Ctrl+Super+Space
-        // would "un-shadow" Super+Space and start a second recording out of a
-        // gesture the user was in the middle of ending.
         let shadowed = shadowed_by_longer(&self.pressed, &self.bindings);
 
         let mut out = Vec::new();
@@ -75,9 +62,6 @@ impl KeyMatcher {
             if shadowed.contains(&b.id) {
                 continue;
             }
-            // The key just pressed has to be part of the combo - otherwise a
-            // binding would activate on an unrelated key merely because its own
-            // keys happened to still be down.
             if !b.keys.iter().any(|k| k == key) {
                 continue;
             }
@@ -103,8 +87,6 @@ impl KeyMatcher {
             }
             out.push((b.id.clone(), Transition::Deactivated));
 
-            // `pressed` still holds the key being released - the caller removes
-            // it once this returns - so it has to be excluded explicitly.
             let others_held = b
                 .keys
                 .iter()
@@ -179,8 +161,6 @@ mod tests {
 
     #[test]
     fn an_unrelated_key_does_not_activate_a_held_combo() {
-        // Super is down for other reasons; pressing an unrelated key must not
-        // count as completing a binding that only needs Super.
         let mut m = KeyMatcher::new(vec![binding("b", &["KEY_LEFTMETA"])]);
         m.on_key("KEY_LEFTMETA", true);
         assert!(m.on_key("KEY_T", true).is_empty());
@@ -201,8 +181,6 @@ mod tests {
 
     #[test]
     fn releasing_a_shadowing_key_does_not_start_the_shorter_combo() {
-        // Regression guard: re-deriving shadowing on release would activate
-        // Super+Space here, in the middle of ending Ctrl+Super+Space.
         let mut m = KeyMatcher::new(vec![
             binding("short", &["KEY_LEFTMETA", "KEY_SPACE"]),
             binding("long", &["KEY_LEFTCTRL", "KEY_LEFTMETA", "KEY_SPACE"]),

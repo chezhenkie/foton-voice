@@ -2049,6 +2049,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "fotonvoice-config",
+ "fotonvoice-text",
  "fotonvoice-winput",
  "hex",
  "hmac",

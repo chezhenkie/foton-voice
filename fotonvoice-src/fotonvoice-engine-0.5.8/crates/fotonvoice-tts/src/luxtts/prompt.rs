@@ -1,21 +1,4 @@
 //! The encoded reference voice: mel features + its transcript's token ids.
-//!
-//! The reference encodes a prompt from (reference audio, transcript) once and
-//! reuses it for every generation. That is exactly what the engine needs for
-//! voice cloning: encode once when the voice is chosen, cache to disk, load
-//! instantly afterwards.
-//!
-//! Cache format (`<voice>.luxtprompt`), a small binary container documented so
-//! it stays inspectable:
-//!
-//! ```text
-//! magic  "LUXP" (4 bytes)
-//! u32    version (4)
-//! u32    token count, then that many i64 LE ids
-//! f32    prompt_rms
-//! f32    ref_duration the prompt was encoded with (v4)
-//! u32    feature frame count T, then T rows of 100 f32 mel values
-//! ```
 
 use std::path::{Path, PathBuf};
 
@@ -27,9 +10,6 @@ use super::mel;
 use super::model::ENCODE_TARGET_RMS;
 
 /// Seconds of the reference clip fed to the prompt encoder. Configurable
-/// (`tts.lux_tts.ref_duration`, upstream torch default 5): lower = faster
-/// rendering, since the ODE window includes the prompt frames. The reference
-/// `encode_prompt` accepts a `duration` argument the same way.
 pub fn max_prompt_duration(configured: f32) -> f32 {
     if configured > 0.0 {
         configured
@@ -59,10 +39,6 @@ fn decode_clip(path: &Path) -> Result<(Vec<f32>, u32)> {
     let mut decoder = rodio::Decoder::new(cursor)
         .map_err(|e| anyhow::anyhow!("decode {}: {e}", path.display()))?;
     let sample_rate = decoder.sample_rate();
-    // The wav decoder emits i16 samples. Multi-channel files are interleaved;
-    // fold every `channels`-wide frame to mono by averaging. Folding by a
-    // fixed pair would halve mono files (averaging neighbouring samples),
-    // which corrupts both the prompt mel features and the token alignment.
     let channels = rodio::Source::channels(&mut decoder).max(1) as usize;
     let raw: Vec<i16> = decoder.collect();
     let samples: Vec<f32> = raw
@@ -84,11 +60,7 @@ fn rms_norm(audio: &mut [f32], target_rms: f32) -> f32 {
     rms
 }
 
-// -- Silence handling (port of upstream remove_silence) -------------------------
 
-// Values straight from upstream: split_on_silence(min_silence_len=1000ms,
-// silence_thresh=-50 dBFS, keep_silence=1000ms, seek_step=10ms),
-// remove_silence_edges(keep 100ms, -50 dBFS), trail_sil=200ms.
 const SILENCE_THRESH_DB: f32 = -50.0;
 const SEEK_SECS: f32 = 0.010;
 const MIN_SILENCE_SECS: f32 = 1.0;
@@ -97,8 +69,6 @@ const EDGE_KEEP_SECS: f32 = 0.1;
 const TRAIL_SECS: f32 = 0.2;
 
 fn silence_amp() -> f32 {
-    // dBFS to full-scale amplitude; our f32 samples have full scale 1.0, so
-    // pydub's `rms / 32768 <= 10^(dB/20)` becomes `rms <= 10^(dB/20)`.
     10f32.powf(SILENCE_THRESH_DB / 20.0)
 }
 
@@ -107,9 +77,6 @@ fn rms_of(samples: &[f32]) -> f32 {
 }
 
 /// Split the clip on silences longer than 1 s, keeping 1 s of silence around
-/// each speech segment (upstream pydub `split_on_silence` + its postprocessing:
-/// extend each nonsilent range by keep_silence, clamp to the clip, merge
-/// overlaps at midpoints).
 fn split_long_silences(samples: &[f32], rate: u32) -> Vec<f32> {
     let step = (rate as f32 * SEEK_SECS).max(1.0) as usize;
     let window = (rate as f32 * MIN_SILENCE_SECS) as usize;
@@ -119,8 +86,6 @@ fn split_long_silences(samples: &[f32], rate: u32) -> Vec<f32> {
         return samples.to_vec();
     }
     let amp = silence_amp();
-    // A position is silent when the 1 s window starting there sits at or below
-    // the threshold; merged marks give the silence spans.
     let mut silences: Vec<(usize, usize)> = Vec::new();
     for k in 0..=(n - window) / step {
         let s = k * step;
@@ -132,7 +97,6 @@ fn split_long_silences(samples: &[f32], rate: u32) -> Vec<f32> {
             }
         }
     }
-    // Nonsilent ranges: complement of the merged silence spans.
     let mut nonsilent: Vec<(usize, usize)> = Vec::new();
     let mut pos = 0;
     for (s, e) in &silences {
@@ -170,7 +134,6 @@ fn split_long_silences(samples: &[f32], rate: u32) -> Vec<f32> {
 }
 
 /// Trim edge silences to 100 ms (upstream `remove_silence_edges`): scan 10 ms
-/// chunks in from each edge while they stay below the threshold, keep 100 ms.
 fn trim_edges(samples: &mut Vec<f32>, rate: u32) {
     let step = (rate as f32 * SEEK_SECS).max(1.0) as usize;
     let keep = (rate as f32 * EDGE_KEEP_SECS) as usize;
@@ -194,10 +157,6 @@ fn trim_edges(samples: &mut Vec<f32>, rate: u32) {
 }
 
 /// Port of upstream `remove_silence` (zipvoice utils/infer.py): split
-/// silences longer than 1 s (-50 dBFS, 1 s kept around each speech segment),
-/// trim edge silences to 100 ms, append 200 ms of trailing silence. The
-/// trailing silence keeps the reference from leaking into the first
-/// generated words.
 fn remove_silence(samples: &mut Vec<f32>, rate: u32) {
     let mut split = split_long_silences(samples, rate);
     trim_edges(&mut split, rate);
@@ -207,12 +166,6 @@ fn remove_silence(samples: &mut Vec<f32>, rate: u32) {
 }
 
 /// Encode a reference clip + transcript into a [`Prompt`].
-///
-/// Mirrors `LuxTTSOnnx.encode_prompt` with the torch lane's silence care
-/// (`remove_silence`): load, trim to `max_duration` seconds, resample to
-/// 24 kHz, split out silences longer than 1 s, trim edge silences to 100 ms,
-/// append 200 ms of trailing silence, RMS-normalize to the encode target,
-/// mel features, tokenize the transcript.
 pub fn encode(
     clip: &Path,
     transcript: &str,
@@ -227,10 +180,6 @@ pub fn encode(
     let trimmed = &samples[..max_samples.min(samples.len())];
     let mut audio24 = super::vocoder::resample(trimmed, native_rate, mel::SAMPLE_RATE);
 
-    // Upstream remove_silence (zipvoice utils/infer.py, run before rms_norm in
-    // the torch inference lane): the trailing silence it appends is what keeps
-    // the reference clip's words from bleeding into the generated speech, and
-    // dropping long silences keeps the duration prediction on speech.
     remove_silence(&mut audio24, mel::SAMPLE_RATE);
     if audio24.is_empty() {
         bail!(
@@ -253,9 +202,6 @@ pub fn encode(
             skipped.join(" ")
         );
     }
-    // The transcript must say exactly what the (possibly trimmed) clip speaks -
-    // the token/frame ratio drives the duration prediction. A trim that cuts
-    // speech the transcript still describes skews it and compresses output.
     let speech_seconds = features_len as f32 * mel::HOP_LENGTH as f32 / mel::SAMPLE_RATE as f32;
     let symbols_per_second = symbols.len() as f32 / speech_seconds.max(0.1);
     if symbols_per_second > 25.0 {
@@ -307,7 +253,6 @@ fn cache_is_stale(cache: &Path, clip: &Path) -> bool {
 }
 
 /// Load a cached prompt, or encode and save it. The cache is keyed by the
-/// config's `ref_duration`: a different trim re-encodes.
 pub fn load_or_encode(
     clip: &Path,
     transcript: &str,
@@ -332,11 +277,6 @@ pub fn load_or_encode(
 }
 
 /// Prompt cache format version. v1 caches were written by a decoder that
-/// pair-averaged mono clips in half; v2 is the corrected mono fold; v3 raises
-/// the prompt RMS normalization to the model's training value (0.1); v4 stores
-/// the `ref_duration` the prompt was encoded with so config changes re-encode;
-/// v5 encodes the clip with upstream silence removal (split long silences,
-/// edge trim, 200 ms trailing silence) - older caches lack it.
 pub const CACHE_VERSION: u32 = 5;
 
 /// Serialize to the compact binary cache format.
@@ -445,7 +385,6 @@ mod tests {
         assert!(load(&path).is_err());
     }
 
-    // -- silence handling ---------------------------------------------------
 
     const TEST_RATE: u32 = 1000; // 10 ms step = 10 samples, keeps sizes tiny
 
@@ -459,8 +398,6 @@ mod tests {
 
     #[test]
     fn test_split_long_silences_keeps_1s_around_speech() {
-        // 2.5 s silence + 1 s speech + 3 s silence: the >1 s silences split
-        // out, 1 s is kept on each side of the speech.
         let mut input = silence(2.5);
         input.extend(speech(1.0));
         input.extend(silence(3.0));
@@ -473,7 +410,6 @@ mod tests {
 
     #[test]
     fn test_split_long_silences_keeps_short_silences_intact() {
-        // 0.5 s silences stay untouched (< 1 s min_silence_len).
         let mut input = silence(0.5);
         input.extend(speech(1.0));
         input.extend(silence(0.5));
@@ -489,8 +425,6 @@ mod tests {
 
     #[test]
     fn test_trim_edges_keeps_100ms() {
-        // 0.5 s leading silence + 1 s speech: 100 ms of the leading silence
-        // stays, the rest is trimmed.
         let mut input = silence(0.5);
         input.extend(speech(1.0));
         let mut out = input.clone();
@@ -506,7 +440,6 @@ mod tests {
         input.extend(silence(0.5));
         let mut out = input.clone();
         remove_silence(&mut out, TEST_RATE);
-        // 100 ms edge silence + 1 s speech + 200 ms trailing silence.
         assert_eq!(out.len(), (TEST_RATE as f32 * 1.3) as usize);
         let trail = &out[out.len() - 200..];
         assert!(trail.iter().all(|s| *s == 0.0), "trail must be silence");

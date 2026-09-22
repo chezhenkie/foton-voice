@@ -1,26 +1,4 @@
 //! LuxTTS (<https://github.com/ysharma3501/LuxTTS>) - lightweight ZipVoice-family
-//! flow-matching TTS with 48 kHz voice cloning, run in-process through ONNX
-//! Runtime.
-//!
-//! Split by concern:
-//! - [`g2p`]     - eSpeak-NG phonemization and the token vocabulary
-//! - [`mel`]     - librosa-matched mel-spectrogram extraction
-//! - [`model`]   - the text encoder / flow decoder / vocos graphs + ODE sampler
-//! - [`prompt`]  - encoded reference voice, cached next to the clip
-//! - [`vocoder`] - dual-path crossover merge
-//! - [`sampler`] - ODE schedule and the seeded noise source
-//!
-//! Reference voices follow the shared voice-clip convention: a `.wav` plus a
-//! paired `.txt` transcript in the shared voice folder (the same pairing
-//! VoxCPM2's Ultimate Cloning uses). The prompt is encoded once and cached as
-//! `<stem>.luxtprompt` next to the clip.
-//!
-//! # Build feature
-//!
-//! The ONNX half sits behind the `luxtts` cargo feature, exactly like
-//! `inflect-micro`. [`LUX_TTS_COMPILED`] reports whether it was built in, and
-//! the settings UI surfaces that so choosing the engine in a build without it
-//! fails loudly instead of silently doing nothing.
 
 #[cfg(feature = "luxtts")]
 pub mod g2p;
@@ -45,10 +23,8 @@ use tracing::warn;
 
 use crate::piper::expand_tilde;
 
-// -- Filesystem layout ---------------------------------------------------------
 
 /// Default model directory: `<portable root>/models/lux-tts/`, keeping the
-/// same `models/<engine>` layout every other backend uses.
 pub fn lux_tts_model_dir() -> PathBuf {
     fotonvoice_config::portable::app_root()
         .join("models")
@@ -80,13 +56,8 @@ pub const LUX_TTS_COMPILED: bool = true;
 #[cfg(not(feature = "luxtts"))]
 pub const LUX_TTS_COMPILED: bool = false;
 
-// -- Reference voices ----------------------------------------------------------
 
 /// Resolve a reference voice id to a local `.wav` path in the voice dir.
-///
-/// Unlike Pocket-TTS there are no built-in hub voices here: LuxTTS clones from
-/// a clip + transcript pair the user supplies, so a missing clip is an error
-/// that names the expected location.
 #[cfg(feature = "luxtts")]
 fn resolve_reference_clip(voice_id: &str, voice_dir: &str) -> Result<PathBuf> {
     let dir = resolve_voice_dir(voice_dir);
@@ -117,7 +88,6 @@ fn default_voice_dir() -> PathBuf {
     fotonvoice_config::portable::app_root().join("cloned-tts-voices")
 }
 
-// -- Session management --------------------------------------------------------
 
 #[cfg(feature = "luxtts")]
 pub(crate) fn ensure_lux_tts_loaded(
@@ -149,23 +119,15 @@ pub(crate) fn ensure_lux_tts_loaded(
     Ok(())
 }
 
-// -- Synthesis + playback ------------------------------------------------------
 
 /// Maximum characters per synthesis chunk. LuxTTS conditions on a prompt, so
-/// long texts are split on clause boundaries the same way the Inflect
-/// frontend splits its own.
 #[cfg(feature = "luxtts")]
 const EDGE_FADE_MS: f32 = 12.0;
 /// Prompt + generation budget per chunk, in seconds - the reference chunks
-/// text so the full window stays around 25 s (`infer_zipvoice_onnx.py`).
 #[cfg(feature = "luxtts")]
 const MAX_CHUNK_SECONDS: f32 = 25.0;
 
 /// Called from `TtsEngineWorker::run` when `config.engine == TtsEngine::LuxTts`.
-///
-/// Takes the worker's model cache by mutable reference so the loaded ONNX
-/// sessions persist for the worker thread's lifetime, matching
-/// `speak_inflect_micro`'s caching contract.
 #[cfg(feature = "luxtts")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn speak_lux_tts(
@@ -183,12 +145,9 @@ pub(crate) fn speak_lux_tts(
     ensure_lux_tts_loaded(config, model)?;
     let model = model.as_mut().unwrap();
 
-    // Resolve the reference clip + transcript, then the prompt.
     let clip = resolve_reference_clip(&cfg.cloned_voice, &cfg.voice_dir)?;
     let transcript = std::fs::read_to_string(clip.with_extension("txt"))
         .with_context(|| format!("read transcript {}", clip.with_extension("txt").display()))?;
-    // Clamp to the slider range (12-25 s); guards stale configs saved before
-    // the slider existed (older caps 15/18 or hand-edited values below 12).
     let ref_duration = cfg.ref_duration.clamp(12.0, 25.0);
     let prompt = prompt::load_or_encode(&clip, transcript.trim(), &model.vocab, ref_duration)?;
 
@@ -235,10 +194,6 @@ pub(crate) fn speak_lux_tts(
         );
     }
 
-    // Chunk on clause boundaries so prompt + generation stays inside the ~25 s
-    // window the reference uses (infer_zipvoice's chunk_tokens_punctuation).
-    // Estimated per-token frame cost from the prompt itself: the encoder scales
-    // duration linearly with token count.
     let frames_per_token = (prompt.features_len as f32 / prompt.tokens.len().max(1) as f32).max(1.0);
     let max_chunk_tokens = {
         let window_frames =
@@ -304,16 +259,11 @@ pub(crate) fn speak_lux_tts(
         anyhow::bail!("LuxTTS produced no audio");
     }
 
-    // Re-check after synthesis: stop() may have landed mid-generation.
     if generation_counter.load(std::sync::atomic::Ordering::SeqCst) != generation {
         return Ok(());
     }
 
     crate::inflect::edge_fade(&mut audio, model::OUTPUT_SAMPLE_RATE, EDGE_FADE_MS);
-    // Playback-start fires here, matching Inflect-Micro: after synthesis, when
-    // audio actually enters the sink. Firing it before synthesis made the
-    // settings Test TTS timer stop at ~100 ms while the voice was still seconds
-    // away (g2p + prompt load + ODE generation happen in between).
     if let Some(ref cb) = on_playback_start {
         cb();
     }
@@ -327,7 +277,6 @@ pub(crate) fn speak_lux_tts(
 }
 
 /// Stand-in for builds without the `luxtts` feature: a pre-load is a no-op
-/// (the real message comes from `speak_lux_tts` if the engine is used).
 #[cfg(not(feature = "luxtts"))]
 pub(crate) fn speak_lux_tts(
     _config: &fotonvoice_config::TtsConfig,

@@ -20,12 +20,10 @@
     onCancel: () => void;
   } = $props();
 
-  // Flat edit states to ensure absolute Svelte 5 reactivity for target processing overrides
   let editMcpArgsString = $state("");
   let editHttpTemplateString = $state("");
   let editWebhookTemplateString = $state("");
 
-  // Chat target connection state
   interface ChatTestResult {
     success: boolean;
     message: string;
@@ -36,9 +34,6 @@
   let chatStatus = $state("");
   let chatStatusOk = $state(false);
 
-  // Timestamp format preview for the file target. chrono decides what a
-  // strftime pattern means, so the backend renders it and we show the result -
-  // a preview when the pattern works, the reason when it does not.
   const DEFAULT_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ";
   let timestampPreview = $state("");
   let timestampError = $state<string | null>(null);
@@ -69,7 +64,6 @@
     };
   });
 
-  // Derived validation for Terminal Command
   let commandError = $derived.by(() => {
     if (!editingTarget || editingTarget.delivery !== "exec") return null;
     const cmd = editingTarget.command || "";
@@ -79,7 +73,6 @@
     return null;
   });
 
-  // Derived JSON and placeholder validation for MCP custom arguments
   let mcpArgsError = $derived.by(() => {
     if (!editMcpArgsString.trim()) return null;
     try {
@@ -93,7 +86,6 @@
     return null;
   });
 
-  // Derived JSON and placeholder validation for HTTP custom template
   let httpTemplateError = $derived.by(() => {
     if (!editHttpTemplateString.trim()) return null;
     try {
@@ -107,7 +99,6 @@
     return null;
   });
 
-  // Derived JSON and placeholder validation for Webhook custom template
   let webhookTemplateError = $derived.by(() => {
     if (!editWebhookTemplateString.trim()) return null;
     try {
@@ -135,9 +126,6 @@
     return null;
   });
 
-  /// Probe the server and pull its model list, so the user picks rather than
-  /// guessing the exact model id. Goes through Rust - the endpoint is a
-  /// third-party server that need not send CORS headers to the webview.
   async function testChatConnection() {
     if (!editingTarget) return;
     chatTesting = true;
@@ -172,14 +160,12 @@
     }
   }
 
-  // Reusable Svelte action to auto-resize textareas dynamically to fit their contents
   function autoResize(node: HTMLTextAreaElement) {
     function resize() {
       node.style.height = "auto";
       node.style.height = `${node.scrollHeight}px`;
     }
     node.addEventListener("input", resize);
-    // Initial calculation on mount
     const timer = setTimeout(resize, 0);
 
     return {
@@ -193,7 +179,6 @@
     };
   }
 
-  // Load flat states from editingTarget
   onMount(() => {
     if (editingTarget) {
       if (!editingTarget.processing) {
@@ -202,11 +187,9 @@
       if (!editingTarget.file_mode) {
         editingTarget.file_mode = "append";
       }
-      // Targets saved before the timestamp format was configurable carry none.
       if (!editingTarget.file_timestamp_format) {
         editingTarget.file_timestamp_format = DEFAULT_TIMESTAMP_FORMAT;
       }
-      // Targets saved before the Chat delivery type existed have no chat fields.
       editingTarget.chat_max_history ??= 20;
       editingTarget.chat_timeout_secs ??= 120;
       editingTarget.chat_reply_mode ||= "speak";
@@ -280,7 +263,6 @@
         alert("Validation Error: " + err);
         return;
       }
-      // The number inputs hand back strings when typed into.
       editingTarget.chat_max_history = Number(editingTarget.chat_max_history) || 0;
       editingTarget.chat_timeout_secs = Number(editingTarget.chat_timeout_secs) || 120;
     }
@@ -347,7 +329,6 @@
           />
         </label>
 
-        <!-- Dynamic morphing options based on delivery type -->
         {#if editingTarget.delivery === "command"}
           <div class="morph-section mcp-container">
             <h5>Voice Command Router Settings</h5>

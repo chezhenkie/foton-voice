@@ -1,4 +1,5 @@
 use anyhow::Context;
+use fotonvoice_text::levenshtein_distance;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 #[cfg(unix)]
@@ -29,7 +30,6 @@ pub fn notify_command_trigger(command_name: &str, text_summary: &str) {
     }
 }
 
-// Shared HTTP client - built once, reused for connection pooling.
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -40,7 +40,6 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
-// -- Trait ---------------------------------------------------------------------
 
 #[async_trait::async_trait]
 pub trait DeliveryTarget: Send + Sync {
@@ -48,7 +47,6 @@ pub trait DeliveryTarget: Send + Sync {
     async fn test(&self) -> TestResult;
 }
 
-// -- Factory -------------------------------------------------------------------
 
 pub fn build_target(config: OutputTarget) -> Box<dyn DeliveryTarget> {
     match config.delivery {
@@ -69,17 +67,12 @@ pub fn build_target(config: OutputTarget) -> Box<dyn DeliveryTarget> {
 }
 
 /// End delivered text with exactly one space.
-///
-/// Dictation arrives one utterance at a time, so without this the next one
-/// starts flush against the last word. Text that already ends in whitespace is
-/// left as it is rather than accumulating spaces across repeated deliveries.
 fn append_trailing_space(payload: &mut String) {
     if !payload.ends_with(char::is_whitespace) {
         payload.push(' ');
     }
 }
 
-// -- InjectTarget --------------------------------------------------------------
 
 pub struct InjectTarget(pub OutputTarget);
 
@@ -105,8 +98,6 @@ impl DeliveryTarget for InjectTarget {
         } else {
             text.to_string()
         };
-        // A trailing space so back-to-back dictations do not run their last
-        // and first words together.
         append_trailing_space(&mut payload);
 
         #[cfg(target_os = "linux")]
@@ -141,17 +132,6 @@ impl DeliveryTarget for InjectTarget {
 
         #[cfg(target_os = "windows")]
         {
-            // `SendInput` with KEYEVENTF_UNICODE, via fotonvoice-winput.
-            //
-            // This used to shell out to PowerShell and call
-            // `SendKeys::SendWait`. The payload was base64-encoded so no shell
-            // metacharacter could escape the string - a real defence, and it
-            // worked - but SendKeys then applied *its own* escaping to the
-            // decoded text, in which `+ ^ % ~ ( ) { } [ ]` are syntax. So
-            // "50% (a+b)" was typed as "50" plus two stray chords and
-            // "array[0]" as "array0": every dictation containing ordinary
-            // punctuation came out wrong. SendInput carries the character
-            // itself, so there is no escaping layer left to misread it.
             let sent = tokio::task::spawn_blocking(move || {
                 fotonvoice_winput::deliver(&payload).map(|()| payload)
             })
@@ -191,11 +171,8 @@ impl DeliveryTarget for InjectTarget {
     }
 }
 
-// -- ClipboardTarget -----------------------------------------------------------
 
 /// The clipboard delivery target. It keeps its `OutputTarget` so the chat
-/// reply path and the router construct it the same way as every other target,
-/// though the copy itself needs nothing from it.
 pub struct ClipboardTarget(#[allow(dead_code)] OutputTarget);
 
 #[async_trait::async_trait]
@@ -287,7 +264,6 @@ impl DeliveryTarget for ClipboardTarget {
     }
 }
 
-// -- ExecTarget ----------------------------------------------------------------
 
 pub struct ExecTarget(OutputTarget);
 
@@ -349,7 +325,6 @@ impl DeliveryTarget for ExecTarget {
     }
 }
 
-// -- PipeTarget ----------------------------------------------------------------
 
 pub struct PipeTarget(OutputTarget);
 
@@ -364,7 +339,6 @@ impl DeliveryTarget for PipeTarget {
             return DeliveryResult::err(format!("Pipe {path} does not exist"));
         }
         let payload = format!("{text}\n").into_bytes();
-        // Open FIFO for writing via std (non-blocking open)
         match std::fs::OpenOptions::new()
             .write(true)
             .open(&path)
@@ -389,7 +363,6 @@ impl DeliveryTarget for PipeTarget {
     }
 }
 
-// -- SocketTarget --------------------------------------------------------------
 
 pub struct SocketTarget(OutputTarget);
 
@@ -440,7 +413,6 @@ impl DeliveryTarget for SocketTarget {
     }
 }
 
-// -- FileTarget ----------------------------------------------------------------
 
 pub struct FileTarget(OutputTarget);
 
@@ -510,12 +482,8 @@ impl DeliveryTarget for FileTarget {
     }
 }
 
-// -- DbusTarget ----------------------------------------------------------------
 
 /// D-Bus has no Windows counterpart, so off Linux this target only ever reports
-/// that. It still exists there because a `targets.toml` written on Linux has to
-/// load and round-trip on Windows rather than failing to parse - the config is
-/// shared, only the delivery is not.
 pub struct DbusTarget(#[cfg_attr(not(target_os = "linux"), allow(dead_code))] OutputTarget);
 
 #[async_trait::async_trait]
@@ -572,7 +540,6 @@ async fn emit_dbus_signal(signal_name: &str, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-// -- HttpTarget ----------------------------------------------------------------
 
 pub struct HttpTarget(OutputTarget);
 
@@ -615,7 +582,6 @@ impl DeliveryTarget for HttpTarget {
     }
 }
 
-// -- WebhookTarget -------------------------------------------------------------
 
 pub struct WebhookTarget(OutputTarget);
 
@@ -664,7 +630,6 @@ impl DeliveryTarget for WebhookTarget {
     }
 }
 
-// -- McpTarget -----------------------------------------------------------------
 
 pub struct McpTarget(OutputTarget);
 
@@ -700,7 +665,6 @@ impl DeliveryTarget for McpTarget {
         let (reader, mut writer) = tokio::io::split(s);
         let mut lines = BufReader::new(reader).lines();
 
-        // Step 1: initialize request
         let init_req = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -722,7 +686,6 @@ impl DeliveryTarget for McpTarget {
             return DeliveryResult::err(format!("Failed to flush: {e}"));
         }
 
-        // Read initialize response
         match lines.next_line().await {
             Ok(Some(line)) => {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
@@ -738,7 +701,6 @@ impl DeliveryTarget for McpTarget {
             Err(e) => return DeliveryResult::err(format!("Failed to read initialize response from MCP server: {e}")),
         }
 
-        // Step 2: notifications/initialized
         let initialized_notify = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
@@ -751,7 +713,6 @@ impl DeliveryTarget for McpTarget {
             return DeliveryResult::err(format!("Failed to flush: {e}"));
         }
 
-        // Step 3: tools/call
         let tool_req = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
@@ -769,7 +730,6 @@ impl DeliveryTarget for McpTarget {
             return DeliveryResult::err(format!("Failed to flush: {e}"));
         }
 
-        // Read tool call response
         match lines.next_line().await {
             Ok(Some(line)) => {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
@@ -813,7 +773,6 @@ impl DeliveryTarget for McpTarget {
     }
 }
 
-// -- SpeakTarget ---------------------------------------------------------------
 
 pub struct SpeakTarget(#[allow(dead_code)] OutputTarget);
 
@@ -844,14 +803,6 @@ impl DeliveryTarget for SpeakTarget {
 }
 
 
-// -- ChatTarget ----------------------------------------------------------------
-//
-// Speaks to an OpenAI-compatible `/v1/chat/completions` endpoint - a local
-// Hermes/Ollama/llama.cpp server, or a remote provider - and keeps the running
-// conversation so each dictation is a turn in an ongoing exchange rather than
-// an isolated request. The assistant's reply is returned as the delivered text
-// and, depending on `chat_reply_mode`, spoken aloud, typed into the focused
-// window, or copied to the clipboard.
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChatMessage {
@@ -862,13 +813,6 @@ pub struct ChatMessage {
 type Conversation = Arc<tokio::sync::Mutex<Vec<ChatMessage>>>;
 
 /// Conversation state, keyed by target id.
-///
-/// Deliberately lives outside `ChatTarget` because `OutputTargetRouter::reload`
-/// rebuilds every target whenever settings are saved - history held in the
-/// target itself would be silently discarded mid-conversation.
-///
-/// Each conversation carries its own lock so a slow model on one target can't
-/// stall a dictation routed to another.
 fn chat_histories() -> &'static std::sync::Mutex<std::collections::HashMap<String, Conversation>> {
     static HISTORIES: OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, Conversation>>,
@@ -886,10 +830,7 @@ fn conversation_for(target_id: &str) -> Conversation {
 }
 
 /// Drop the stored conversation for one target. Returns the number of messages
-/// that were discarded.
 pub async fn reset_chat_history(target_id: &str) -> usize {
-    // Clear in place rather than removing the entry, so a delivery already
-    // holding this conversation's lock still writes into the same object.
     let convo = {
         let map = chat_histories().lock().unwrap();
         match map.get(target_id) {
@@ -917,7 +858,6 @@ pub async fn chat_history(target_id: &str) -> Vec<ChatMessage> {
 }
 
 /// Normalize an endpoint into an OpenAI-style base URL ending in `/v1`, so the
-/// user can paste `http://localhost:8080`, a trailing slash, or a full `/v1`.
 fn chat_api_base(endpoint: &str) -> String {
     let trimmed = endpoint.trim().trim_end_matches('/');
     if trimmed.ends_with("/v1") {
@@ -955,8 +895,6 @@ impl ChatTarget {
                 cfg.delivery = DeliveryType::Clipboard;
                 ClipboardTarget(cfg).deliver(reply).await.error
             }
-            // "speak" and anything unrecognized fall back to text-to-speech,
-            // which is the mode this target exists for.
             _ => match SPEAK_CALLBACK.get() {
                 Some(callback) => {
                     callback(reply);
@@ -978,7 +916,6 @@ impl DeliveryTarget for ChatTarget {
             return DeliveryResult::err("No chat_model configured");
         };
 
-        // A spoken reset phrase clears the conversation instead of becoming a turn.
         if let Some(phrase) = self
             .0
             .chat_reset_phrase
@@ -996,8 +933,6 @@ impl DeliveryTarget for ChatTarget {
             }
         }
 
-        // Hold this conversation's lock across the request so two dictations to
-        // the same target can't interleave and corrupt the turn order.
         let convo = conversation_for(&self.0.id);
         let mut history = convo.lock().await;
         history.push(ChatMessage {
@@ -1005,7 +940,6 @@ impl DeliveryTarget for ChatTarget {
             content: text.to_string(),
         });
 
-        // Build the wire messages: system prompt (never trimmed) + recent turns.
         let mut messages: Vec<ChatMessage> = Vec::with_capacity(history.len() + 1);
         if let Some(system) = self
             .0
@@ -1076,8 +1010,6 @@ impl DeliveryTarget for ChatTarget {
             }
         };
 
-        // Roll back the user turn on an empty reply so the next request doesn't
-        // resend a question the model already ignored.
         if reply.is_empty() {
             history.pop();
             return DeliveryResult::err("Chat API returned no content");
@@ -1087,9 +1019,6 @@ impl DeliveryTarget for ChatTarget {
             role: "assistant".into(),
             content: reply.clone(),
         });
-        // Trim stored history so a long-running conversation can't grow forever.
-        // Kept at twice the send window so context survives a couple of turns
-        // beyond what is actually transmitted.
         if keep > 0 && history.len() > keep * 2 {
             let excess = history.len() - keep * 2;
             history.drain(..excess);
@@ -1139,16 +1068,8 @@ impl DeliveryTarget for ChatTarget {
     }
 }
 
-// -- Helpers -------------------------------------------------------------------
 
 /// Whether `bin` can actually be spawned.
-///
-/// Defers to `fotonvoice_config::find_in_path`, which mirrors what
-/// `Command::new` will do on each platform. This used to be a second,
-/// simpler implementation that searched `PATH` for a file with exactly the
-/// given name - so on Windows it looked for `echo`, never `echo.exe`, and
-/// reported every working Exec target as unreachable. Two copies of "can I run
-/// this?" is one too many; there is now one.
 fn which(bin: &str) -> bool {
     fotonvoice_config::find_in_path(bin).is_some()
 }
@@ -1205,14 +1126,12 @@ fn substitute_text(val: serde_json::Value, text: &str) -> serde_json::Value {
     }
 }
 
-// -- CommandTarget --------------------------------------------------------------
 
 pub struct CommandTarget(pub OutputTarget);
 
 #[async_trait::async_trait]
 impl DeliveryTarget for CommandTarget {
     async fn deliver(&self, text: &str) -> DeliveryResult {
-        // Default to direct text injection when called directly
         InjectTarget(self.0.clone()).deliver(text).await
     }
 
@@ -1290,31 +1209,7 @@ fn clean_payload(post: &str) -> String {
     text_without_punct.to_string()
 }
 
-fn levenshtein_distance(s1: &str, s2: &str) -> usize {
-    let s1_chars: Vec<char> = s1.chars().collect();
-    let s2_chars: Vec<char> = s2.chars().collect();
-    let len1 = s1_chars.len();
-    let len2 = s2_chars.len();
-    let mut dp = vec![vec![0; len2 + 1]; len1 + 1];
-    for i in 0..=len1 { dp[i][0] = i; }
-    for j in 0..=len2 { dp[0][j] = j; }
-    for i in 1..=len1 {
-        for j in 1..=len2 {
-            if s1_chars[i - 1] == s2_chars[j - 1] {
-                dp[i][j] = dp[i - 1][j - 1];
-            } else {
-                dp[i][j] = 1 + std::cmp::min(dp[i - 1][j - 1], std::cmp::min(dp[i - 1][j], dp[i][j - 1]));
-            }
-        }
-    }
-    dp[len1][len2]
-}
-
 /// Parse text for keyword "FotonVoice Engine" and target name/label matching.
-/// Supports both direct commands (e.g. "FotonVoice Engine notes Hi there") and natural,
-/// conversational phrasing (e.g. "FotonVoice Engine add this to my notes. What are you doing here?").
-/// Returns `Some(VoiceCommandParseResult)` if the trigger keyword was found AND a target matched;
-/// otherwise returns `None`.
 pub fn parse_voice_command(
     text: &str,
     targets: &[OutputTarget],
@@ -1323,7 +1218,6 @@ pub fn parse_voice_command(
     let mut found_pos = None;
     let mut trigger_len = 0;
 
-    // 1. Exact & standard triggers
     let exact_triggers = ["fotonvoice-engine", "vox ctrl", "vox-ctrl", "vox control"];
     for trigger in &exact_triggers {
         if let Some(pos) = lower_text.find(trigger) {
@@ -1334,7 +1228,6 @@ pub fn parse_voice_command(
         }
     }
 
-    // 2. Dynamic pattern trigger for any "<word> control" or "<word> ctrl" phrase
     if found_pos.is_none() {
         let words: Vec<&str> = lower_text.split_whitespace().collect();
         for (i, word) in words.iter().enumerate() {
@@ -1352,7 +1245,6 @@ pub fn parse_voice_command(
         }
     }
 
-    // 3. Dynamic Levenshtein fuzzy match on leading token(s)
     if found_pos.is_none() {
         let words: Vec<&str> = lower_text.split_whitespace().collect();
         if !words.is_empty() {
@@ -1375,8 +1267,6 @@ pub fn parse_voice_command(
     let pos = found_pos?;
     let after_trigger = &text[pos + trigger_len..];
 
-    // Flatten all target candidates (IDs and Labels) and sort by string length descending
-    // so longer/more specific target names (e.g. "Personal Notes") take precedence over shorter ones ("Notes").
     let mut candidate_entries: Vec<(&str, &str)> = Vec::new();
     for target in targets {
         if target.delivery == DeliveryType::Command {

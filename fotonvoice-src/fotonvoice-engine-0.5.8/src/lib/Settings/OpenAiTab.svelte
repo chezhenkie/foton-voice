@@ -38,8 +38,6 @@
     { value: "custom", label: "Custom (editable)" }
   ];
 
-  // Preset system prompts - selecting a built-in preset fills (and locks) the
-  // System/User Prompt fields below. The "custom" preset leaves them editable.
   const presetSystemPrompts: Record<string, string> = {
     clean: "Fix grammar and punctuation only. Return only the corrected text, no commentary.",
     formal: "Rewrite the user's text in formal professional language. Return only the result.",
@@ -48,15 +46,11 @@
     concise: "Summarize the user's text concisely in 1-2 sentences. Return only the summary.",
   };
 
-  // Built-in presets are read-only; only the "custom" preset lets the user edit
-  // the system and user prompts.
   let isCustom = $derived(cfg.openai.mode === "custom");
 
   function applyPreset() {
     const preset = presetSystemPrompts[cfg.openai.mode];
     if (preset !== undefined) {
-      // Switching to a built-in preset overwrites the prompts with its fixed
-      // values; the user prompt is always the plain "{text}" passthrough.
       cfg.openai.system_prompt = preset;
       cfg.openai.user_prompt = "{text}";
     }
@@ -65,9 +59,6 @@
 
   let userPromptValid = $derived(cfg.openai.user_prompt.includes("{text}"));
 
-  // Warn if the chosen default model isn't among the models the server reported.
-  // Calling a model the server doesn't have (e.g. an un-pulled Ollama model)
-  // makes chat completions fail with a 404 during dictation.
   let modelMissing = $derived(
     availableModels.length > 0 &&
     !!cfg.openai.model &&
@@ -86,7 +77,6 @@
       testStatus = { success: res.success, message: res.message };
       if (res.success) {
         availableModels = res.models;
-        // If our current model is empty but models are returned, auto-select the first one
         if (!cfg.openai.model && res.models.length > 0) {
           cfg.openai.model = res.models[0];
           markDirty();
@@ -100,7 +90,6 @@
   }
 
   onMount(() => {
-    // Try to silently probe/load models on mount
     performTest();
   });
 </script>

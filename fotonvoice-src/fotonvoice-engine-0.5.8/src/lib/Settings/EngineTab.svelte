@@ -28,12 +28,6 @@
     "large-v3-turbo-q8",
   ];
 
-  // GPU support is decided when the binary is compiled, per engine, and the two
-  // answers differ in the build most people run: the Vulkan build accelerates
-  // whisper.cpp and leaves Moonshine on the CPU, because ONNX Runtime has no
-  // Vulkan execution provider. Defaults assume no GPU, so an older backend that
-  // does not answer this call is described as CPU-only rather than as more than
-  // it is.
   let whisperGpu = $state<string | null>(null);
   let moonshineGpu = $state<string | null>(null);
   let parakeetGpu = $state<string | null>(null);
@@ -47,9 +41,6 @@
   };
   const gpuLabel = (id: string) => GPU_LABELS[id] ?? id;
 
-  // Whisper.cpp is UI-dormant (2026-09-21): not selectable here, backend crate
-  // stays intact. An old saved config that still says "whisper-cpp" keeps its
-  // settings block below so the user can see and switch away from it.
   let backendOptions = $derived([
     {
       value: "moonshine",
@@ -79,11 +70,6 @@
     }))
   );
 
-  // Only what this build can actually do. Offering "Vulkan" unconditionally -
-  // as this list used to - meant a CUDA build and a CPU-only build both showed
-  // a Vulkan option that selecting changed nothing about: the device setting
-  // says *whether* to offload, and ggml links exactly one backend to offload
-  // to. So there is at most one GPU entry, named after the one in the build.
   let deviceOptions = $derived([
     { value: "auto", label: whisperGpu ? `Auto (${gpuLabel(whisperGpu)})` : "Auto" },
     ...(whisperGpu ? [{ value: whisperGpu, label: gpuLabel(whisperGpu) }] : []),
@@ -100,18 +86,11 @@
     { value: "tdt-0.6b-v3-fp32", label: "TDT 0.6B v3 (FP32, ~2.4 GB, GPU-accel)" }
   ];
 
-  // -- Nemotron streaming ----------------------------------------------------
-  // English-only cache-aware streaming engine; fp16 is the GPU-offload
-  // preference, int8-static (QDQ) runs on CUDA and Intel VNNI CPUs.
   const nemotronModelSizeOptions = [
     { value: "fp16", label: "FP16 (~1.2 GB, GPU-accel)" },
     { value: "int8-static", label: "INT8 static (~876 MB, CUDA / CPU)" }
   ];
 
-  // -- Model managers -----------------------------------------------------------
-  // One state machine per backend, defined in models.svelte.ts. Each one owns
-  // its presence map, its single download/delete lock, and its error string;
-  // nothing below re-implements any of that.
   const whisperModels = createModelManager({
     sizes: MODEL_SIZES,
     check: (size) =>
@@ -127,9 +106,6 @@
 
   let modelDirError = $state<string | null>(null);
 
-  // -- Moonshine ------------------------------------------------------------
-  // Whether the app was built with the Moonshine backend. When false, choosing
-  // Moonshine silently runs whisper-cpp, so we surface that to the user.
   let moonshineAvailable = $state(true);
   const moonshineModels = createModelManager({
     sizes: moonshineModelSizeOptions.map((o) => o.value),
@@ -138,7 +114,6 @@
     remove: (size) => invoke("delete_moonshine_model", { modelSize: size }),
   });
 
-  // -- Parakeet -------------------------------------------------------------
   let parakeetAvailable = $state(true);
   let parakeetGpuPresent = $state(true);
   const parakeetModels = createModelManager({
@@ -148,7 +123,6 @@
     remove: (size) => invoke("delete_parakeet_model", { modelSize: size }),
   });
 
-  // -- Nemotron streaming ----------------------------------------------------
   let nemotronAvailable = $state(true);
   let nemotronGpuPresent = $state(true);
   const nemotronModels = createModelManager({
@@ -163,7 +137,6 @@
     await parakeetModels.verify(cfg.engine.parakeet.model_size);
   }
 
-  // -- Remote Speech Engine (OpenAI API) ------------------------------------
   interface RemoteSttTestResult {
     success: boolean;
     message: string;
@@ -300,10 +273,6 @@
     } catch (e) {
       console.error("Failed to query GPU support", e);
     }
-    // A config naming a GPU backend this build does not have - copied from
-    // another machine, or left behind by a switch between the CPU and Vulkan
-    // downloads - would otherwise sit in the dropdown as a value with no entry,
-    // reading as a working GPU setting while the backend quietly ran on the CPU.
     const device = cfg.engine.whisper_cpp.device;
     if (device !== "auto" && device !== "cpu" && device !== whisperGpu) {
       cfg.engine.whisper_cpp.device = "auto";

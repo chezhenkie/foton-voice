@@ -42,7 +42,6 @@ describe("CustomSelect dropdown placement", () => {
     const { container } = render(CustomSelect, { value: "a", options });
     const menu = await openMenu(container);
 
-    // Scoped to the menu: the selected label also shows in the trigger.
     for (const opt of options) {
       expect(within(menu).getByText(opt.label)).not.toBeNull();
     }
@@ -61,7 +60,6 @@ describe("CustomSelect dropdown placement", () => {
     expect(menu.style.position).toBe("fixed");
     expect(menu.style.left).toBe("20px");
     expect(menu.style.width).toBe("300px");
-    // Opens downward from the bottom edge of the trigger.
     expect(menu.style.top).toBe("140px");
     expect(menu.style.bottom).toBe("");
   });
@@ -77,7 +75,6 @@ describe("CustomSelect dropdown placement", () => {
   });
 
   test("flips above the trigger when there is no room below", async () => {
-    // A trigger near the bottom of the viewport has nowhere to open downward.
     stubTriggerRect(window.innerHeight - 60);
     const { container } = render(CustomSelect, { value: "a", options });
     const menu = await openMenu(container);
@@ -103,7 +100,6 @@ describe("CustomSelect dropdown placement", () => {
     stubTriggerRect(100);
     const { container } = render(CustomSelect, { value: "a", options });
 
-    // Simulate an ancestor with a CSS transform (e.g. section with slideIn animation)
     vi.spyOn(window, "getComputedStyle").mockImplementation((el: Element) => {
       if (el === container) {
         return {
@@ -123,9 +119,6 @@ describe("CustomSelect dropdown placement", () => {
       } as CSSStyleDeclaration;
     });
 
-    // vitest 4 installs an instance spy by replacing the method on the
-    // prototype, which would bleed the containing-block rect into every
-    // element. Assert both boxes through one context-aware prototype stub.
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
       if (this === container) {
         return {
@@ -156,9 +149,7 @@ describe("CustomSelect dropdown placement", () => {
     const menu = await openMenu(container);
 
     expect(menu.style.position).toBe("fixed");
-    // Trigger is at left: 20px, container containing block is at left: 10px -> left: 10px
     expect(menu.style.left).toBe("10px");
-    // Trigger is at bottom: 136px + 4px, container top: 40px -> top: 100px
     expect(menu.style.top).toBe("100px");
   });
 

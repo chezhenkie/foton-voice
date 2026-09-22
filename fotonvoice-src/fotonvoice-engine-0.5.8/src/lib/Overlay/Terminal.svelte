@@ -16,17 +16,11 @@
 
   const isReady = $derived($status.audio_ready !== false);
   const targetLabel = $derived($status.active_target_label || "Focused Window");
-  // The shortcut listener cannot deliver a key right now (elevated window on
-  // Windows, or no hotkey backend at all). While a dictation is live that
-  // means its stop keybind will not fire, so the terminal states it in red
-  // instead of the idle line. `=== false` keeps an older backend payload
-  // (no field) from ever producing a false warning.
   const hotkeysDead = $derived(
     $status.hotkeys_active === false &&
     (recording || $status.processing || $status.mcp_recording)
   );
 
-  // Mirrors ascii_meter() in src-tauri/src/overlay.rs
   function asciiMeter(level: number, phase: number, rec: boolean, proc: boolean, ready: boolean): string {
     const w = ASCII_METER_WIDTH;
     if (proc) {

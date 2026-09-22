@@ -1,10 +1,4 @@
 //! Breeze-TTS-2 neural text-to-speech engine support, via the shared
-//! audio.cpp runtime (see `audiocpp.rs`).
-//!
-//! Model repository: <https://huggingface.co/BreezeBlue/Breeze-TTS-2>
-//! Gated model weights released under the BreezeBlue Research and
-//! Non-Commercial License - see `audiocpp::BREEZE_TTS_2_LICENSE_NOTE` and
-//! the Settings/setup-wizard warnings before download.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,8 +40,6 @@ pub fn is_breeze_tts_2_ready(model_dir: &str) -> bool {
 }
 
 /// Downloads the Breeze-TTS-2 GGUF model into `model_dir`. The audio.cpp GGUF
-/// mirror is not gated, so `hf_token` is accepted for parity with the other
-/// engines but not required.
 pub async fn download_breeze_tts_2_assets(model_dir: &str, hf_token: Option<String>) -> Result<()> {
     if audiocpp::audiocpp_binary().is_none() {
         audiocpp::download_audiocpp_binary().await.context("download audio.cpp runtime")?;
@@ -87,7 +79,6 @@ fn read_voice_transcript_file(wav_path: &std::path::Path) -> Option<String> {
 }
 
 /// Resolves the clone-mode reference clip + its (mandatory) transcript, or
-/// `None` when the config calls for Voice Design instead.
 fn resolve_clone_reference(
     cfg: &fotonvoice_config::BreezeTts2Config,
     hf_token: Option<&str>,
@@ -103,9 +94,6 @@ fn resolve_clone_reference(
         .unwrap_or_else(|| "hf://kyutai/tts-voices/alba-mackenna/casual.wav".to_string());
     let path =
         resolve_hf_reference_blocking(&reference, hf_token).context("resolve Breeze-TTS-2 reference voice clip")?;
-    // Breeze-TTS-2 cloning requires a matching transcript, unlike
-    // Pocket-TTS/VoxCPM2 - audio.cpp rejects a clone request with no
-    // `reference_text` for this family.
     let transcript = read_voice_transcript_file(&path).ok_or_else(|| {
         anyhow::anyhow!(
             "Breeze-TTS-2 voice cloning needs a transcript: add a {}.txt file \
@@ -117,9 +105,6 @@ fn resolve_clone_reference(
 }
 
 /// Resolves the [`SpeakerRef`] for a config, warning when it falls back to
-/// Voice Design - the UI no longer offers that mode for Breeze-TTS-2 (it
-/// doesn't reliably apply the described voice and quality suffers versus
-/// cloning), but a config predating that change could still have it set.
 fn speaker_ref<'a>(
     cfg: &'a fotonvoice_config::BreezeTts2Config,
     clone_ref: &'a Option<(std::path::PathBuf, String)>,
@@ -137,8 +122,6 @@ fn speaker_ref<'a>(
 }
 
 /// Ensures a resident audio.cpp session is loaded and warm for Breeze-TTS-2.
-/// Called from `TtsCommand::Preload` - see [`crate::pocket::ensure_pocket_tts_loaded`]
-/// for why this needs its own dummy request rather than reusing `speak_breeze_tts_2`.
 pub(crate) fn ensure_breeze_tts_2_loaded(
     config: &TtsConfig,
     session: &mut Option<AudioCppSession>,
@@ -161,9 +144,6 @@ pub(crate) fn ensure_breeze_tts_2_loaded(
 }
 
 /// Called from `TtsEngineWorker::run` when `config.engine ==
-/// TtsEngine::BreezeTts2`. Takes the worker's audio.cpp session by mutable
-/// reference so it persists (and the underlying model stays loaded) across
-/// calls for the worker's lifetime, or until idle-unload drops it.
 pub(crate) fn speak_breeze_tts_2(
     config: &TtsConfig,
     u: &Utterance,

@@ -366,7 +366,6 @@ fn main() {
                     }
                 };
 
-                // If a model path was passed and model not yet loaded, load it
                 if state.is_none() {
                     if let Some(mp) = &params.model_path {
                         let path = PathBuf::from(mp);

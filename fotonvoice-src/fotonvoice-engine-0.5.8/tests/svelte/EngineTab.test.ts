@@ -3,7 +3,6 @@ import { render, screen, fireEvent, within, waitFor } from "@testing-library/sve
 import { invoke } from "@tauri-apps/api/core";
 import EngineTab from "../../src/lib/Settings/EngineTab.svelte";
 
-// Mock tauri invoke & event
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd, args) => {
     if (cmd === "check_model_downloaded") {
@@ -219,8 +218,6 @@ describe("EngineTab.svelte GPU support", () => {
       cfg: { ...mockConfig, engine: { ...mockConfig.engine, backend: "moonshine" } },
     });
 
-    // The notice is the pre-answer state too, so this has to wait for the
-    // build report to land rather than sample before it does.
     await waitFor(() =>
       expect(screen.queryByText("Moonshine runs on the CPU in this build")).toBeNull(),
     );

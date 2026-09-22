@@ -57,10 +57,6 @@
   let registeringMint = $state(false);
   let registerMintError = $state<string | null>(null);
 
-  // Polled rather than fetched once: the portal handshake finishes a moment
-  // after launch, and the user may grant or change a shortcut in their
-  // desktop's settings while this window is open. A stale screen is exactly the
-  // confusion to avoid.
   let poll: ReturnType<typeof setInterval> | undefined;
 
   async function refresh() {
@@ -160,8 +156,6 @@
     }
   }
 
-  // Shortcuts count as done when something is actually delivering them. The
-  // portal is the good case; the evdev fallback works but is worth a note.
   const hotkeyState = $derived<StepState>(
     !setup
       ? "busy"
@@ -174,8 +168,6 @@
   const injectionState = $derived<StepState>(
     !setup ? "busy" : setup.missing_injection_tool ? "todo" : "ok",
   );
-  // A small default model downloads itself in the background, so "not on disk
-  // yet" is progress rather than something the user has to act on.
   const modelState = $derived<StepState>(
     !setup ? "busy" : setup.model_ready ? "ok" : setup.model_auto_downloads ? "busy" : "todo",
   );
@@ -210,7 +202,6 @@
       </header>
 
       <ol class="steps">
-        <!-- 1 - How global shortcuts are delivered -->
         <li class="step" class:done={hotkeyState === "ok"}>
           <span class="step-icon">{icon(hotkeyState)}</span>
           <div class="step-body">
@@ -319,10 +310,6 @@
               {/if}
             {/if}
 
-            <!-- Rendered outside the branch chain: whatever the desktop said is
-                 the most useful line on this screen for anyone diagnosing it,
-                 and it applies to a refusal just as much as to a missing
-                 portal. -->
             {#if setup.hotkeys.portal_error && setup.hotkeys.backend !== "portal" && setup.hotkeys.backend !== "evdev"}
               <span class="step-detail muted">Portal reported: {setup.hotkeys.portal_error}</span>
             {/if}
@@ -332,7 +319,6 @@
           </div>
         </li>
 
-        <!-- 2 - Typing transcriptions into other windows -->
         <li class="step" class:done={injectionState === "ok"}>
           <span class="step-icon">{icon(injectionState)}</span>
           <div class="step-body">
@@ -370,7 +356,6 @@
           </div>
         </li>
 
-        <!-- 3 - Speech model -->
         <li class="step" class:done={modelState === "ok"}>
           <span class="step-icon">{icon(modelState)}</span>
           <div class="step-body">

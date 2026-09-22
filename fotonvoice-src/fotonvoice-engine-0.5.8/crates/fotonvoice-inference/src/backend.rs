@@ -46,25 +46,16 @@ pub trait TranscriptionBackend: Send + Sync {
 }
 
 /// Streaming interface for cache-aware backends (Phase 2.4).
-///
-/// Feed raw 16 kHz mono f32 samples as they arrive; the backend buffers
-/// internally and runs the encoder when a full chunk is ready. `feed` returns
-/// the newly emitted text since the previous call (partial); `flush` finalizes
-/// the utterance and resets all state (cache, decoder state, buffers).
 pub trait StreamingBackend: Send {
     /// Backends that can stream report their chunk sample size (buffer
-    /// granularity); 0 when the backend is not loaded yet.
     fn chunk_samples(&self) -> usize {
         0
     }
 
     /// Append samples, run the encoder if a chunk is ready, return the
-    /// incremental text emitted by this feed ("" when the buffer is not yet
-    /// full enough for a chunk).
     fn feed(&mut self, samples: &[f32]) -> anyhow::Result<String>;
 
     /// Finish the utterance: return the accumulated final text and reset.
-    /// Final text comes from here ONLY - routing must never inject partials.
     fn flush(&mut self) -> anyhow::Result<String>;
 
     /// Reset streaming state without ending an utterance (config reload etc).

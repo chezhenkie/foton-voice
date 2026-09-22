@@ -3,11 +3,9 @@ import { render, screen } from "@testing-library/svelte";
 import Settings from "../../src/lib/Settings/Settings.svelte";
 import { config, configLoaded } from "../../src/stores/config";
 
-// Mock tauri invoke & event
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd, args) => {
     if (cmd === "check_model_downloaded") {
-      // Mock 'large-v3' is missing (returns false)
       return false;
     }
     if (cmd === "list_audio_devices") {
@@ -99,11 +97,9 @@ describe("Settings.svelte Startup Redirect", () => {
 
     render(Settings);
     
-    // Check if the "Engine" tab is active/selected
     const engineHeader = await screen.findByText("Inference Engine");
     expect(engineHeader).not.toBeNull();
 
-    // Verify window was shown and focused (waiting for async import and tasks to settle)
     await vi.waitFor(() => {
       expect(mockShow).toHaveBeenCalled();
       expect(mockFocus).toHaveBeenCalled();

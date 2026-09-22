@@ -1,9 +1,4 @@
 //! Pocket-TTS voice catalogue, GGUF asset management, and synthesis via the
-//! shared audio.cpp runtime (see `audiocpp.rs`).
-//!
-//! Named `pocket` rather than `pocket_tts` to avoid colliding with
-//! audio.cpp's `pocket_tts` model family name, used as a plain string
-//! constant ([`crate::audiocpp::FAMILY_POCKET_TTS`]) rather than a crate.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,14 +10,6 @@ use crate::audiocpp::{self, resolve_hf_reference, AudioCppSession, SpeakRequest,
 use crate::engine::PlaybackCallback;
 use crate::piper::expand_tilde;
 
-// -- Pocket-TTS voice catalogue ------------------------------------------------
-//
-// audio.cpp's PocketTTS-GGUF package ships precomputed voice embeddings for a
-// curated set of named voices (`--voice-id <id>`), so FotonVoice Engine's built-in
-// catalogue just has to name the ones it wants alongside the model - no
-// per-voice reference-clip download or on-the-fly cloning needed for these.
-// A custom clip dropped into `voice_dir` is still cloned live via
-// `--voice-ref`.
 
 #[derive(Debug, Clone)]
 pub struct PocketTtsVoiceInfo {
@@ -43,8 +30,6 @@ pub fn pocket_tts_voice(id: &str) -> Option<&'static PocketTtsVoiceInfo> {
 }
 
 /// Default directory scanned for user-supplied voice clips, shared by every
-/// voice-cloning engine (Pocket-TTS, Breeze-TTS-2, VoxCPM2) - not specific to
-/// Pocket-TTS despite living in this module.
 pub fn cloned_tts_voices_dir() -> PathBuf {
     fotonvoice_config::portable::app_root().join("cloned-tts-voices")
 }
@@ -58,7 +43,6 @@ fn resolve_cloned_tts_voices_dir(voice_dir: &str) -> PathBuf {
 }
 
 /// Scans `voice_dir` for `<id>.wav` files, returning `(id, path)` pairs. A file named
-/// after a built-in voice (e.g. `alba.wav`) overrides that voice's bundled embedding.
 fn scan_custom_pocket_tts_voices(voice_dir: &str) -> Vec<(String, PathBuf)> {
     let dir = resolve_cloned_tts_voices_dir(voice_dir);
     let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
@@ -117,8 +101,6 @@ pub fn pocket_tts_voice_catalogue(voice_dir: &str) -> Vec<PocketTtsVoiceOption> 
 }
 
 /// A resolved voice: either a built-in `--voice-id`, or a local clip to clone
-/// via `--voice-ref` (a custom drop-in, taking priority over a built-in of the
-/// same name).
 pub(crate) enum ResolvedVoice {
     BuiltIn(&'static str),
     Custom(PathBuf),
@@ -133,9 +115,6 @@ pub(crate) fn resolve_pocket_tts_voice(id: &str, voice_dir: &str) -> Option<Reso
 }
 
 /// hf:// reference clips for engines that clone from real reference audio
-/// (Breeze-TTS-2, VoxCPM2) rather than Pocket-TTS's precomputed named
-/// embeddings. Shares voice ids with [`POCKET_TTS_VOICES`] for one consistent
-/// picker across all three engines, but resolves to actual audio.
 fn builtin_wav_reference_clip(id: &str) -> Option<&'static str> {
     Some(match id {
         "alba" => "hf://kyutai/tts-voices/alba-mackenna/casual.wav",
@@ -148,10 +127,6 @@ fn builtin_wav_reference_clip(id: &str) -> Option<&'static str> {
 }
 
 /// Resolves a shared voice id to a reference-clip source for the engines that
-/// clone from real audio: a local custom clip in `voice_dir` takes priority
-/// over the built-in `hf://` clip. Returns a reference the caller still has to
-/// resolve/download (see [`crate::audiocpp::resolve_hf_reference`]) - a plain
-/// local path is returned as-is.
 pub(crate) fn resolve_wav_reference_clip(id: &str, voice_dir: &str) -> Option<String> {
     if let Some((_, path)) =
         scan_custom_pocket_tts_voices(voice_dir).into_iter().find(|(cid, _)| cid == id)
@@ -161,7 +136,6 @@ pub(crate) fn resolve_wav_reference_clip(id: &str, voice_dir: &str) -> Option<St
     builtin_wav_reference_clip(id).map(str::to_string)
 }
 
-// -- Pocket-TTS GGUF assets -----------------------------------------------------
 
 const POCKET_TTS_GGUF_REPO: &str = "audio-cpp/audio.cpp-gguf";
 const POCKET_TTS_GGUF_FILE: &str = "PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf";
@@ -182,7 +156,6 @@ fn embedding_path(model_dir: &std::path::Path, voice_id: &str) -> PathBuf {
 }
 
 /// Best-effort, network-free check for whether the Pocket-TTS model and the
-/// selected voice's assets are already present on disk.
 pub fn is_pocket_tts_ready(voice: &str, voice_dir: &str) -> bool {
     let model_dir = pocket_tts_model_dir();
     if !model_dir.join(POCKET_TTS_MODEL_FILENAME).exists() {
@@ -196,9 +169,6 @@ pub fn is_pocket_tts_ready(voice: &str, voice_dir: &str) -> bool {
 }
 
 /// Downloads the Pocket-TTS GGUF model and the selected voice's embedding (or,
-/// for a custom clip, does nothing further - it is already on disk). The
-/// audio.cpp GGUF mirror is not gated, so `hf_token` is accepted for parity
-/// with the other engines but not required.
 pub async fn download_pocket_tts_assets(voice: &str, voice_dir: &str, hf_token: Option<String>) -> Result<()> {
     if audiocpp::audiocpp_binary().is_none() {
         audiocpp::download_audiocpp_binary().await.context("download audio.cpp runtime")?;
@@ -241,11 +211,8 @@ pub async fn download_pocket_tts_assets(voice: &str, voice_dir: &str, hf_token: 
     Ok(())
 }
 
-// -- Pocket-TTS synthesis (persistent audio.cpp server session) ----------------
 
 /// Resolves `voice` to the [`SpeakerRef`] audio.cpp expects: a built-in
-/// voice is selected by id (its embedding ships with the model and needs no
-/// `--voice-ref`/`voice_ref` file), a custom clip is cloned from its `.wav`.
 fn speaker_ref_for_voice<'a>(resolved: &'a ResolvedVoice) -> SpeakerRef<'a> {
     match resolved {
         ResolvedVoice::BuiltIn(id) => SpeakerRef::VoiceId(id),
@@ -254,10 +221,6 @@ fn speaker_ref_for_voice<'a>(resolved: &'a ResolvedVoice) -> SpeakerRef<'a> {
 }
 
 /// Ensures a resident audio.cpp session is loaded and warm for Pocket-TTS.
-/// Called from `TtsCommand::Preload` - unlike [`speak_pocket_tts`], this
-/// path has no utterance/sink yet, so it sends a tiny dummy request itself
-/// to force the (lazily-loaded) model to actually load rather than just
-/// starting an empty server.
 pub(crate) fn ensure_pocket_tts_loaded(
     config: &fotonvoice_config::TtsConfig,
     session: &mut Option<AudioCppSession>,
@@ -280,9 +243,6 @@ pub(crate) fn ensure_pocket_tts_loaded(
 }
 
 /// Called from `TtsEngineWorker::run` (in `engine.rs`) when `config.engine ==
-/// TtsEngine::PocketTts`. Takes the worker's audio.cpp session by mutable
-/// reference so it persists (and the underlying model stays loaded) across
-/// calls for the worker's lifetime, or until idle-unload drops it.
 pub(crate) fn speak_pocket_tts(
     config: &fotonvoice_config::TtsConfig,
     u: &crate::engine::Utterance,
@@ -327,7 +287,6 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    // -- Pocket-TTS voice catalogue ----------------------------------------------
 
     #[test]
     fn test_pocket_tts_voices_not_empty() {
@@ -361,20 +320,13 @@ mod tests {
         assert!(pocket_tts_voice("not-a-real-voice").is_none());
     }
 
-    // -- is_pocket_tts_ready --------------------------------------------------
 
     #[test]
     fn test_is_pocket_tts_ready_false_for_unknown_voice() {
         assert!(!is_pocket_tts_ready("not-a-real-voice", ""));
     }
 
-    // `is_pocket_tts_ready` for a real built-in voice also depends on the
-    // shared model file at the fixed platform default directory, which is
-    // real machine state (not a tempdir) - not exercised here to keep this
-    // suite hermetic; see `test_is_pocket_tts_ready_false_for_unknown_voice`
-    // for the part of that check this crate can test in isolation.
 
-    // -- custom voice directory -----------------------------------------------
 
     #[test]
     fn test_scan_custom_pocket_tts_voices_finds_wav_files() {

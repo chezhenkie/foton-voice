@@ -61,8 +61,6 @@
   });
 
   onMount(() => {
-    // The setup window sends the user here for the model step; land them on
-    // the tab that actually has the download button.
     const tabListener = listen<string>("focus-settings-tab", (event) => {
       const requested = event.payload as Tab;
       if (tabs.some((t) => t.id === requested)) {
@@ -73,7 +71,6 @@
     let unsubscribeLoaded: () => void;
     unsubscribeLoaded = configLoaded.subscribe((loaded) => {
       if (loaded) {
-        // Once config is loaded, retrieve values from config store
         const cfg = $config;
         if (cfg && cfg.engine && cfg.engine.whisper_cpp) {
           const modelSize = cfg.engine.whisper_cpp.model_size;
@@ -85,7 +82,6 @@
               .then(async (isDownloaded) => {
                 if (!isDownloaded) {
                   activeTab = "engine";
-                  // Only open and focus settings window if auto_show_settings is enabled
                   if (cfg?.ui?.auto_show_settings) {
                     try {
                       const { getCurrentWindow } = await import("@tauri-apps/api/window");
@@ -118,7 +114,6 @@
 </script>
 
 <div class="settings-root">
-  <!-- Unified Premium Sidebar -->
   <aside class="sidebar">
     <div class="brand">
       <img src={appIcon} class="brand-logo" alt="FotonVoice Engine Icon" />
@@ -128,7 +123,6 @@
       </div>
     </div>
 
-    <!-- Tab navigation -->
     <nav class="sidebar-nav">
       {#each tabs as tab}
         <button
@@ -145,7 +139,6 @@
       {/each}
     </nav>
 
-    <!-- Recording Control & Status Center -->
     <div class="sidebar-footer">
       <div class="status-panel" class:recording={$status.recording} class:speaking={$status.speaking}>
         <div class="status-header">
@@ -158,7 +151,6 @@
           <span class="word-count">{$status.word_count} words</span>
         </div>
 
-        <!-- Custom springy record button -->
         <button
           class="btn-record"
           class:active={$status.recording}
@@ -175,7 +167,6 @@
     </div>
   </aside>
 
-  <!-- Main Content Area -->
   <main class="content-container">
     <div class="tab-content" bind:this={tabContentEl}>
       {#if activeTab === "general"}
@@ -201,7 +192,6 @@
       {/if}
     </div>
 
-    <!-- Floating Snappy Unsaved Changes Save Engine -->
     {#if $configDirty}
       <div class="floating-save-container">
         <span class="save-hint">Unsaved changes detected</span>

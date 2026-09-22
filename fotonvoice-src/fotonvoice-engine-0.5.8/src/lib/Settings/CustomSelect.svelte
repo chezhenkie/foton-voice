@@ -126,7 +126,6 @@
     return (value !== undefined && value !== null ? String(value) : "");
   });
 
-  // Click outside listener using Svelte 5 effect
   $effect(() => {
     if (!isOpen) return;
 
@@ -136,9 +135,6 @@
       }
     };
 
-    // A fixed menu does not travel with its trigger, so follow any scroll or
-    // resize that moves it. `capture` catches scrolling panels, not just the
-    // window.
     const reposition = () => positionMenu();
 
     document.addEventListener("click", handleClickOutside);

@@ -7,7 +7,6 @@
   let targets = $state<OutputTarget[]>([]);
   let bindings = $state<HotkeyBinding[]>([]);
 
-  // Modals state
   let editingTarget = $state<OutputTarget | null>(null);
   let isEditingTargetNew = $state(false);
   let originalTargetId = $state<string | null>(null);
@@ -36,7 +35,6 @@
     }
   }
 
-  // --- CRUD Output Commands ---
   function addNewTarget() {
     isEditingTargetNew = true;
     editingTarget = {
@@ -84,7 +82,6 @@
     if (isEditingTargetNew) {
       targets = [...targets, editingTarget];
     } else {
-      // Update bindings that point to the old ID
       if (originalTargetId && originalTargetId !== editingTarget.id) {
         let bindingsChanged = false;
         bindings = bindings.map(b => {

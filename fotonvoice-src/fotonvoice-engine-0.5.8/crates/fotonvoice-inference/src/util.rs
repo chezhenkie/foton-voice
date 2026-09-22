@@ -3,16 +3,6 @@
 use std::path::PathBuf;
 
 /// How many threads a transcription backend should run on.
-///
-/// Physical cores, not logical ones: whisper.cpp and ONNX Runtime are both
-/// memory-bandwidth bound here, and two hyperthreads sharing one core's load
-/// units finish no faster than one while costing the scheduler a context to
-/// juggle. Counting cores directly also stops a machine without SMT - most
-/// ARM laptops, and any desktop with it switched off - from being told to use
-/// half its CPU, which is what dividing the logical count by two did.
-///
-/// Computed once: `get_physical` reads sysfs (or the platform equivalent) and
-/// the answer does not change while the app runs.
 pub(crate) fn inference_threads() -> usize {
     static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *THREADS.get_or_init(|| {
@@ -20,7 +10,6 @@ pub(crate) fn inference_threads() -> usize {
         if physical > 0 {
             physical
         } else {
-            // Detection failed; fall back to the old logical-core heuristic.
             std::thread::available_parallelism()
                 .map(|n| (n.get() / 2).max(1))
                 .unwrap_or(2)
@@ -29,14 +18,11 @@ pub(crate) fn inference_threads() -> usize {
 }
 
 /// Base directory for on-device models: `<portable root>/models`.
-/// Each backend places its files in a subfolder of this (whisper-cpp directly,
-/// Moonshine under `moonshine/`).
 pub(crate) fn models_base_dir() -> PathBuf {
     fotonvoice_config::portable::app_root().join("models")
 }
 
 /// Expand a leading `~` / `~/` to the user's home directory. Any other path is
-/// returned unchanged.
 pub(crate) fn expand_tilde(path: &str) -> PathBuf {
     let home = std::env::var("HOME")
         .map(PathBuf::from)

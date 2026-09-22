@@ -1,6 +1,4 @@
 //! Watches a named pipe (FIFO) for lines of text and speaks each one as it
-//! arrives. Used to let external tools/scripts trigger TTS without going
-//! through the MCP server.
 
 use std::time::Duration;
 

@@ -13,7 +13,6 @@
 
   let s1MiniEnabled = $derived(!!cfg.engine.s1_mini?.enabled);
 
-  // Snippets editing
   let snippetList = $state<{key: string, val: string}[]>(
     Object.entries(cfg.features.snippets).map(([k, v]) => ({ key: k, val: v as string }))
   );
@@ -71,14 +70,12 @@
     markDirty();
   }
 
-  // Reusable Svelte action to auto-resize textareas dynamically to fit their contents
   function autoResize(node: HTMLTextAreaElement) {
     function resize() {
       node.style.height = "auto";
       node.style.height = `${node.scrollHeight}px`;
     }
     node.addEventListener("input", resize);
-    // Initial calculation on mount or state update
     const timer = setTimeout(resize, 0);
 
     return {

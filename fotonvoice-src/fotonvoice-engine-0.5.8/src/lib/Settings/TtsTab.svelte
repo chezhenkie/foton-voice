@@ -12,7 +12,6 @@
     configDirty.set(true);
   }
 
-  // -- Run Speed Timer --------------------------------------------------------
   let runSpeed = $state<number | null>(null);
   let elapsed = $state(0);
   let isCounting = $state(false);
@@ -41,7 +40,6 @@
     }, 10);
   }
 
-  // -- Piper ------------------------------------------------------------------
 
   const PIPER_VOICES = [
     "announcer",
@@ -86,8 +84,6 @@
   let testing = $state(false);
   let showTestEdit = $state(false);
   let voiceDirError = $state<string | null>(null);
-  // Voices present in the configured voices folder (onnx + json pairs) - the
-  // menu lists these first, then the download catalogue entries not on disk.
   let folderVoices = $state<string[]>([]);
 
   function allVoiceNames(): string[] {
@@ -229,9 +225,6 @@
 
   let engineSwitching = $state(false);
 
-  // Why the Test button is unavailable, or null when it is usable. Returning a
-  // reason rather than a bare boolean means a greyed-out button can say what is
-  // wrong instead of leaving the user to guess.
   function testTtsDisabledReason(): string | null {
     if (!cfg.tts.enabled) return "Enable text-to-speech above first.";
     if (engineSwitching) return "Switching engine...";
@@ -292,7 +285,6 @@
     return false;
   }
 
-  // -- Pocket-TTS -------------------------------------------------------------
 
   let pocketTtsVoices = $state<{ id: string; label: string }[]>([]);
   let pocketTtsVoiceDirError = $state<string | null>(null);
@@ -309,25 +301,21 @@
     const firstVoice = pocketTtsVoices[0].id;
     let changed = false;
 
-    // VoxCPM2: default cloned voice to first voice if not selected or invalid
     if (!cfg.tts.vox_cpm_2.cloned_voice || !pocketTtsVoices.some(v => v.id === cfg.tts.vox_cpm_2.cloned_voice)) {
       cfg.tts.vox_cpm_2.cloned_voice = firstVoice;
       changed = true;
     }
 
-    // Breeze-TTS-2: default cloned voice to first voice if not selected or invalid
     if (!cfg.tts.breeze_tts_2.cloned_voice || !pocketTtsVoices.some(v => v.id === cfg.tts.breeze_tts_2.cloned_voice)) {
       cfg.tts.breeze_tts_2.cloned_voice = firstVoice;
       changed = true;
     }
 
-    // LuxTTS: default cloned voice to first voice if not selected or invalid
     if (!cfg.tts.lux_tts.cloned_voice || !pocketTtsVoices.some(v => v.id === cfg.tts.lux_tts.cloned_voice)) {
       cfg.tts.lux_tts.cloned_voice = firstVoice;
       changed = true;
     }
 
-    // Pocket-TTS: default voice to first voice if not selected or invalid
     if (!cfg.tts.pocket_tts.voice || !pocketTtsVoices.some(v => v.id === cfg.tts.pocket_tts.voice)) {
       cfg.tts.pocket_tts.voice = firstVoice;
       changed = true;
@@ -340,9 +328,6 @@
 
   $effect(() => {
     ensureDefaultClonedVoices();
-    // Voice Design is not offered for VoxCPM2 or Breeze-TTS-2 (see
-    // onEngineChanged) - force clone mode even for a config saved before
-    // that change.
     if (cfg.tts.vox_cpm_2.voice_mode !== "clone") {
       cfg.tts.vox_cpm_2.voice_mode = "clone";
       markDirty();
@@ -406,19 +391,12 @@
     }))
   );
 
-  // -- Model memory -----------------------------------------------------------
-  //
-  // Only the neural engines (Pocket-TTS, Breeze-TTS-2, Inflect-Micro-v2) keep
-  // weights resident; Piper and eSpeak shell out to a process per utterance and
-  // hold nothing between them.
 
   const memoryModeOptions = [
     { value: "always_loaded", label: "Always loaded (fastest response)" },
     { value: "on_demand", label: "Load when needed, unload when idle (saves memory)" }
   ];
 
-  // Derived rather than local state so a change made elsewhere - the tray
-  // toggle, another settings window - shows up here immediately.
   let idleMinutes = $derived(Math.round((cfg.tts.idle_unload_secs ?? 900) / 60));
 
   function onMemoryModeChanged() {
@@ -430,8 +408,6 @@
 
   function onIdleMinutesChange(e: Event) {
     const raw = Number((e.currentTarget as HTMLInputElement).value);
-    // 1 minute floor: anything shorter would drop the model between two
-    // sentences of the same reply. 8 hours is effectively "never".
     const minutes = Math.min(480, Math.max(1, Math.round(raw) || 15));
     cfg.tts.idle_unload_secs = minutes * 60;
     markDirty();
@@ -447,12 +423,6 @@
     { value: "espeak", label: "eSpeak-NG (lightweight)" }
   ];
 
-  // -- Inflect-Micro-v2 -------------------------------------------------------
-  //
-  // A fixed-voice model, so there is no voice picker here - the knobs are the
-  // sampling seed and the two VITS noise scales. `inflectAvailable` reports
-  // whether the app was built with the `inflect-micro` feature; without it the
-  // engine can be selected but never synthesizes, so the UI says so up front.
 
   let inflectAvailable = $state(true);
   let inflectReady = $state(false);
@@ -495,18 +465,12 @@
       });
       inflectReady = true;
     } catch (e) {
-      // Reported inline rather than through alert(): the backend lists every URL
-      // it tried, which is far too long for a modal, and a blocking dialog here
-      // leaves the user with no way to copy the detail out.
       inflectError = `${e}`;
     } finally {
       inflectDownloading = false;
     }
   }
 
-  // Diagnostic: report the tensor names the downloaded export actually declares.
-  // Useful when synthesis fails because the graph's naming doesn't match what
-  // the Rust side binds against.
   async function inspectInflect() {
     if (inflectInspecting) return;
     inflectInspecting = true;
@@ -525,12 +489,6 @@
 
   function onInflectSettingChanged() { markDirty(); }
 
-  // -- LuxTTS -----------------------------------------------------------------
-  //
-  // Voice-cloning model: the voice is a .wav + .txt pair in the shared voice
-  // folder. The graphs are not downloaded by the app - they are placed in the
-  // model dir by the user (or a future download lane) - so the ready check is
-  // the primary gate.
 
   let luxAvailable = $state(true);
   let luxReady = $state(false);
@@ -603,7 +561,6 @@
     checkPocketTtsReady();
   }
 
-  // -- VoxCPM2 ---------------------------------------------------------------
 
   let voxCpmReady = $state(false);
   let voxCpmChecking = $state(false);
@@ -640,7 +597,6 @@
     }
   }
 
-  // -- Breeze-TTS-2 -----------------------------------------------------------
 
   let breezeReady = $state(false);
   let breezeChecking = $state(false);
@@ -690,19 +646,11 @@
     engineSwitching = true;
     try {
       if (cfg.tts.engine === "vox_cpm_2") {
-        // Voice Design doesn't work for VoxCPM2 in the current audio.cpp
-        // build (the prompt is silently ignored) - Voice Cloning is the
-        // only mode exposed in the UI, so force it here too in case an
-        // older config still has voice_mode "prompt" from before that.
         cfg.tts.vox_cpm_2.voice_mode = "clone";
         voxCpmReady = false;
         await checkVoxCpmReady();
         await loadPocketTtsVoices();
       } else if (cfg.tts.engine === "breeze_tts_2") {
-        // Voice Design doesn't reliably apply the described voice for
-        // Breeze-TTS-2 either - Voice Cloning is the only mode exposed in
-        // the UI, so force it here too in case an older config still has
-        // voice_mode "prompt" from before that.
         cfg.tts.breeze_tts_2.voice_mode = "clone";
         breezeReady = false;
         await checkBreezeReady();
@@ -728,7 +676,6 @@
         }
       }
     } finally {
-      // Add a small 400ms delay to allow the backend save_config to run
       setTimeout(() => {
         engineSwitching = false;
       }, 400);
@@ -746,7 +693,6 @@
       checkAllVoicesDownloaded();
     }
 
-    // Always load pocket TTS voices so they are ready for any cloning engine
     loadPocketTtsVoices();
 
     if (cfg.tts.engine === "vox_cpm_2") {
@@ -781,10 +727,6 @@
       voiceSpeaking = true;
     });
 
-    // Playback-end also clears `testing`. Otherwise an utterance that completes
-    // without ever starting playback - a run that produces no audio but also no
-    // error - leaves the button stuck on "Speaking..." indefinitely, since only
-    // playback-start cleared it.
     unlistenTtsEnd = await listen<void>("tts-playback-end", () => {
       voiceSpeaking = false;
       if (testing) {
@@ -794,9 +736,6 @@
       }
     });
 
-    // Speak errors happen asynchronously in the TTS worker thread (missing
-    // engine binary, voice not downloaded, no audio device, ...). Without this
-    // the Test button hangs on "Speaking..." with no feedback at all.
     unlistenTtsError = await listen<string>("tts-error", (event) => {
       ttsError = event.payload;
       clearInterval(timerId);
@@ -814,7 +753,6 @@
     if (unlistenTtsError) unlistenTtsError();
   });
 
-  // -- Stop Key Recorder -----------------------------------------------------------
 
   let isRecordingStopKey = $state(false);
   let currentlyPressedStopKeys = $state<string[]>([]);
@@ -847,9 +785,6 @@
     if (!currentlyPressedStopKeys.includes(evdevKey)) {
       currentlyPressedStopKeys = [...currentlyPressedStopKeys, evdevKey];
     }
-    // Escape triggers browser blur before keyup fires, so commit immediately
-    // on keydown for single-key combos where Escape is the key pressed.
-    // For multi-key combos, keyup still handles commit as normal.
     if (e.key === "Escape") {
       cfg.tts.stop_key = [...currentlyPressedStopKeys];
       markDirty();
@@ -871,8 +806,6 @@
   }
 
   function handleStopKeyBlur() {
-    // Safety net: if blur fires while we have pending keys (e.g. Escape blur race),
-    // commit whatever was captured rather than discarding it silently.
     if (currentlyPressedStopKeys.length > 0) {
       cfg.tts.stop_key = [...currentlyPressedStopKeys];
       markDirty();
@@ -881,7 +814,6 @@
     isRecordingStopKey = false;
   }
 
-  // TTS Snippets & Dictionary editing
   let ttsSnippetList = $state<{key: string, val: string}[]>(
     Object.entries(cfg.tts.snippets || {}).map(([k, v]) => ({ key: k, val: v as string }))
   );
@@ -1016,7 +948,6 @@
     {/if}
   </div>
 
-  <!-- -- Piper section ---------------------------------------------------- -->
   {#if cfg.tts.engine === "piper"}
   <div class="field-group">
     <h3>Piper Voice</h3>
@@ -1060,7 +991,6 @@
   </div>
   {/if}
 
-  <!-- -- VoxCPM2 section ----------------------------------------------- -->
   {#if cfg.tts.engine === "vox_cpm_2"}
   <div class="field-group">
     <h3>VoxCPM2 Voice</h3>
@@ -1154,7 +1084,6 @@
   </div>
   {/if}
 
-  <!-- -- Breeze-TTS-2 section --------------------------------------------- -->
   {#if cfg.tts.engine === "breeze_tts_2"}
   <div class="field-group">
     <h3>Breeze-TTS-2 Voice</h3>
@@ -1245,7 +1174,6 @@
   </div>
   {/if}
 
-  <!-- -- Pocket-TTS section ----------------------------------------------- -->
   {#if cfg.tts.engine === "pocket_tts"}
   <div class="field-group">
     <h3>Pocket-TTS Voice</h3>
@@ -1609,7 +1537,6 @@
   </div>
   {/if}
 
-  <!-- -- Model memory section --------------------------------------------- -->
   <div class="field-group">
     <h3>Model Memory</h3>
     <label class="field col">

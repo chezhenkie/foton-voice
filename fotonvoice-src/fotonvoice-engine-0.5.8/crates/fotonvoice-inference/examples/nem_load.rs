@@ -1,5 +1,4 @@
 //! Minimal repro 2: load encoder + decoder, run one zero-mel chunk forward
-//! with zero caches, one decode step. ORT_DYLIB_PATH + FOTON_NEMOTRON_DIR env.
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::{Session, SessionInputValue};
 use ort::value::Tensor;

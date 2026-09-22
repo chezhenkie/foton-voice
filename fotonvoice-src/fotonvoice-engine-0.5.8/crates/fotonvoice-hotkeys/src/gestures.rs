@@ -1,11 +1,4 @@
 //! Gesture recognition, independent of where the key events came from.
-//!
-//! Every backend - evdev on Linux, the XDG `GlobalShortcuts` portal, the
-//! Win32 hook on Windows - reduces its input to the same two facts about a
-//! binding's trigger: it became active, or it stopped being active. Everything
-//! that decides whether that means "start recording" lives here, so the
-//! gestures behave identically no matter which backend is running and can be
-//! tested without a keyboard.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -37,36 +30,14 @@ pub enum GestureKind {
 }
 
 /// A `hold` or `double_tap_hold` that is never released - because the backend
-/// dropped the release, or the key is physically stuck - would record forever.
-/// Recording stops itself after this long.
-///
-/// The evdev backend can recover a dropped release itself: it notices its
-/// keyboard device disappearing and synthesizes the missing key-ups. The XDG
-/// `GlobalShortcuts` portal has nothing equivalent - it depends entirely on
-/// the compositor sending a `Deactivated` signal, and at least one
-/// (xdg-desktop-portal-hyprland, manually bound via `hl.dsp.global`) has been
-/// seen not sending one at all - so `hold` needs the same backstop
-/// `double_tap_hold` already had. (upstream 93a9c97)
 const STUCK_HOLD_MAX: Duration = Duration::from_secs(120);
 
 /// Shortest gap between releasing the first tap and pressing the second that
-/// still counts as two deliberate taps.
-///
-/// This exists only to reject duplicated events from a misbehaving source; real
-/// key bounce is filtered by the keyboard firmware and the kernel long before
-/// FotonVoice Engine sees it, and evdev auto-repeat is dropped at the reader. The old
-/// value was 50ms, which sits *inside* the range of a genuinely fast human
-/// double-tap and so swallowed exactly the taps it was supposed to catch.
 const MIN_TAP_GAP: Duration = Duration::from_millis(15);
 
 /// Longest a first tap may be held down and still count as a tap.
-///
-/// Without this, using a bound modifier normally - holding Super for a second
-/// while doing something else - leaves the machine primed, and the next quick
-/// press registers as a double-tap the user never made.
 const MAX_TAP_HOLD: Duration = Duration::from_millis(600);
 
-// -- Trigger transitions -------------------------------------------------------
 
 /// What a backend reports about one binding's trigger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,20 +47,11 @@ pub enum Transition {
     /// The trigger is no longer satisfied, but part of it may still be held.
     Deactivated,
     /// Every key of the trigger is up.
-    ///
-    /// Distinct from `Deactivated` because a combo must not finish while one of
-    /// its keys is still physically down: transcription injected at that moment
-    /// arrives at the compositor with, say, Super still held, and is swallowed
-    /// as a shortcut instead of reaching the cursor. Backends whose triggers are
-    /// atomic (the portal, which only ever reports one shortcut as a whole)
-    /// report `Deactivated` and `Released` together.
     Released,
 }
 
-// -- Gesture engine ------------------------------------------------------------
 
 /// Owns the per-binding state machines and turns trigger transitions into
-/// `GestureEvent`s.
 pub struct GestureEngine {
     states: Vec<BindingState>,
     /// Binding id -> index into `states`.
@@ -107,17 +69,7 @@ impl GestureEngine {
     }
 
     /// Replace the bindings, abandoning any gesture in flight.
-    ///
-    /// Callers that may have a recording open should `reset` first; this is the
-    /// plain swap used when the listener is (re)started.
     pub fn reload(&mut self, bindings: Vec<HotkeyBinding>) {
-        // A `double_tap` fires as early as it possibly can - on the second
-        // press - because that is the moment the gesture is unambiguous and
-        // every millisecond after it is latency the user feels. The one case
-        // where it cannot is when a `double_tap_hold` shares the same keys:
-        // there, both gestures look identical until the second press is either
-        // released quickly (a tap) or kept down (a hold), so the tap has to
-        // wait for the release to tell them apart.
         let mut hold_signatures: HashSet<String> = HashSet::new();
         for b in &bindings {
             if !b.disabled && b.gesture == GestureType::DoubleTapHold {
@@ -150,7 +102,6 @@ impl GestureEngine {
     }
 
     /// `at` is the moment the transition happened, which is what the tap
-    /// windows are measured against.
     pub fn apply_at(
         &mut self,
         binding_id: &str,
@@ -161,8 +112,6 @@ impl GestureEngine {
         let Some(&i) = self.index.get(binding_id) else {
             return;
         };
-        // Whether a sibling `double_tap_hold` on the same keys has already
-        // claimed this press has to be read before the mutable borrow.
         let signature = self.states[i].signature.clone();
         let sibling_hold_active = self.states.iter().enumerate().any(|(j, s)| {
             j != i
@@ -183,10 +132,6 @@ impl GestureEngine {
     }
 
     /// Abandon every gesture in flight, stopping any recording they started.
-    ///
-    /// Used when the source of key events goes away mid-gesture - a keyboard is
-    /// unplugged while held, the portal session dies - because the release that
-    /// would have stopped the recording is never going to arrive.
     pub fn reset(&mut self, tx: &GestureSender) {
         for state in &mut self.states {
             state.abort(tx);
@@ -194,23 +139,17 @@ impl GestureEngine {
     }
 }
 
-// -- Per-binding state ---------------------------------------------------------
 
 pub struct BindingState {
     pub binding: HotkeyBinding,
     signature: String,
     /// A `double_tap_hold` shares this trigger, so `double_tap` cannot resolve
-    /// on the second press.
     contended: bool,
-    // Hold
     pub hold_active: Arc<AtomicBool>,
     pub hold_cancel: Option<CancellationToken>,
     pub hold_release_cancel: Option<CancellationToken>,
-    // Toggle / double-tap toggle
     pub toggle_on: bool,
-    // Double-tap
     pub double_tap: DoubleTapMachine,
-    // Double-tap hold
     pub double_tap_hold_active: Arc<AtomicBool>,
     pub double_tap_hold_cancel: Option<CancellationToken>,
     pub double_tap_hold_release_cancel: Option<CancellationToken>,
@@ -340,16 +279,12 @@ impl BindingState {
                     self.hold_cancel.take();
                     self.emit(GestureKind::Stop, tx);
                 } else if let Some(cancel) = self.hold_cancel.take() {
-                    // Released inside the hold threshold - Start never fired.
                     cancel.cancel();
                 }
             }
             GestureType::Toggle => {}
             GestureType::DoubleTap => {
                 let completed = self.double_tap.on_release(at) == TapOutcome::Completed;
-                // When a `double_tap_hold` shares these keys the tap resolves
-                // here instead of on the press - unless the hold got there
-                // first, in which case this release belongs to the hold.
                 if completed && self.contended && !sibling_hold_active {
                     self.toggle_on = !self.toggle_on;
                     self.emit(
@@ -370,10 +305,6 @@ impl BindingState {
                 if let Some(cancel) = self.double_tap_hold_cancel.take() {
                     cancel.cancel();
                 }
-                // Deliberately not conditional on the tap machine's state. If
-                // recording is running, letting go stops it - full stop.
-                // Gating this on the state machine is how a desynchronised
-                // machine used to leave the microphone open for two minutes.
                 if self
                     .double_tap_hold_active
                     .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -392,8 +323,6 @@ impl BindingState {
         if let Some(cancel) = self.double_tap_hold_cancel.take() {
             cancel.cancel();
         }
-        // Both swaps must run - `||` would short-circuit past the second and
-        // leave a double-tap-hold flagged as recording forever.
         let was_holding = self
             .hold_active
             .swap(false, std::sync::atomic::Ordering::SeqCst);
@@ -433,9 +362,6 @@ impl BindingState {
             active.store(true, std::sync::atomic::Ordering::SeqCst);
             let _ = tx.send(start);
 
-            // See `STUCK_HOLD_MAX`: a release that never arrives - most often
-            // the portal backend on a compositor that drops `Deactivated` -
-            // must not leave the microphone open indefinitely.
             tokio::select! {
                 _ = tokio::time::sleep(STUCK_HOLD_MAX) => {
                     if active.swap(false, std::sync::atomic::Ordering::SeqCst) {
@@ -448,9 +374,6 @@ impl BindingState {
     }
 
     fn start_double_tap_hold_timer(&mut self, tx: &GestureSender) {
-        // A second press while a previous cycle is still running means the
-        // release went missing. Close the old cycle before opening a new one so
-        // the recording state can never drift from what the user is doing.
         if let Some(cancel) = self.double_tap_hold_cancel.take() {
             cancel.cancel();
         }
@@ -508,7 +431,6 @@ impl Drop for BindingState {
     }
 }
 
-// -- Double-tap state machine --------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DtState {
@@ -522,18 +444,10 @@ pub enum DtState {
 pub enum TapOutcome {
     None,
     /// The second press landed inside the window (from `on_press`), or the
-    /// second press was released (from `on_release`).
     Completed,
 }
 
 /// Recognises "two taps in quick succession".
-///
-/// Every rejection path deliberately leaves the machine in a state consistent
-/// with the key actually being down or up. The previous version could bail out
-/// of a press while staying in `FirstUp`, after which the physical release
-/// matched no arm at all - so the machine believed a key was up that was down,
-/// and the next tap behaved like the second half of a gesture the user never
-/// started.
 pub struct DoubleTapMachine {
     pub state: DtState,
     window: Duration,
@@ -567,17 +481,12 @@ impl DoubleTapMachine {
                     self.state = DtState::SecondDown;
                     TapOutcome::Completed
                 } else {
-                    // Too fast to be real, or too slow to be a pair: this press
-                    // becomes the first tap of a new gesture rather than being
-                    // dropped on the floor.
                     self.state = DtState::FirstDown;
                     self.first_press = Some(now);
                     self.last_release = None;
                     TapOutcome::None
                 }
             }
-            // A press with no intervening release. The source repeated itself;
-            // the key is already down, so nothing changes.
             DtState::FirstDown | DtState::SecondDown => TapOutcome::None,
         }
     }
@@ -590,9 +499,6 @@ impl DoubleTapMachine {
                     .map(|p| now.saturating_duration_since(p))
                     .unwrap_or_default();
                 if held > MAX_TAP_HOLD {
-                    // That was a hold, not a tap. Starting fresh stops a later
-                    // quick press from completing a "double-tap" the user never
-                    // began.
                     self.reset();
                 } else {
                     self.state = DtState::FirstUp;
@@ -615,12 +521,8 @@ impl DoubleTapMachine {
     }
 }
 
-// -- Superset shadowing --------------------------------------------------------
 
 /// Given a set of currently-pressed keys and a list of bindings, return the ids
-/// of bindings whose key set is a proper subset of a longer binding that is
-/// also fully pressed. This prevents Meta+Space firing when Ctrl+Meta+Space is
-/// held.
 pub fn shadowed_by_longer(pressed: &HashSet<String>, bindings: &[HotkeyBinding]) -> HashSet<String> {
     let active: Vec<&HotkeyBinding> = bindings
         .iter()
@@ -680,8 +582,6 @@ mod tests {
 
     #[tokio::test]
     async fn double_tap_starts_on_the_second_press() {
-        // The gesture is unambiguous the moment the second press lands, and
-        // waiting for the release just adds latency the user feels.
         let (tx, mut rx) = crate::channel();
         let mut engine = GestureEngine::new(vec![binding("dt", GestureType::DoubleTap, &["KEY_LEFTMETA"])]);
 
@@ -714,9 +614,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_very_fast_double_tap_still_fires() {
-        // Regression: the old 50ms floor rejected the second press of a fast
-        // double-tap *and* left the machine mid-gesture, so the tap was lost
-        // and the one after it behaved unpredictably.
         let (tx, mut rx) = crate::channel();
         let mut engine = GestureEngine::new(vec![binding("dt", GestureType::DoubleTap, &["KEY_LEFTMETA"])]);
 
@@ -730,13 +627,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_duplicated_press_does_not_desync_the_machine() {
-        // A source that repeats an event must not leave the machine believing a
-        // key is up while it is down.
         let (tx, mut rx) = crate::channel();
         let mut engine = GestureEngine::new(vec![binding("dt", GestureType::DoubleTap, &["KEY_LEFTMETA"])]);
 
         tap(&mut engine, "dt", &tx);
-        // Duplicate of the release the backend already sent.
         engine.apply("dt", Transition::Released, &tx);
         sleep(60).await;
         engine.apply("dt", Transition::Activated, &tx);
@@ -757,7 +651,6 @@ mod tests {
         tap(&mut engine, "dt", &tx);
         assert!(rx.try_recv().is_err(), "two slow taps are not a double-tap");
 
-        // ...but that second tap is now the first of a fresh pair.
         sleep(60).await;
         engine.apply("dt", Transition::Activated, &tx);
         assert_eq!(rx.try_recv().unwrap().kind, GestureKind::Start);
@@ -765,8 +658,6 @@ mod tests {
 
     #[tokio::test]
     async fn holding_the_key_normally_does_not_prime_a_double_tap() {
-        // Super is a real modifier. Holding it for a second and then pressing it
-        // again shortly after is ordinary use, not a double-tap.
         let (tx, mut rx) = crate::channel();
         let mut engine = GestureEngine::new(vec![binding("dt", GestureType::DoubleTap, &["KEY_LEFTMETA"])]);
 
@@ -804,9 +695,6 @@ mod tests {
 
     #[tokio::test]
     async fn double_tap_hold_stops_even_if_the_tap_machine_lost_track() {
-        // The failure that leaves the microphone open: recording is running, but
-        // the state machine no longer agrees a gesture is in progress. Releasing
-        // must still stop it, because the user let go.
         let (tx, mut rx) = crate::channel();
         let mut engine =
             GestureEngine::new(vec![binding("dth", GestureType::DoubleTapHold, &["KEY_LEFTMETA"])]);
@@ -817,7 +705,6 @@ mod tests {
         sleep(150).await;
         assert_eq!(rx.try_recv().unwrap().kind, GestureKind::Start);
 
-        // Desync the tap machine behind the engine's back.
         engine.states[0].double_tap.reset();
 
         engine.apply("dth", Transition::Released, &tx);
@@ -829,8 +716,6 @@ mod tests {
 
     #[tokio::test]
     async fn double_tap_hold_does_not_leak_a_second_recording() {
-        // If the release goes missing entirely, the next double-tap-and-hold
-        // must close the old recording rather than stacking a second one.
         let (tx, mut rx) = crate::channel();
         let mut engine =
             GestureEngine::new(vec![binding("dth", GestureType::DoubleTapHold, &["KEY_LEFTMETA"])]);
@@ -841,7 +726,6 @@ mod tests {
         sleep(150).await;
         assert_eq!(rx.try_recv().unwrap().kind, GestureKind::Start);
 
-        // The release never arrives; the user double-taps and holds again.
         engine.states[0].double_tap.reset();
         tap(&mut engine, "dth", &tx);
         sleep(60).await;
@@ -882,7 +766,6 @@ mod tests {
             binding("dth", GestureType::DoubleTapHold, &["KEY_LEFTMETA"]),
         ]);
 
-        // Quick double-tap -> the tap wins, resolving on the release.
         tap(&mut engine, "dt", &tx);
         tap(&mut engine, "dth", &tx);
         sleep(60).await;
@@ -897,11 +780,9 @@ mod tests {
         assert_eq!(event.kind, GestureKind::Start);
         assert!(rx.try_recv().is_err(), "the hold must not also fire");
 
-        // Reset the tap's toggle so the next gesture starts from idle.
         engine.states[0].toggle_on = false;
         sleep(200).await;
 
-        // Double-tap and keep it down -> the hold wins.
         tap(&mut engine, "dt", &tx);
         tap(&mut engine, "dth", &tx);
         sleep(60).await;
@@ -949,10 +830,6 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn hold_stops_itself_after_the_safety_timeout() {
-        // Regression for the dropped portal release: a portal backend that
-        // never delivers a release (seen on Hyprland's
-        // xdg-desktop-portal-hyprland with a manual `hl.dsp.global` bind)
-        // must not leave the microphone open forever. (upstream 93a9c97)
         let (tx, mut rx) = crate::channel();
         let mut engine = GestureEngine::new(vec![binding("h", GestureType::Hold, &["KEY_LEFTALT"])]);
 
@@ -963,7 +840,6 @@ mod tests {
         sleep(121_000).await;
         assert_eq!(rx.try_recv().unwrap().kind, GestureKind::Stop);
 
-        // The real release, arriving late, must not send a duplicate stop.
         engine.apply("h", Transition::Deactivated, &tx);
         engine.apply("h", Transition::Released, &tx);
         assert!(rx.try_recv().is_err(), "no duplicate stop on the real release");
@@ -971,8 +847,6 @@ mod tests {
 
     #[tokio::test]
     async fn hold_ignores_a_partial_release_of_a_combo() {
-        // Stopping while a modifier is still down gets the transcription eaten
-        // by the compositor as a shortcut.
         let (tx, mut rx) = crate::channel();
         let mut engine = GestureEngine::new(vec![binding(
             "h",

@@ -1,42 +1,9 @@
 //! Synthesised keyboard input on Windows, and the marker that identifies it.
-//!
-//! Everything that puts text into the focused window on Windows goes through
-//! here, so there is one implementation to get right and one marker for the
-//! hotkey hook to recognise.
-//!
-//! This replaced a `powershell.exe -Command SendKeys::SendWait` call, which was
-//! wrong in a way that only showed up on real dictation. `SendKeys` reads
-//! `+ ^ % ~ ( ) { } [ ]` as its own syntax, so "50% (a+b)" arrived as "50"
-//! followed by a couple of stray chords, and "array[0]" as "array0". The old
-//! code base64-encoded the payload - which does protect it from *PowerShell*
-//! parsing, and was a real defence - but the decoded string still went through
-//! SendKeys' own escaping, so ordinary prose came out mangled. It also spawned
-//! a process per dictation, on the path where latency is most visible.
-//!
-//! `SendInput` with `KEYEVENTF_UNICODE` carries the character itself rather
-//! than a keystroke to be interpreted: no escaping exists to get wrong, no
-//! keyboard layout is consulted, and nothing is spawned.
-//!
-//! The chunking logic below is deliberately outside the platform gate so its
-//! tests run on the Linux lane, where the suite actually runs.
 
 /// Marker stamped into the `dwExtraInfo` of every keystroke FotonVoice Engine
-/// synthesises, so its own keyboard hook can tell the app's output from the
-/// user typing.
-///
-/// Without it, dictating text that completes a binding would re-trigger that
-/// binding from FotonVoice Engine's own output.
-///
-/// Arbitrary, but deliberately not a small integer: other software stamps
-/// `dwExtraInfo` too, and 0 or 1 would collide.
 pub const INJECTED_TAG: usize = 0x9605_C731;
 
 /// Above this many characters, typing is abandoned for a clipboard paste.
-///
-/// `SendInput` is a single call whatever the length, but the receiving
-/// application still processes one message per character, and a long
-/// transcription visibly crawls into editors that do syntax work per keystroke.
-/// A paste is one operation regardless of size.
 pub const PASTE_THRESHOLD_CHARS: usize = 2000;
 
 /// How many UTF-16 code units to submit per `SendInput` call.
@@ -44,12 +11,6 @@ pub const PASTE_THRESHOLD_CHARS: usize = 2000;
 const CHUNK_UNITS: usize = 512;
 
 /// Split a UTF-16 buffer into chunks of at most `max` units without ever
-/// separating a surrogate pair.
-///
-/// A high surrogate delivered in one `SendInput` call and its low surrogate in
-/// the next is not a character: the receiving application sees two lone
-/// surrogates and renders replacement glyphs. Emoji and the rarer CJK blocks
-/// are exactly the text this protects.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn chunk_boundaries(units: &[u16], max: usize) -> Vec<std::ops::Range<usize>> {
     let is_high_surrogate = |u: u16| (0xD800..0xDC00).contains(&u);
@@ -58,16 +19,10 @@ fn chunk_boundaries(units: &[u16], max: usize) -> Vec<std::ops::Range<usize>> {
     let mut start = 0;
     while start < units.len() {
         let mut end = (start + max).min(units.len());
-        // A high surrogate is never the last unit of a chunk.
         if end < units.len() && is_high_surrogate(units[end - 1]) {
             if end - start > 1 {
-                // Push the pair into the next chunk.
                 end -= 1;
             } else {
-                // The chunk is the high surrogate alone, so there is nothing to
-                // push it into - dropping it would leave an empty range and
-                // make no progress. Take the low surrogate too and run one unit
-                // over `max`, which the API does not mind.
                 end += 1;
             }
         }
@@ -143,10 +98,6 @@ mod imp {
             )
         };
         if sent as usize != inputs.len() {
-            // The usual cause is UIPI: a more-privileged window has focus, and
-            // an unelevated process may not synthesise input into it. Say so,
-            // because the alternative symptom is dictation that silently does
-            // nothing.
             bail!(
                 "SendInput delivered {sent} of {} events ({}). If the focused window \
                  belongs to an elevated application, Windows blocks input from \
@@ -159,10 +110,6 @@ mod imp {
     }
 
     /// Put `text` on the clipboard and press Ctrl+V.
-    ///
-    /// The previous clipboard contents are restored afterwards: taking the
-    /// user's clipboard permanently as a side effect of dictating is its own
-    /// bug.
     pub fn paste_text(text: &str) -> Result<()> {
         let previous = {
             let mut cb = arboard::Clipboard::new()?;
@@ -173,9 +120,6 @@ mod imp {
 
         let result = press_ctrl_v();
 
-        // Give the target a moment to read the clipboard before it is handed
-        // back. Restoring immediately races the paste, and losing the
-        // transcription is worse than briefly holding the clipboard.
         std::thread::sleep(std::time::Duration::from_millis(120));
         if let Some(previous) = previous {
             if let Ok(mut cb) = arboard::Clipboard::new() {
@@ -215,9 +159,6 @@ mod tests {
 
     #[test]
     fn a_surrogate_pair_is_never_split_across_chunks() {
-        // "𠀀" is one code point and two UTF-16 units. Delivering them in
-        // separate SendInput calls makes the target render two replacement
-        // glyphs instead of the emoji.
         let units: Vec<u16> = "aa𠀀bb".encode_utf16().collect();
         for max in 1..=units.len() + 2 {
             for range in chunk_boundaries(&units, max) {
@@ -245,10 +186,6 @@ mod tests {
 
     #[test]
     fn chunking_always_makes_progress() {
-        // Regression guard. Shrinking a chunk to keep a surrogate pair together
-        // used to be able to shrink it to nothing when the chunk was one unit
-        // long, so the loop pushed empty ranges forever and the process was
-        // killed for exhausting memory.
         let units: Vec<u16> = "𠀀𠀀𠀀".encode_utf16().collect();
         for max in 1..=4 {
             let ranges = chunk_boundaries(&units, max);
@@ -267,11 +204,6 @@ mod tests {
 
     #[test]
     fn the_metacharacters_sendkeys_ate_are_just_text_here() {
-        // The regression this crate exists for. These are all SendKeys syntax -
-        // `%` alt, `^` ctrl, `+` shift, `~` enter, and the four bracket pairs
-        // are grouping - so the old PowerShell path delivered chords and
-        // dropped characters. As UTF-16 code units they are unremarkable, and
-        // every one survives chunking.
         for sample in ["50% of users", "f(x) = a + b", "array[0]", "{braces}", "a~b^c"] {
             let units: Vec<u16> = sample.encode_utf16().collect();
             let rejoined: Vec<u16> = chunk_boundaries(&units, 4)

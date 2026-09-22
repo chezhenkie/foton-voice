@@ -1,15 +1,4 @@
 //! ODE schedule and the seeded noise sampler for LuxTTS flow matching.
-//!
-//! `time_steps` is the numpy port of the reference `get_time_steps`; the
-//! schedule transform `t_shift * t / (1 + (t_shift - 1) * t)` concentrates
-//! integration steps near t=1, where the distilled model is most sensitive.
-//!
-//! [`StandardNormal`] is a PCG64 + Box-Muller host-side sampler, matching the
-//! approach the Inflect-Micro-v2 frontend takes: any correctly-distributed
-//! noise yields valid audio, but a given seed here does not select the same
-//! sample as the same seed in the NumPy reference (only NumPy's exact ziggurat
-//! stream would reproduce that, and reproducing it buys nothing - the seed
-//! only picks which sample from the distribution you get).
 
 /// Shifted uniform schedule: `num_steps + 1` points from t_start to t_end.
 pub fn time_steps(num_steps: usize, t_shift: f32) -> Vec<f32> {
@@ -91,8 +80,6 @@ mod tests {
 
     #[test]
     fn test_time_steps_shift_pulls_midpoints_down() {
-        // t_shift < 1 compresses the schedule toward t=0 (the reference
-        // transform 0.9*t/(1+(0.9-1)*t) is below the identity for 0<t<1).
         let shifted = time_steps(8, 0.9);
         let plain = time_steps(8, 1.0);
         for i in 1..8 {

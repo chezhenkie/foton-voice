@@ -10,39 +10,31 @@
   let bindings = $state<HotkeyBinding[]>([]);
   let saving = $state(false);
 
-  // Hotkey Modal state
   let editingBinding = $state<HotkeyBinding | null>(null);
   let isEditingBindingNew = $state(false);
   let recordingTarget = $state<"keys" | null>(null);
   let confirmDeleteBindingId = $state<string | null>(null);
 
-  // Nested Target Modal state inside Hotkey Binding creation
   let editingTarget = $state<OutputTarget | null>(null);
   let isEditingTargetNew = $state(false);
   let targetIndexTriggeredNew = $state<number | null>(null);
   let activeDropdownIdx = $state<number | null>(null);
 
-  // OpenAI LLM flat edit states
   let editOpenaiEnabled = $state(false);
   let editOpenaiModel = $state("");
   let editOpenaiMode = $state("custom");
   let editOpenaiPrompt = $state("");
   let editOpenaiSystemPrompt = $state("");
 
-  // Helper to construct a canonical signature for a binding's key combination and gesture type
   function getBindingSignature(keys: string[], gesture: string): string {
     const sortedKeys = [...keys].sort().join(",");
     return `${gesture}:${sortedKeys}`;
   }
 
-  // Keys alone, ignoring the gesture. double_tap and double_tap_hold on the
-  // same keys are a supported pairing rather than a conflict, and on the portal
-  // backend they are registered as a single system shortcut.
   function getTriggerSignature(keys: string[]): string {
     return [...keys].sort().join(",");
   }
 
-  // Derived set of signatures that are shared by two or more bindings (regardless of disabled state)
   let conflictingSignatures = $derived.by(() => {
     const sigCounts = new Map<string, number>();
     for (const b of bindings) {
@@ -60,7 +52,6 @@
     return dups;
   });
 
-  // Derived set of signatures that are shared by two or more active/enabled bindings
   let activeConflictingSignatures = $derived.by(() => {
     const activeSigCounts = new Map<string, number>();
     for (const b of bindings) {
@@ -78,18 +69,12 @@
     return dups;
   });
 
-  // Derived check: does the current edited binding in the modal conflict with another existing binding?
-  // Excludes self-conflict: comparing a binding against the same binding ID never counts.
-  // Also excludes the original keys of the binding being edited: re-using the same combination
-  // that a binding already had is not a conflict with itself.
   let editingBindingConflict = $derived.by(() => {
     if (!editingBinding || !editingBinding.keys || editingBinding.keys.length === 0) return false;
     const editSig = getBindingSignature(editingBinding.keys, editingBinding.gesture);
-    // Only flag as a conflict if another *different* binding (different ID) uses the same signature
     return bindings.some(b => b.id !== editingBinding!.id && getBindingSignature(b.keys, b.gesture) === editSig);
   });
 
-  // Reusable Svelte action to auto-resize textareas dynamically to fit their contents
   function autoResize(node: HTMLTextAreaElement) {
     function resize() {
       node.style.height = "auto";
@@ -109,9 +94,6 @@
     };
   }
 
-  // How shortcuts are actually reaching the app. Shown in the UI because the
-  // answer decides what FotonVoice Engine can see: on the portal it is told only that its
-  // own shortcut fired, and the keys are chosen and owned by the desktop.
   type BoundShortcut = {
     binding_ids: string[];
     requested: string | null;
@@ -136,9 +118,6 @@
     portal_error: string | null;
     portal_refused: boolean;
     shortcuts: BoundShortcut[];
-    // Gesture styles the running backend can actually deliver. A backend that
-    // only learns about key presses (a Cinnamon/MATE native shortcut) cannot
-    // end a hold or tell a tap from a hold, so it reports "toggle" alone.
     supported_gestures: GestureType[];
     x11_error: string | null;
     session_type: string;
@@ -146,9 +125,6 @@
     devices_readable: number;
     needs_attention: boolean;
     detail: string;
-    // KDE registers portal shortcuts disabled and gives no way to check that
-    // over D-Bus, so this is a standing warning on KDE rather than a detected
-    // fact about any one shortcut. See docs/hotkeys.md.
     needs_manual_enable: boolean;
     manual_enable_hint: string | null;
   };
@@ -195,8 +171,6 @@
     }
   }
 
-  // The compositor may rename or reject a shortcut when bindings are saved, so
-  // the panel is refreshed after every write rather than only on mount.
   let shortcutByBinding = $derived.by(() => {
     const map = new Map<string, BoundShortcut>();
     for (const s of hotkeyStatus?.shortcuts ?? []) {
@@ -205,9 +179,6 @@
     return map;
   });
 
-  // Only the gestures this machine can actually deliver are offered. Showing a
-  // style the running backend cannot serve is worse than not showing it: the
-  // user picks it, the shortcut does nothing, and nothing says why.
   const supportedGestures = $derived<GestureType[]>(
     hotkeyStatus?.supported_gestures?.length
       ? GESTURE_ORDER.filter(g => hotkeyStatus!.supported_gestures.includes(g))
@@ -216,10 +187,6 @@
 
   const hiddenGestureCount = $derived(GESTURE_ORDER.length - supportedGestures.length);
 
-  // A binding saved before the backend changed may use a gesture that no longer
-  // works. It stays in the list, marked, rather than being silently rewritten:
-  // the user's configuration is theirs, and a quiet change to it would be a
-  // second invisible failure on top of the first.
   const gestureOptions = $derived.by(() => {
     const options = supportedGestures.map(g => ({ value: g, label: GESTURE_LABELS[g] }));
     const current = editingBinding?.gesture as GestureType | undefined;
@@ -270,7 +237,6 @@
     return t ? `${t.label} (${t.delivery})` : (id === "default" ? "Focused Window" : id);
   }
 
-  // --- CRUD Hotkey Bindings ---
   function addNewBinding() {
     if (targets.length === 0) {
       alert("Please create at least one Output Command before making a hotkey binding.");
@@ -288,7 +254,6 @@
       id: "binding_" + Math.random().toString(36).substring(2, 6),
       label: "New Binding",
       keys: [],
-      // Never offer a new binding a gesture this backend cannot serve.
       gesture: supportedGestures.includes("hold") ? "hold" : supportedGestures[0],
       target_id: targets[0].id,
       target_ids: [targets[0].id],
@@ -306,9 +271,6 @@
   function editBinding(b: HotkeyBinding) {
     isEditingBindingNew = false;
     keysCheck = null;
-    // Track the keys the binding opened with so we can detect a no-op re-record
-    // (user captures the exact same combo the binding already had) and avoid
-    // showing a stale rejection from a different capture earlier in the session.
     originalBindingKeys = [...b.keys];
     const clone = JSON.parse(JSON.stringify(b));
     if (!clone.target_ids) {
@@ -353,14 +315,6 @@
       return;
     }
 
-    // Re-checked here, not just at capture time: a binding created by an older
-    // FotonVoice Engine (or on a machine without the desktop portal) can be sitting in
-    // the editor without ever passing through the recorder.
-    //
-    // Exception: if the keys haven't changed from what the binding opened with,
-    // skip the structural check. The binding was already saved with these keys,
-    // so rejecting them here would be a false error - especially when the user
-    // is only editing the label or output target.
     const finalKeysSorted = [...editingBinding.keys].sort().join(",");
     const origKeysSorted = [...originalBindingKeys].sort().join(",");
     const keysUnchanged = !isEditingBindingNew && finalKeysSorted === origKeysSorted;
@@ -430,7 +384,6 @@
     await persistBindings();
   }
 
-  // --- Keyboard Event Capture / Recorder ---
   function mapBrowserKeyToEvdev(key: string, code: string): string {
     const codeUpper = code.toUpperCase();
     if (key === "Control") return "KEY_LEFTCTRL";
@@ -458,22 +411,14 @@
   }
 
   let currentlyPressedKeys = $state<string[]>([]);
-  // The keys the binding had when the edit modal was opened. Used to detect
-  // a no-op re-record so we don't show stale rejection state when the user
-  // re-captures the exact same combo the binding already had.
   let originalBindingKeys = $state<string[]>([]);
 
-  // Suppress all hotkey gestures while the recorder is active so the user
-  // cannot accidentally trigger dictation while pressing keys for a new binding.
   $effect(() => {
     invoke("set_hotkeys_inhibited", { inhibited: recordingTarget === "keys" }).catch(
       (e: unknown) => console.error("Failed to set hotkeys inhibited:", e),
     );
   });
 
-  // Result of validating the last captured combination. The rules live in Rust
-  // (`fotonvoice_hotkeys::accelerator`) and are reached over IPC, so the recorder
-  // and the portal registration cannot disagree about what is bindable.
   type KeysCheck = {
     accepted: boolean;
     enforced: boolean;
@@ -483,10 +428,6 @@
   };
   let keysCheck = $state<KeysCheck | null>(null);
 
-  // Presentational only - used for the live "keep going" hint while keys are
-  // still held, and for the badge on saved bindings. The authoritative verdict
-  // always comes from the backend, so drift here cannot let an invalid
-  // combination through.
   const MODIFIER_KEYS = new Set([
     "KEY_LEFTCTRL", "KEY_RIGHTCTRL",
     "KEY_LEFTALT", "KEY_RIGHTALT",
@@ -498,16 +439,12 @@
     return keys.length > 0 && keys.every(k => MODIFIER_KEYS.has(k));
   }
 
-  // Whether a bare-modifier binding is actually broken on this machine, as
-  // opposed to merely fragile. Only the portal cannot deliver them.
   let portalEnforced = $derived(
     hotkeyStatus === null ||
     hotkeyStatus.backend === "portal" ||
     hotkeyStatus.backend === "starting",
   );
 
-  // A shortcut needs a regular key. Say so while the user is still holding
-  // modifiers, rather than letting them lift and get rejected.
   let liveCaptureHint = $derived.by(() => {
     if (recordingTarget !== "keys") return null;
     if (!isModifiersOnly(currentlyPressedKeys)) return null;
@@ -515,13 +452,9 @@
     return "Keep holding and add a regular key - modifiers alone cannot be a shortcut.";
   });
 
-  /// Validate a captured combination and commit it if the backend allows.
   async function commitCapture(keys: string[]): Promise<void> {
     if (!editingBinding || keys.length === 0) return;
 
-    // If the user re-recorded the exact same combination the binding already
-    // had, treat it as a no-op: clear any stale rejection from a previous
-    // capture in this session and keep the current keys unchanged.
     const sortedNew = [...keys].sort().join(",");
     const sortedOrig = [...originalBindingKeys].sort().join(",");
     if (sortedNew === sortedOrig) {
@@ -535,8 +468,6 @@
       check = await invoke<KeysCheck>("check_hotkey_keys", { keys });
     } catch (e) {
       console.error("Failed to validate hotkey keys:", e);
-      // A validation call that fails must not silently discard the user's
-      // capture; the save-time check still guards the real constraint.
       editingBinding.keys = [...keys];
       return;
     }
@@ -573,10 +504,6 @@
     if (recordingTarget === "keys") {
       const captured = [...currentlyPressedKeys];
       currentlyPressedKeys = [];
-      // Deliberately leaves recording mode even when the capture is refused.
-      // Dropping straight back into "press your combination now" would hide the
-      // shortcut the binding still has, and the user needs to see that their
-      // working keybind survived the rejection.
       recordingTarget = null;
       void commitCapture(captured);
     }
@@ -592,7 +519,6 @@
     recordingTarget = null;
   }
 
-  // --- Nested Target Modal Handling ---
   function triggerNewTarget(idx: number) {
     targetIndexTriggeredNew = idx;
     isEditingTargetNew = true;
@@ -844,9 +770,6 @@
   </div>
 </section>
 
-<!-- ========================================== -->
-<!-- MODAL: Hotkey Binding Editor               -->
-<!-- ========================================== -->
 {#if editingBinding}
   <div class="modal-backdrop">
     <div class="modal glass animate-fade-in">
@@ -960,7 +883,6 @@
           {/if}
         </label>
 
-        <!-- Timings dynamic displays -->
         {#if editingBinding.gesture === "hold" || editingBinding.gesture === "double_tap_hold"}
           <label class="field morph-section">
             <span>Hold Threshold (ms)</span>
@@ -984,7 +906,6 @@
           </label>
         {/if}
 
-        <!-- Premium Hotkey Recording Widget -->
         <div class="border-t border-white/5 pt-[14px] flex flex-col gap-3">
           <div class="flex flex-col gap-1.5">
             <h5 class="text-[11px] font-bold uppercase text-accent-blue tracking-[0.06em]">
@@ -1063,7 +984,6 @@
           {/if}
         </div>
 
-        <!-- LLM Post-Processing Settings -->
         <div class="processing-toggles border-t border-white/5 pt-[14px] mt-4">
           <h5>OpenAI API LLM Post-Processing</h5>
           <label class="checkbox-field">

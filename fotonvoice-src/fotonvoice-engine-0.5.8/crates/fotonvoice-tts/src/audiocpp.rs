@@ -1,26 +1,4 @@
 //! Shared runtime for every audio.cpp-backed engine (Pocket-TTS, Breeze-TTS-2,
-//! VoxCPM2). All three are separate GGUF model "families" served by the same
-//! audio.cpp binaries from <https://github.com/0xShug0/audio.cpp> - a
-//! ggml-based, Apache-2.0 C++ inference engine with a Vulkan backend.
-//!
-//! This replaces the previous in-process Candle (`pocket-tts` crate) runtime,
-//! which pulled in `intel-mkl-src` - a proprietary-licensed redistribution of
-//! Intel MKL incompatible with FotonVoice Engine's MIT license. FotonVoice Engine downloads the
-//! prebuilt binaries rather than linking anything in-process, so there is no
-//! C++ build step and no Python: only prebuilt binaries are invoked, and
-//! asset downloads go through FotonVoice Engine's own `reqwest` code, never audio.cpp's
-//! Python model manager.
-//!
-//! Synthesis itself runs through a long-lived `audiocpp_server` process
-//! ([`AudioCppServer`]/[`AudioCppSession`]) rather than a fresh `audiocpp_cli`
-//! spawn per utterance: loading a multi-gigabyte GGUF model dominates a
-//! one-shot CLI call's wall time (measured: ~4s of a ~5s Breeze-TTS-2 request
-//! was model load, ~1s was actual generation), so keeping the model resident
-//! across utterances is the difference between a 5s and a 1s reply. The
-//! server's own `lazy_load` defers the load to the first request, so a
-//! `TtsMemoryMode::OnDemand`-driven idle-unload (dropping the `AudioCppSession`,
-//! which kills the child process) still gives the memory back, exactly like
-//! Inflect-Micro-v2 today - it just pays the load cost again on next use.
 
 use std::io::Read as _;
 use std::net::TcpListener;
@@ -35,7 +13,6 @@ use tracing::info;
 use crate::piper::expand_tilde;
 
 /// The audio.cpp release FotonVoice Engine downloads. Bump alongside a verified test of
-/// the new release's CLI flags for the three families we drive.
 pub const AUDIOCPP_RELEASE_VERSION: &str = "v0.8.0";
 
 /// GGUF model family names audio.cpp registers for the engines FotonVoice Engine offers.
@@ -49,7 +26,6 @@ pub fn audiocpp_dir() -> PathBuf {
 }
 
 /// Where FotonVoice Engine caches downloaded reference-voice clips (the `hf://` built-in
-/// catalogue), keyed by their HuggingFace repo/path so a clip is fetched once.
 fn voice_clip_cache_dir() -> PathBuf {
     audiocpp_dir().join("voice-clips")
 }
@@ -63,7 +39,6 @@ pub(crate) fn resolve_model_dir(model_dir: &str, default: impl FnOnce() -> PathB
 }
 
 /// Resolves the `audiocpp_cli` binary: FotonVoice Engine's own managed install first,
-/// then PATH - mirroring `piper_binary()`.
 pub fn audiocpp_binary() -> Option<PathBuf> {
     let exe = if cfg!(target_os = "windows") { "audiocpp_cli.exe" } else { "audiocpp_cli" };
     let local = audiocpp_dir().join(exe);
@@ -83,13 +58,8 @@ fn audiocpp_server_binary() -> Option<PathBuf> {
     fotonvoice_config::find_in_path("audiocpp_server")
 }
 
-// -- Binary download -----------------------------------------------------------
 
 /// Fetches and unpacks the prebuilt audio.cpp release archive for the current
-/// OS into `~/.local/share/fotonvoice-engine/audiocpp/`. Only extracts the runtime
-/// (binary + shared libraries + model_specs + license) - the archive also
-/// ships audio.cpp's own Python model-manager/conversion tooling under
-/// `tools/`, which FotonVoice Engine never invokes and does not install.
 #[cfg(target_os = "linux")]
 pub async fn download_audiocpp_binary() -> Result<()> {
     let dest_dir = audiocpp_dir();
@@ -117,9 +87,6 @@ pub async fn download_audiocpp_binary() -> Result<()> {
 }
 
 /// FotonVoice Engine has no verified Windows/macOS release asset name or install path
-/// yet (see the audio.cpp Releases page), so - matching the precedent set by
-/// `piper::download_piper_binary`'s Windows stub - this reports what it
-/// cannot do instead of silently doing nothing.
 #[cfg(not(target_os = "linux"))]
 pub async fn download_audiocpp_binary() -> Result<()> {
     anyhow::bail!(
@@ -141,9 +108,6 @@ fn extract_audiocpp_archive(bytes: &[u8], dest_dir: &Path) -> Result<()> {
         let mut entry = entry?;
         let path = entry.path()?.into_owned();
 
-        // The archive ships everything at its own root (no wrapping
-        // directory), alongside audio.cpp's Python model-manager/conversion
-        // scripts under `tools/` - skip those, we only want the native runtime.
         if path.components().next().map(|c| c.as_os_str() == "tools").unwrap_or(false) {
             continue;
         }
@@ -179,11 +143,8 @@ fn extract_audiocpp_archive(bytes: &[u8], dest_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-// -- HuggingFace asset fetching (replaces `hf-hub`/`pocket_tts::weights`) ------
 
 /// Splits an `hf://owner/repo/path[@revision]` reference into its parts and
-/// the local cache path it resolves to. Shared by the async, blocking, and
-/// cache-lookup-only variants below.
 fn hf_reference_parts(reference: &str) -> Result<(String, String, String, PathBuf)> {
     let rest = reference
         .strip_prefix("hf://")
@@ -203,9 +164,6 @@ fn hf_reference_parts(reference: &str) -> Result<(String, String, String, PathBu
 }
 
 /// Downloads an `hf://owner/repo/path[@revision]` reference into FotonVoice Engine's own
-/// cache, or passes a plain local path straight through. Returns the local
-/// path either way. Async and `reqwest`-based, replacing the removed
-/// `pocket_tts::weights::download_if_necessary` (which relied on `hf-hub`).
 pub async fn resolve_hf_reference(reference: &str, hf_token: Option<&str>) -> Result<PathBuf> {
     let Ok((repo, url, _filename, dest)) = hf_reference_parts(reference) else {
         return Ok(PathBuf::from(reference));
@@ -240,9 +198,6 @@ pub async fn resolve_hf_reference(reference: &str, hf_token: Option<&str>) -> Re
 }
 
 /// Blocking counterpart of [`resolve_hf_reference`], for the synchronous TTS
-/// worker thread (`engine.rs` is not async) - mirrors the old `pocket-tts`
-/// crate's own blocking download-on-first-use behavior for a reference voice
-/// clip picked at speak time (e.g. from a Voice Design prompt).
 pub(crate) fn resolve_hf_reference_blocking(reference: &str, hf_token: Option<&str>) -> Result<PathBuf> {
     let Ok((repo, url, _filename, dest)) = hf_reference_parts(reference) else {
         return Ok(PathBuf::from(reference));
@@ -276,11 +231,8 @@ pub(crate) fn resolve_hf_reference_blocking(reference: &str, hf_token: Option<&s
     Ok(dest)
 }
 
-// -- Synthesis (persistent `audiocpp_server` session) --------------------------
 
 /// Either a reference clip to clone (`voice_ref`), a built-in voice id
-/// (`voice`), or a natural-language Voice Design instruction - audio.cpp's
-/// ways to pick a speaker identity for a cloning-capable family.
 pub enum SpeakerRef<'a> {
     Clone(&'a Path),
     VoiceId(&'a str),
@@ -291,15 +243,10 @@ pub struct SpeakRequest<'a> {
     pub text: &'a str,
     pub speaker: Option<SpeakerRef<'a>>,
     /// Reference transcript for a `voice_ref` clip. `breeze_tts` requires
-    /// this whenever cloning; the other families treat it as an optional
-    /// cloning-quality boost.
     pub reference_text: Option<&'a str>,
 }
 
 /// A running `audiocpp_server` process bound to one model (family + model
-/// directory + backend). Killed on drop, so dropping the `Option` that owns
-/// one (e.g. on idle-unload, or when switching engine/GPU setting) frees
-/// every resource the model held - not just its GPU/RAM weights.
 pub(crate) struct AudioCppServer {
     child: Child,
     base_url: String,
@@ -307,9 +254,6 @@ pub(crate) struct AudioCppServer {
     family: &'static str,
     model_dir: PathBuf,
     gpu: bool,
-    // Kept alive for the server's lifetime - it reads this file once at
-    // startup, but only after `spawn()` returns; dropping it any earlier
-    // would race the child's own read of the file.
     _config_file: tempfile::NamedTempFile,
 }
 
@@ -326,20 +270,9 @@ fn free_local_port() -> Result<u16> {
 }
 
 /// Makes the spawned child ask the kernel to SIGTERM it the instant *this*
-/// process dies, for any reason.
-///
-/// `AudioCppServer::drop` already kills its child on a graceful shutdown, but
-/// that only runs if the TTS worker thread gets to process a
-/// `TtsCommand::Shutdown` before the whole app exits - which several exit
-/// paths (the tray's Quit item, the updater's relaunch, a crash, `kill -9`)
-/// don't guarantee. Without this, a quit like that leaves `audiocpp_server`
-/// (and, if the model had loaded, its GPU/RAM footprint) running forever.
-/// `PR_SET_PDEATHSIG` is Linux-only, matching `download_audiocpp_binary`.
 #[cfg(target_os = "linux")]
 fn die_with_this_process(cmd: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
-    // SAFETY: `prctl` is async-signal-safe and touches only this syscall's
-    // own arguments - safe to call between fork and exec in the child.
     unsafe {
         cmd.pre_exec(|| {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
@@ -352,9 +285,6 @@ fn die_with_this_process(cmd: &mut std::process::Command) {
 
 impl AudioCppServer {
     /// Spawns `audiocpp_server` configured with exactly one model - the one
-    /// this session exists for - and waits for it to answer `/health`.
-    /// Model weights are *not* loaded yet at this point (`lazy_load: true`):
-    /// that happens lazily on the first `speak()` call.
     fn spawn(family: &'static str, model_dir: &Path, gpu: bool) -> Result<Self> {
         let binary = audiocpp_server_binary().ok_or_else(|| {
             anyhow::anyhow!(
@@ -408,9 +338,6 @@ impl AudioCppServer {
             .build()
             .context("build reqwest client")?;
 
-        // Poll for readiness rather than sleeping a fixed amount: startup
-        // time depends on the host, and this only waits for the HTTP
-        // listener, not the (lazy-loaded) model itself.
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if let Ok(resp) = http.get(format!("{base_url}/health")).send() {
@@ -468,12 +395,6 @@ impl AudioCppServer {
             Some(SpeakerRef::Clone(clip)) => body.voice_ref = Some(clip),
             Some(SpeakerRef::VoiceId(id)) => body.voice = Some(id),
             Some(SpeakerRef::Design(prompt)) => {
-                // Confirmed against a running server: `voxcpm2` honors the
-                // top-level `instruct` field structurally (though - separate,
-                // upstream issue - it doesn't yet audibly act on it), while
-                // `breeze_tts` only reads its own `instruction` request
-                // option (mirrors the equivalent audiocpp_cli quirk: passing
-                // `--instruct` to breeze_tts fails outright there).
                 if self.family == FAMILY_BREEZE_TTS {
                     body.request_options = Some(RequestOptions { instruction: prompt });
                 } else {
@@ -511,17 +432,12 @@ fn read_stderr(child: &mut Child) -> String {
 }
 
 /// A resident audio.cpp model session, reused across utterances for as long
-/// as the family/model directory/backend it was spawned for stays current.
 pub(crate) struct AudioCppSession {
     server: AudioCppServer,
 }
 
 impl AudioCppSession {
     /// Ensures `slot` holds a session for `family`/`model_dir`/`gpu`,
-    /// spawning one if there is none, or replacing it (killing the old
-    /// server) if any of those changed under it - mirroring how a GPU
-    /// setting change already forced a model reload before this session
-    /// concept existed.
     pub(crate) fn ensure(
         slot: &mut Option<AudioCppSession>,
         family: &'static str,
@@ -546,7 +462,6 @@ impl AudioCppSession {
 }
 
 /// Decodes WAV bytes audio.cpp's server returned and queues them onto
-/// `sink`, blocking until playback ends.
 pub fn play_wav_bytes(sink: &rodio::Sink, bytes: Vec<u8>) -> Result<()> {
     let source = rodio::Decoder::new(std::io::Cursor::new(bytes)).context("decode audio.cpp response")?;
     sink.append(source);

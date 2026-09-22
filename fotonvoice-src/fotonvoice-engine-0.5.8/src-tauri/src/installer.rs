@@ -16,9 +16,6 @@ pub fn detect_pkg_manager() -> &'static str {
         }
     }
 
-    // Cached: the setup status is polled while the setup window is open, and
-    // probing four package managers per poll is pure waste - the answer cannot
-    // change while the app is running.
     static DETECTED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
     DETECTED.get_or_init(|| {
         if Command::new("pacman").arg("--version").output().is_ok() {
@@ -46,19 +43,6 @@ pub fn get_install_packages_command(pkg_mgr: &str) -> Option<String> {
 }
 
 /// Builds the privileged setup script.
-///
-/// This installs host packages only - the keystroke-injection helpers and
-/// runtime libraries FotonVoice Engine needs to type a transcription into the focused
-/// window. It grants no access to input devices, and deliberately so.
-///
-/// FotonVoice Engine used to write a udev rule here that tagged every `/dev/input/event*`
-/// node with `uaccess`, plus `usermod -aG input`. Both made this process able to
-/// read the keyboard - and with it every other process running as the user,
-/// permanently, for every application on the machine. systemd's own defaults
-/// grant `uaccess` on input devices to joysticks and nothing else, precisely to
-/// keep unprivileged programs from reading keystrokes. Global shortcuts now go
-/// through the desktop portal, which needs none of that, so the rule is gone
-/// and is never written again.
 pub fn build_privileged_setup_script(pkg_mgr: &str) -> String {
     let mut script = String::from("set -u\n");
     if let Some(cmd) = get_install_packages_command(pkg_mgr) {
@@ -71,7 +55,6 @@ pub fn build_privileged_setup_script(pkg_mgr: &str) -> String {
 }
 
 /// The commands a user can run by hand if the graphical setup cannot run
-/// (no pkexec, no polkit agent, locked-down machine).
 pub fn manual_setup_commands(pkg_mgr: &str) -> String {
     match get_install_packages_command(pkg_mgr) {
         Some(cmd) => format!("sudo sh -c '{cmd}'"),
@@ -126,7 +109,6 @@ fn run_command_status(runner: &str, args: &[&str]) -> Result<std::process::ExitS
 }
 
 /// Desktop entry filename. Must stay in step with the portal application id, so
-/// the desktop can name and illustrate the shortcuts FotonVoice Engine registers.
 pub const DESKTOP_FILE_NAME: &str = "ai.fotonvoice.engine.desktop";
 
 /// What the entry was called before it had to match the application id.
@@ -140,12 +122,10 @@ pub fn setup_desktop_integration() -> Result<(), String> {
     std::fs::create_dir_all(&launcher_dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&icon_dir).map_err(|e| e.to_string())?;
 
-    // Copy high-res icon
     let icon_path = icon_dir.join("fotonvoice-engine.png");
     let icon_bytes = include_bytes!("../icons/128x128.png");
     std::fs::write(&icon_path, icon_bytes).map_err(|e| e.to_string())?;
 
-    // Create desktop launcher
     let appimage_path = std::env::var("APPIMAGE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::current_exe().unwrap_or_default());
@@ -169,21 +149,14 @@ Keywords=whisper;voice;dictation;wayland;
         abs_path.to_string_lossy()
     );
 
-    // Named after the application id FotonVoice Engine declares to the desktop portal
-    // (`fotonvoice_hotkeys::portal::APP_ID`). That is how a desktop resolves the id
-    // it is handed for global shortcuts back to a name and icon - without the
-    // match, KDE's shortcut settings list a bare identifier.
     let launcher_path = launcher_dir.join(DESKTOP_FILE_NAME);
     std::fs::write(&launcher_path, desktop_content).map_err(|e| e.to_string())?;
 
-    // An install from before the rename leaves a second entry behind, which
-    // shows up as a duplicate FotonVoice Engine in the application menu.
     let legacy = launcher_dir.join(LEGACY_DESKTOP_FILE_NAME);
     if legacy.exists() {
         let _ = std::fs::remove_file(&legacy);
     }
     
-    // Make desktop entry executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -196,10 +169,6 @@ Keywords=whisper;voice;dictation;wayland;
 
     #[cfg(target_os = "linux")]
     {
-        // Only worth doing where nothing better can serve shortcuts: on an X11
-        // Mint session FotonVoice Engine reads the keys itself and every gesture works,
-        // and a native shortcut registered alongside that would fire a second
-        // time on the same keypress.
         if crate::mint_shortcuts::is_mint_desktop()
             && !crate::mint_shortcuts::is_mint_shortcut_registered()
         {
@@ -227,7 +196,6 @@ pub fn run_cli_installer() -> Result<(), String> {
 
     println!("System dependencies installed successfully!");
 
-    // Setup desktop integration
     println!("Registering desktop entry and icon...");
     setup_desktop_integration()?;
     println!("Desktop integration complete!");
@@ -249,8 +217,6 @@ pub async fn run_gui_installer() -> Result<(), String> {
     let full_script = build_privileged_setup_script(pkg_mgr);
 
     if get_install_packages_command(pkg_mgr).is_none() {
-        // Nothing to install on this distro; the desktop entry is all that is
-        // left, and it needs no privileges.
         return setup_desktop_integration();
     }
 
@@ -271,7 +237,6 @@ pub async fn run_gui_installer() -> Result<(), String> {
         return Err("Installing the host packages failed or was canceled.".to_string());
     }
 
-    // Desktop integration
     setup_desktop_integration()?;
 
     Ok(())
@@ -299,10 +264,6 @@ mod tests {
 
     #[test]
     fn the_privileged_script_never_touches_input_permissions() {
-        // The whole point of the change: FotonVoice Engine asks for administrator rights
-        // to install packages and for nothing else. A udev rule tagging input
-        // devices with `uaccess`, or `usermod -aG input`, would let every
-        // process running as this user read every keystroke on the machine.
         for mgr in ["pacman", "apt", "dnf", "zypper", "unknown"] {
             let script = build_privileged_setup_script(mgr);
             for forbidden in [
@@ -323,8 +284,6 @@ mod tests {
 
     #[test]
     fn the_privileged_script_installs_packages_best_effort() {
-        // A stale mirror is routine on rolling distros and must not read as a
-        // failed setup - nothing else in the script depends on it.
         let script = build_privileged_setup_script("pacman");
         assert!(script.contains("pacman -S"));
         assert!(script.contains("||"), "package install must be best-effort");
@@ -369,9 +328,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let home_path = temp_dir.path().to_path_buf();
         
-        // Mock HOME directory environment variable
         std::env::set_var("HOME", &home_path);
-        // Mock APPIMAGE environment variable
         std::env::set_var("APPIMAGE", "/usr/bin/fotonvoice-fake-appimage");
 
         let res = setup_desktop_integration();
@@ -394,9 +351,6 @@ mod tests {
 
     #[test]
     fn test_setup_desktop_integration_failure_readonly() {
-        // Root can create directories anywhere, so the "unwritable path" premise
-        // doesn't hold - skip (e.g. containerized CI). Panicking here would also
-        // poison the shared env lock and cascade failures into unrelated tests.
         #[cfg(unix)]
         {
             let uid = std::process::Command::new("id").arg("-u").output()
@@ -408,7 +362,6 @@ mod tests {
         }
 
         let _lock = crate::test_utils::get_env_lock().lock().unwrap();
-        // Set HOME to a non-existent/readonly path
         std::env::set_var("HOME", "/nonexistent_directory_fotonvoice_test");
         let res = setup_desktop_integration();
         assert!(res.is_err(), "Expected failure when writing to nonexistent/readonly path");
@@ -489,9 +442,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_gui_installer_without_pkexec_explains_itself() {
-        // Without polkit the one-click setup cannot run at all. Failing with a
-        // bare "setup failed" leaves the user with no way forward, so the error
-        // has to point at the manual commands the setup window shows.
         let _lock = crate::test_utils::get_env_lock().lock().unwrap();
         std::env::set_var("FOTONVOICE_PKG_MANAGER_MOCK", "apt");
         std::env::set_var("FOTONVOICE_INSTALLER_TEST_MOCK", "success");

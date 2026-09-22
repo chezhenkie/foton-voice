@@ -4,10 +4,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 use fotonvoice_config::{OpenAiConfig, OpenAiMode};
 
-// -- Preset system prompts ---------------------------------------------------
 
 /// System-prompt text for each built-in preset. `Custom` has no preset and
-/// returns an empty string (the user prompt carries the full instruction).
 pub fn preset_system_prompt(mode: &OpenAiMode) -> &'static str {
     match mode {
         OpenAiMode::Clean => {
@@ -29,7 +27,6 @@ pub fn preset_system_prompt(mode: &OpenAiMode) -> &'static str {
     }
 }
 
-// -- OpenAI-compatible API types ---------------------------------------------
 
 #[derive(Serialize)]
 struct ChatMessage<'a> {
@@ -60,7 +57,6 @@ struct ChatResponse {
 }
 
 /// Normalize a user-supplied endpoint into an OpenAI-style base URL ending in
-/// `/v1`. Accepts values with or without a trailing slash or existing `/v1`.
 fn api_base(endpoint: &str) -> String {
     let trimmed = endpoint.trim().trim_end_matches('/');
     if trimmed.ends_with("/v1") {
@@ -70,7 +66,6 @@ fn api_base(endpoint: &str) -> String {
     }
 }
 
-// -- Client --------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct OpenAiClient {
@@ -134,8 +129,6 @@ impl OpenAiClient {
             return text.to_string();
         }
 
-        // Build the user message from the configured template, substituting the
-        // dictated text into the "{text}" placeholder.
         let template = if self.config.user_prompt.trim().is_empty() {
             "{text}"
         } else {
@@ -144,7 +137,6 @@ impl OpenAiClient {
         let user_content = if template.contains("{text}") {
             template.replace("{text}", text)
         } else {
-            // Be forgiving if the user dropped the placeholder: append the text.
             format!("{template}\n\n{text}")
         };
 

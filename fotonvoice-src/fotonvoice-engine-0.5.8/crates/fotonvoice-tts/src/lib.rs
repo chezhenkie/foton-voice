@@ -1,20 +1,4 @@
 //! FotonVoice Engine text-to-speech engine.
-//!
-//! Split by concern:
-//! - [`piper`]    - Piper voice catalogue, path resolution, binary/voice download
-//! - [`audiocpp`] - shared audio.cpp runtime: binary management, GGUF asset
-//!   download, subprocess synthesis (Pocket-TTS, Breeze-TTS-2, VoxCPM2)
-//! - [`pocket`]   - Pocket-TTS voice catalogue + audio.cpp synthesis
-//! - [`breeze`]   - Breeze-TTS-2 asset management + audio.cpp synthesis
-//! - [`voxcpm`]   - VoxCPM2 asset management + audio.cpp synthesis
-//! - [`inflect`]  - Inflect-Micro-v2 (ONNX VITS) phoneme frontend + synthesis
-//! - [`luxtts`]   - LuxTTS (ONNX ZipVoice flow matching, 48 kHz voice cloning)
-//! - [`engine`]   - utterance queue, worker thread, Piper/eSpeak synthesis
-//! - [`fifo`]     - named-pipe responder for external speak triggers
-//!
-//! Snippet expansion and custom-vocabulary correction are shared with
-//! `fotonvoice-inference` (which applies the same logic to STT output) via the
-//! `fotonvoice-text` crate.
 
 mod audiocpp;
 pub mod breeze;
@@ -57,6 +41,4 @@ pub use pocket::{
     pocket_tts_voice_catalogue, PocketTtsVoiceInfo, PocketTtsVoiceOption, POCKET_TTS_VOICES,
 };
 
-// Shared with fotonvoice-inference, which applies the same logic to STT output.
-// See fotonvoice-text for the implementation.
 pub use fotonvoice_text::{correct_custom_vocabulary, expand_snippets};

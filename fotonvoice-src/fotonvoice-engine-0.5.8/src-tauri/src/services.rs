@@ -14,18 +14,12 @@ impl McpCallbacks for AppState {
             use std::sync::atomic::Ordering;
             use tokio::time::{sleep, Duration};
 
-            // Snapshot the current version counter BEFORE starting. The delivery
-            // thread increments it each time a new result is written to last_text.
-            // Polling for version > baseline_version guarantees we only accept a
-            // result from THIS recording session, never a stale prior-session value.
             let baseline_version = self.last_text_version.load(Ordering::SeqCst);
 
             self.set_mcp_recording(true);
 
-            // Start recording, interrupting any response being spoken.
             self.begin_recording().await;
 
-            // Spawn a timer to automatically stop recording after timeout_secs.
             let recording = self.recording.clone();
             let audio_tx = self.audio_tx.clone();
             tokio::spawn(async move {
@@ -34,17 +28,12 @@ impl McpCallbacks for AppState {
                 let _ = audio_tx.send(Vec::new());
             });
 
-            // Wait until recording stops (timer or manual stop).
             while self.is_recording() {
                 sleep(Duration::from_millis(50)).await;
             }
 
             self.set_mcp_recording(false);
 
-            // Wait for inference + delivery to produce a new last_text.
-            // last_text is now written BEFORE delivery targets run, so this poll
-            // completes as soon as inference finishes rather than waiting for slow
-            // delivery targets.  3 s budget is kept as a safety net.
             let poll_limit = 60; // 60 x 50 ms = 3.0 s
             let mut text = String::new();
             for _ in 0..poll_limit {
@@ -83,9 +72,6 @@ impl McpCallbacks for AppState {
     fn default_record_timeout(&self) -> impl std::future::Future<Output = f64> + Send {
         async move {
             let configured = self.config.lock().await.data.mcp.record_timeout;
-            // A zero or negative timeout would stop the recording before the
-            // user could say anything, so fall back to the config default
-            // rather than trusting a hand-edited config.json.
             if configured.is_finite() && configured > 0.0 {
                 configured
             } else {
@@ -113,11 +99,6 @@ pub fn start_dbus_service(app_state: Arc<AppState>) {
     let dbus_state_clone = dbus_state.clone();
 
     tokio::spawn(async move {
-        // Bound to a name that outlives this scope: zbus closes the connection
-        // when the last `Connection` handle drops, and closing it releases
-        // `ai.fotonvoice.engine.Dictation` and tears down the object server.
-        // Dropping it here is why the name was never actually on the bus even
-        // though startup logged it as registered. (upstream d944258)
         let _conn = match fotonvoice_dbus::start_service(dbus_state, start_tx, stop_tx).await {
             Ok(conn) => conn,
             Err(e) => {
@@ -130,11 +111,6 @@ pub fn start_dbus_service(app_state: Arc<AppState>) {
             tokio::select! {
                 v = start_rx.recv() => {
                     let Some(binding_id) = v else { break };
-                    // A desktop shortcut names the binding it stands for, so
-                    // the transcription reaches the same targets it would have
-                    // if FotonVoice Engine had seen the keys itself. Without this every
-                    // shortcut would dictate into the default target no matter
-                    // which one the user pressed.
                     apply_dbus_binding(&app_state_dbus, &binding_id).await;
                     app_state_dbus.begin_recording().await;
                     let mut st = dbus_state_clone.lock().await;
@@ -155,10 +131,6 @@ pub fn start_dbus_service(app_state: Arc<AppState>) {
 }
 
 /// Point the pipeline at the binding a D-Bus caller named, so its targets and
-/// its label are the ones used for this dictation.
-///
-/// An unknown or empty id leaves whatever the app already had, which is the
-/// "Focused Window" default on a fresh start.
 #[cfg(target_os = "linux")]
 async fn apply_dbus_binding(state: &Arc<AppState>, binding_id: &str) {
     if binding_id.is_empty() {
@@ -253,12 +225,6 @@ pub fn register_command_trigger_target(app_handle: &tauri::AppHandle) {
             if show_overlay {
                 let cmd_name = command_name.to_string();
                 let summary = text_summary.to_string();
-                // Backend-side record of the command pill's active window, so
-                // the Linux overlay-lifecycle owner (tray::spawn_status_ticker)
-                // keeps the overlay window alive for it too - the frontend
-                // command pill alone used to decide this, but on Linux the
-                // window itself is created/destroyed by the backend, which
-                // cannot see frontend timers.
                 state.activate_command_overlay(std::time::Duration::from_secs(duration_secs as u64));
                 let _ = app_handle_clone.emit(
                     "command-executed",
@@ -287,17 +253,11 @@ pub fn auto_download_speech_model_if_needed(
     app: &tauri::App,
     cfg_data: &Arc<AppConfig>,
 ) {
-    // A machine that has never been set up gets nothing: every decision this
-    // function would make for the user - which model to fetch, whether to
-    // open Settings - belongs to the user, not to a first launch.
     if !cfg_data.ui.setup_completed {
         return;
     }
 
     let show_settings = cfg_data.ui.auto_show_settings;
-    // Only the whisper-cpp path needs a GGUF model on disk. A Moonshine
-    // or Parakeet selection uses whisper-cpp (and thus its model) unless their
-    // backend is actually compiled into this build.
     let uses_whisper_model = cfg_data.engine.backend != fotonvoice_config::BackendChoice::RemoteOpenAi
         && (cfg_data.engine.backend != fotonvoice_config::BackendChoice::Moonshine
             || !fotonvoice_inference::MOONSHINE_COMPILED)
@@ -309,7 +269,6 @@ pub fn auto_download_speech_model_if_needed(
         let model_size = cfg_data.engine.whisper_cpp.model_size.clone();
         let model_dir = cfg_data.engine.whisper_cpp.model_dir.clone();
         if !fotonvoice_inference::whisper_cpp::is_model_downloaded(&model_size, &model_dir) {
-            // All downloads are explicit now; point the user at Settings.
             if !show_settings {
                 fotonvoice_inject::show_notification(
                     "FotonVoice Engine",

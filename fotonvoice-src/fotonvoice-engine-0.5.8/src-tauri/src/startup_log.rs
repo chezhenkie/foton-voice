@@ -52,7 +52,6 @@ impl<S: Subscriber> Layer<S> for StartupErrorLayer {
 
         let msg = visitor.message;
 
-        // Apply strict filtering rules to prevent any user text from leaking into the log.
         let lower_msg = msg.to_lowercase();
         if lower_msg.contains("received transcription")
             || lower_msg.contains("delivered target_id")

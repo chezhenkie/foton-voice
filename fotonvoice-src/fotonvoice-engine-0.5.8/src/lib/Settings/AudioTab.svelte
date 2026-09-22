@@ -21,7 +21,6 @@
     ...devices.map(d => ({ value: d.index, label: d.name }))
   ]);
 
-  // VU Meter States using Svelte 5 Runes
   let rawLevel = $state(0);
   let smoothedLevel = $state(0);
   let peakLevel = $state(0);
@@ -32,14 +31,12 @@
 
   function updateVisuals() {
     const target = rawLevel;
-    // Fast attack, slower decay physics
     if (target > smoothedLevel) {
       smoothedLevel += (target - smoothedLevel) * 0.45;
     } else {
       smoothedLevel += (target - smoothedLevel) * 0.12;
     }
 
-    // Keep peak level with smooth decay
     if (smoothedLevel > peakLevel) {
       peakLevel = smoothedLevel;
       peakHoldTime = 25; // hold for ~0.4s
@@ -57,7 +54,6 @@
   onMount(async () => {
     devices = await invoke<AudioDevice[]>("list_audio_devices");
     
-    // Start backend microphone monitoring
     try {
       await invoke("start_monitoring_audio");
       unlistenFn = await listen<number>("audio-level", (event) => {
@@ -77,7 +73,6 @@
     if (unlistenFn) {
       unlistenFn();
     }
-    // Stop backend microphone monitoring
     try {
       await invoke("stop_monitoring_audio");
     } catch (e) {
@@ -103,7 +98,6 @@
       />
     </label>
 
-    <!-- Hardware-inspired real-time VU meter -->
     <div class="vu-meter-container">
       <div class="vu-meter-info">
         <span class="vu-label">Microphone Monitor</span>
@@ -123,7 +117,6 @@
             ></div>
           {/each}
           
-          <!-- Peak marker line -->
           {#if peakLevel > 0.01}
             <div
               class="vu-peak-marker"

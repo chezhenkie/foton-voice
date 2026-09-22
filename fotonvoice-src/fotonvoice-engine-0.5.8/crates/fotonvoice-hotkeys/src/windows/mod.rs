@@ -1,31 +1,4 @@
 //! Windows hotkey backend: a Win32 low-level keyboard hook.
-//!
-//! Gesture recognition is the shared engine, so `hold`, `toggle`, `double_tap`
-//! and `double_tap_hold` behave exactly as they do on Linux.
-//!
-//! # Shape
-//!
-//! Three pieces, and the split between them is the design:
-//!
-//! * The **hook procedure** runs inside whatever process generated the
-//!   keystroke, and Windows silently unhooks a procedure that takes longer than
-//!   `LowLevelHooksTimeout` - capped at one second since Windows 10 1709, with
-//!   no notification to the application. So it does the least possible work:
-//!   resolve a key id from a pure lookup, decide suppression from lock-free
-//!   arrays and a `try_read`, push onto an unbounded channel, return.
-//! * The **pump thread** owns the hook. `SetWindowsHookExW` requires the
-//!   installing thread to run a message loop, and the hook is only ever called
-//!   on that thread.
-//! * The **worker thread** does everything expensive: matching, gesture timing,
-//!   binding reloads, and sending gestures to the app.
-//!
-//! # Privacy
-//!
-//! This hook is called for every keystroke on the machine. That is the same
-//! exposure as the evdev and X11 backends on Linux, and unlike the XDG portal,
-//! so `Backend::WindowsHook` reports `sees_raw_keys() == true` and
-//! `is_private() == false`. Nothing here logs, stores or forwards a key: each
-//! event is matched against the user's bindings and dropped.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -49,21 +22,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 /// Marker on every keystroke FotonVoice Engine synthesises. Defined by `fotonvoice-winput`,
-/// which is the side that writes it; the hook is the side that reads it.
 use fotonvoice_winput::INJECTED_TAG;
 
 /// How long the hook may go unheard before it is presumed dead and reinstalled.
-///
-/// Windows removes a hook that overruns `LowLevelHooksTimeout` without telling
-/// anyone, so silence is the only symptom available. Long enough that a user who
-/// simply is not typing does not churn the hook.
 const WATCHDOG_SILENCE: Duration = Duration::from_secs(180);
 
 /// How often the watchdog wakes. Besides checking hook silence, this tick
-/// refreshes the elevated-foreground-window flag, which blinds the hook (UIPI)
-/// and must reach the UI quickly - the dictation overlay warns "shortcuts
-/// dead" off it while a dictation runs. `GetForegroundWindow` plus two token
-/// queries is cheap, so 5s keeps the warning honest without measurable cost.
 const WATCHDOG_TICK: Duration = Duration::from_secs(5);
 
 /// One key transition as the hook saw it.
@@ -72,11 +36,6 @@ struct RawKey {
     down: bool,
 }
 
-// -- State the hook procedure reaches without capturing ------------------------
-//
-// A `HOOKPROC` is a bare `extern "system" fn`, so everything it touches is
-// static. Each of these is either atomic or read with `try_read`; the hook never
-// blocks on a lock.
 
 static EVENTS: Mutex<Option<crossbeam_channel::Sender<RawKey>>> = Mutex::new(None);
 static PLAN: RwLock<Option<SuppressPlan>> = RwLock::new(None);
@@ -90,21 +49,15 @@ static SEEN: AtomicUsize = AtomicUsize::new(0);
 static PUMP_THREAD: AtomicU32 = AtomicU32::new(0);
 
 /// Sender cached outside the mutex for the hook's fast path.
-///
-/// `crossbeam_channel::Sender` is `Sync` and its `send` on an unbounded channel
-/// does not block, so the hook can use it directly once it exists.
 static SENDER: RwLock<Option<crossbeam_channel::Sender<RawKey>>> = RwLock::new(None);
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // Anything but HC_ACTION must be passed straight on, untouched.
     if code != HC_ACTION as i32 {
         return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
     }
 
     let info = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
 
-    // FotonVoice Engine's own synthesised keystrokes. Letting these through would mean a
-    // dictation containing the binding's keys re-triggered the binding.
     if info.dwExtraInfo == INJECTED_TAG {
         return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
     }
@@ -123,21 +76,12 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
     SEEN.fetch_add(1, Ordering::Relaxed);
 
-    // Auto-repeat: Windows re-sends key-down while a key is held. The gesture
-    // engine measures hold duration from the first press, so a repeat must not
-    // look like a fresh one.
     let repeat = down && PRESSED[id].load(Ordering::Relaxed);
 
     let swallow = if down {
         if repeat {
-            // Keep swallowing a key whose initial press was swallowed, or the
-            // repeats leak into the focused window.
             SWALLOWED[id].load(Ordering::Relaxed)
         } else {
-            // `try_read` rather than `read`: a reload holding the writer for a
-            // moment must never stall the hook into Windows' timeout. Failing
-            // to suppress for one keystroke is a far smaller fault than being
-            // silently unhooked.
             let decided = match PLAN.try_read() {
                 Ok(plan) => plan
                     .as_ref()
@@ -149,8 +93,6 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             decided
         }
     } else {
-        // Release: mirror whatever happened to the press, so an application
-        // never sees a key-up it had no key-down for.
         SWALLOWED[id].swap(false, Ordering::Relaxed)
     };
 
@@ -169,13 +111,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     }
 
     if swallow {
-        // Non-zero stops the event reaching any further hook or application.
         return 1;
     }
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
 
-// -- Public entry point --------------------------------------------------------
 
 pub fn start(
     bindings: Vec<HotkeyBinding>,
@@ -183,8 +123,6 @@ pub fn start(
     rx_reload: crate::ReloaderReceiver,
     health: Arc<ListenerHealth>,
 ) {
-    // The hook needs no device permissions and no desktop cooperation, so there
-    // is nothing to scan and nothing that can be denied.
     health.set_supported(true);
     health.record_scan(1, 0);
     health.set_keyboards_open(1);
@@ -210,7 +148,6 @@ fn run(
     *SENDER.write().unwrap() = Some(raw_tx.clone());
     *EVENTS.lock().unwrap() = Some(raw_tx);
 
-    // Worker: everything the hook is too time-constrained to do itself.
     let worker_health = health.clone();
     let worker = std::thread::Builder::new()
         .name("fotonvoice-winhook-match".into())
@@ -222,7 +159,6 @@ fn run(
 
     spawn_watchdog(health.clone());
 
-    // Pump: owns the hook and must keep a message loop running for it.
     loop {
         match pump_once() {
             PumpOutcome::Reinstall => {
@@ -243,10 +179,6 @@ fn raw_tx_from_static() -> Option<crossbeam_channel::Sender<RawKey>> {
 }
 
 /// Tell the matcher that everything held is now up.
-///
-/// The hook going away means no release will ever arrive for a key the user is
-/// still holding, which would otherwise leave a `hold` gesture recording
-/// forever.
 fn release_all(tx: &Option<crossbeam_channel::Sender<RawKey>>) {
     let Some(tx) = tx else { return };
     for (id, held) in PRESSED.iter().enumerate() {
@@ -283,10 +215,6 @@ fn pump_once() -> PumpOutcome {
         Ordering::SeqCst,
     );
 
-    // `GetMessageW` returns 0 on WM_QUIT and -1 on error; either ends the loop
-    // and the hook is reinstalled. The messages themselves are of no interest -
-    // the loop exists purely because a low-level hook is only dispatched to a
-    // thread that is pumping.
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     loop {
         let got = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
@@ -306,13 +234,6 @@ fn pump_once() -> PumpOutcome {
 }
 
 /// Whether `process` is running at a higher integrity level than this one -
-/// `None` when the query itself could not be made.
-///
-/// A handful of protected system processes deny even
-/// `PROCESS_QUERY_LIMITED_INFORMATION`, so "could not tell" is kept distinct
-/// from "not elevated": a caller that collapsed the two would call a locked-
-/// down process non-elevated, which is the one direction of mistake that
-/// leaves a real problem unreported.
 fn process_is_elevated(process: HANDLE) -> Option<bool> {
     unsafe {
         let mut token: HANDLE = std::ptr::null_mut();
@@ -334,14 +255,6 @@ fn process_is_elevated(process: HANDLE) -> Option<bool> {
 }
 
 /// True when the focused window belongs to a process elevated above our own -
-/// Task Manager, an elevated terminal, an installer's UAC prompt.
-///
-/// Windows' User Interface Privilege Isolation blocks a lower-integrity
-/// `WH_KEYBOARD_LL` hook from receiving keys while such a window has focus.
-/// The hook stays installed, the pump thread stays alive, and `SEEN` keeps
-/// advancing for our own window - nothing about the hook itself ever
-/// fails, so this is the only way to tell the user why their shortcuts just
-/// went quiet.
 fn foreground_window_is_elevated() -> bool {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -360,26 +273,12 @@ fn foreground_window_is_elevated() -> bool {
         let foreground_elevated = process_is_elevated(process);
         CloseHandle(process);
 
-        // Both elevated is not a problem: our own process is high enough to be
-        // handed the keys. Only a strictly-higher foreground window blinds it.
         let self_elevated = process_is_elevated(GetCurrentProcess()).unwrap_or(false);
         foreground_elevated == Some(true) && !self_elevated
     }
 }
 
 /// Watch for the silent unhook, and for the foreground window outranking
-/// ours in privilege.
-///
-/// Windows removes a hook procedure that overruns its timeout and tells the
-/// application nothing, so the only evidence is that events stop arriving. If
-/// the machine has been quiet for longer than a person plausibly pauses, ask the
-/// pump to drop out of its message loop and install a fresh hook.
-///
-/// The elevation check rides along on the same tick rather than getting a
-/// poller of its own: `GetForegroundWindow` plus two token queries is cheap,
-/// but polling it on every keystroke from the hook procedure would spend
-/// budget the hook cannot spare on something that changes only when focus
-/// does.
 fn spawn_watchdog(health: Arc<ListenerHealth>) {
     let _ = std::thread::Builder::new()
         .name("fotonvoice-winhook-watchdog".into())
@@ -439,8 +338,6 @@ fn match_loop(
             recv(rx_reload) -> msg => {
                 let Ok(new_bindings) = msg else { break };
                 info!("windows hotkey loop: reloading {} bindings", new_bindings.len());
-                // Reset before swapping: a gesture recorded against the old
-                // bindings has no owner afterwards.
                 engine.reset(&tx);
                 for (id, transition) in matcher.clear() {
                     engine.apply(&id, transition, &tx);

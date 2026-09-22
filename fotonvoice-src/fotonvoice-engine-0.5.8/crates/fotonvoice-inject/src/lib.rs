@@ -5,7 +5,6 @@ use tracing::warn;
 
 
 /// Inject text into the currently focused window using the best available
-/// method for the current platform and display server.
 pub async fn inject_text(text: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     return inject_linux(text).await;
@@ -17,13 +16,11 @@ pub async fn inject_text(text: &str) -> Result<()> {
     anyhow::bail!("Text injection not supported on this platform");
 }
 
-// -- Linux ---------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
 async fn inject_linux(text: &str) -> Result<()> {
     let wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
 
-    // 1. wtype (Wayland native)
     if wayland && fotonvoice_config::find_in_path("wtype").is_some() {
         if run_cmd("wtype", &["--", text]).await {
             debug!("Injected via wtype");
@@ -32,13 +29,6 @@ async fn inject_linux(text: &str) -> Result<()> {
         warn!("wtype failed; trying fallback");
     }
 
-    // 2. xdotool (X11 / XWayland)
-    //
-    // The delay is per character, so it sets how long a transcription takes to
-    // appear: at xdotool's own default of 12 ms a 200-character paragraph
-    // types for two and a half seconds. 4 ms still leaves a gap far wider than
-    // an X client needs to keep up - `wtype`, the Wayland path above, inserts
-    // no gap at all - while cutting that wait to a third.
     if fotonvoice_config::find_in_path("xdotool").is_some() {
         if run_cmd("xdotool", &["type", "--clearmodifiers", "--delay", "4", "--", text]).await {
             debug!("Injected via xdotool");
@@ -47,7 +37,6 @@ async fn inject_linux(text: &str) -> Result<()> {
         warn!("xdotool failed; trying clipboard fallback");
     }
 
-    // 3. Clipboard + paste (last resort)
     clipboard_paste(text).await?;
     Ok(())
 }
@@ -64,7 +53,6 @@ async fn run_cmd(bin: &str, args: &[&str]) -> bool {
 
 #[cfg(target_os = "linux")]
 async fn clipboard_paste(text: &str) -> Result<()> {
-    // Copy to clipboard, then simulate Ctrl+V
     let t = text.to_string();
     tokio::task::spawn_blocking(move || {
         let mut cb = arboard::Clipboard::new()?;
@@ -81,24 +69,19 @@ async fn clipboard_paste(text: &str) -> Result<()> {
     Ok(())
 }
 
-// -- Windows -------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
 async fn inject_windows(text: &str) -> Result<()> {
-    // `SendInput` is a blocking Win32 call and long text is a lot of events, so
-    // it does not belong on an async worker.
     let t = text.to_string();
     tokio::task::spawn_blocking(move || fotonvoice_winput::deliver(&t)).await??;
     debug!("Injected via SendInput");
     Ok(())
 }
 
-// -- Desktop notifications -----------------------------------------------------
 
 pub fn show_notification(summary: &str, body: &str) {
     let summary = summary.to_string();
     let body = body.to_string();
-    // Fire-and-forget; don't block the caller
     std::thread::spawn(move || {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {

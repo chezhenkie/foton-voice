@@ -347,8 +347,6 @@ config.subscribe((cfg) => {
 
 loadConfig();
 
-// Listen for config-changed events from other windows or the backend
-// to keep the in-memory store synchronized without circular auto-save feedback loops
 listen<AppConfig>("config-changed", (event) => {
   isLoaded = false;
   config.set(event.payload);

@@ -1,15 +1,4 @@
 //! Standalone probe for the Inflect-Micro-v2 pipeline.
-//!
-//! Runs phonemization -> tokenization -> both ONNX graphs and writes a WAV,
-//! with no Tauri, no event plumbing and no audio device involved. Each stage
-//! prints before and after it runs, so if the pipeline stalls or dies the last
-//! line printed names the stage responsible - which the app cannot tell you,
-//! because a hang there could equally be synthesis or playback.
-//!
-//! ```bash
-//! cargo run -p fotonvoice-tts --features inflect-micro --example inflect_probe
-//! cargo run -p fotonvoice-tts --features inflect-micro --example inflect_probe -- "custom text"
-//! ```
 
 #[cfg(not(feature = "inflect-micro"))]
 fn main() {
@@ -25,7 +14,6 @@ fn main() {
     use std::io::Write;
     use fotonvoice_tts::inflect::{self, model::InflectModel, phonemes};
 
-    // Unbuffered so a stall leaves the last completed stage on screen.
     macro_rules! step {
         ($($arg:tt)*) => {{
             print!($($arg)*);
@@ -41,7 +29,6 @@ fn main() {
     println!("model dir : {}", dir.display());
     println!("text      : {text:?}\n");
 
-    // -- 1. eSpeak-NG frontend ------------------------------------------------
     step!("[1/6] espeak-ng present ... ");
     if !phonemes::espeak_available() {
         println!("NO");
@@ -61,7 +48,6 @@ fn main() {
     };
     println!("ok\n        IPA: {ipa}");
 
-    // -- 2. Symbol table ------------------------------------------------------
     step!("[3/6] load symbol table ... ");
     let vocab = match phonemes::PhonemeVocab::load(&dir) {
         Ok(Some(v)) => v,
@@ -94,7 +80,6 @@ fn main() {
         encoded.skipped
     );
 
-    // -- 3. ONNX graphs -------------------------------------------------------
     step!("[4/6] load ONNX graphs ... ");
     let mut model = match InflectModel::load(&dir) {
         Ok(m) => m,
@@ -121,9 +106,6 @@ fn main() {
         println!("          out {d}");
     }
 
-    // -- 4. Synthesis ---------------------------------------------------------
-    // This is the step that has never run anywhere; if the pipeline dies, it
-    // almost certainly dies here.
     step!("[5/6] synthesize (this is the untested step) ... ");
     let cfg = fotonvoice_config::InflectMicroConfig::default();
     let audio = match model.synthesize(&text, &cfg, 1.0, cfg.seed) {
@@ -152,9 +134,6 @@ fn main() {
         println!("        WARNING: output is silent - the graphs ran but produced no signal.");
     }
 
-    // -- 5. WAV out -----------------------------------------------------------
-    // Written directly rather than played, so this says whether synthesis works
-    // independently of whether audio playback does.
     step!("[6/6] write WAV ... ");
     let out = std::env::temp_dir().join("inflect_probe.wav");
     match write_wav(&out, &audio, inflect::SAMPLE_RATE) {

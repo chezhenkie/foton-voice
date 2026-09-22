@@ -1,9 +1,4 @@
 //! JSON-RPC 2.0 MCP server over a Unix domain socket (Linux) or a named pipe (Windows).
-//!
-//! Exposed tools:
-//!   - transcribe_voice(timeout_seconds) -> {text}
-//!   - speak_text(text) -> {}
-//!   - get_status() -> {recording, speaking}
 
 #[cfg(not(target_os = "windows"))]
 use std::path::PathBuf;
@@ -18,18 +13,11 @@ use tracing::{debug, info};
 use tracing::warn;
 
 /// Where the MCP server listens, in the form clients need.
-///
-/// The server has always bound the right thing per platform - a Unix socket on
-/// Linux, a named pipe on Windows - but this constant said `/tmp` regardless,
-/// and it is what the app, the README and `docs/architecture.md` quote to the
-/// user when telling an MCP client where to connect. On Windows that address
-/// does not exist.
 #[cfg(target_os = "windows")]
 pub const SOCKET_PATH: &str = r"\\.\pipe\fotonvoice-mcp";
 #[cfg(not(target_os = "windows"))]
 pub const SOCKET_PATH: &str = "/tmp/fotonvoice-mcp.sock";
 
-// -- JSON-RPC types ------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -77,7 +65,6 @@ impl JsonRpcResponse {
     }
 }
 
-// -- App callbacks -------------------------------------------------------------
 
 /// Callbacks that the MCP server uses to interact with the app coordinator.
 pub trait McpCallbacks: Send + Sync + 'static {
@@ -91,14 +78,9 @@ pub trait McpCallbacks: Send + Sync + 'static {
     fn get_status(&self) -> impl std::future::Future<Output = (bool, bool)> + Send;
 
     /// The user's configured recording timeout (Settings -> General -> Record
-    /// timeout), in seconds. Used for `transcribe_voice` whenever the caller
-    /// does not pass an explicit `timeout_seconds`, and advertised as the
-    /// default in the tool schema. Read per call so a change in Settings
-    /// applies without restarting the server.
     fn default_record_timeout(&self) -> impl std::future::Future<Output = f64> + Send;
 }
 
-// -- Server --------------------------------------------------------------------
 
 pub async fn run_server<C: McpCallbacks>(callbacks: Arc<C>) -> Result<()> {
     #[cfg(target_os = "linux")]
@@ -110,7 +92,6 @@ pub async fn run_server<C: McpCallbacks>(callbacks: Arc<C>) -> Result<()> {
     Ok(())
 }
 
-// -- Unix socket server (Linux) ------------------------------------------------
 
 #[cfg(target_os = "linux")]
 async fn run_unix_server<C: McpCallbacks>(callbacks: Arc<C>) -> Result<()> {
@@ -121,8 +102,6 @@ async fn run_unix_server<C: McpCallbacks>(callbacks: Arc<C>) -> Result<()> {
         let _ = std::fs::remove_file(&path);
     }
     let listener = UnixListener::bind(&path)?;
-    // Restrict to the owning user only so other local users cannot
-    // activate the microphone or issue TTS via the MCP socket.
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     info!("MCP server listening on {SOCKET_PATH}");
 
@@ -164,12 +143,9 @@ where
     Ok(())
 }
 
-// -- Windows named pipe server -------------------------------------------------
 
 #[cfg(target_os = "windows")]
 async fn run_named_pipe_server<C: McpCallbacks>(callbacks: Arc<C>) -> Result<()> {
-    // Windows named pipes use the \\.\pipe\ namespace
-    // tokio supports this via tokio::net::windows::named_pipe
     use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
 
     let pipe_name = SOCKET_PATH;
@@ -191,7 +167,6 @@ async fn run_named_pipe_server<C: McpCallbacks>(callbacks: Arc<C>) -> Result<()>
     }
 }
 
-// -- Dispatcher ----------------------------------------------------------------
 
 async fn dispatch<C: McpCallbacks>(raw: &str, cb: &Arc<C>) -> Option<JsonRpcResponse> {
     let req: JsonRpcRequest = match serde_json::from_str(raw) {
@@ -201,7 +176,6 @@ async fn dispatch<C: McpCallbacks>(raw: &str, cb: &Arc<C>) -> Option<JsonRpcResp
 
     let id = req.id.clone();
 
-    // If it's a notification (no id) and NOT initialize, do not return a response
     if id.is_none() && req.method != "initialize" {
         return None;
     }
@@ -246,7 +220,6 @@ async fn dispatch<C: McpCallbacks>(raw: &str, cb: &Arc<C>) -> Option<JsonRpcResp
     Some(response)
 }
 
-// -- Tool List Definition ------------------------------------------------------
 
 fn get_tool_list(default_record_timeout: f64) -> Value {
     json!({
@@ -290,7 +263,6 @@ fn get_tool_list(default_record_timeout: f64) -> Value {
     })
 }
 
-// -- Tool Call Execution -------------------------------------------------------
 
 async fn call_tool<C: McpCallbacks>(name: &str, args: Option<&Value>, cb: &Arc<C>) -> Result<Value> {
     match name {
@@ -353,8 +325,6 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Records the timeout `transcribe_voice` was actually called with, and
-    /// reports a configured default distinguishable from the old hard-coded
-    /// 15.0 so a regression cannot pass by coincidence.
     struct FakeApp {
         configured_timeout: f64,
         /// Last timeout seen by `transcribe_voice`, as f64 bits.

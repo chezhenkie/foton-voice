@@ -1,14 +1,4 @@
 //! Global shortcuts via `org.freedesktop.portal.GlobalShortcuts`.
-//!
-//! This is the backend FotonVoice Engine wants to run on. The compositor owns the key
-//! grab and hands back nothing but "your shortcut fired" - FotonVoice Engine never reads
-//! a keyboard device, never sees a keystroke it did not register, and needs no
-//! permission setup at all. Compare the evdev backend, which can only work by
-//! reading every key the user types, system-wide, into this process.
-//!
-//! Availability is the trade-off: the portal interface needs a compositor that
-//! implements it (KDE Plasma, GNOME 48+, Hyprland). Where it is missing,
-//! `start` reports why and the caller falls back.
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
@@ -44,11 +34,6 @@ impl std::fmt::Display for PortalError {
 }
 
 /// One system shortcut, shared by every binding that listens on the same keys.
-///
-/// Registering per binding instead would ask the compositor to bind one
-/// accelerator twice - which it is entitled to refuse - and would break the
-/// `double_tap` / `double_tap_hold` pairing that depends on both gestures
-/// seeing the same press.
 #[derive(Clone)]
 struct ShortcutGroup {
     id: String,
@@ -56,9 +41,6 @@ struct ShortcutGroup {
     trigger: Option<String>,
     binding_ids: Vec<String>,
     /// This shortcut is only registered for as long as FotonVoice Engine needs it - the
-    /// TTS stop key on bare Escape. It lives in its own portal session, so
-    /// taking it and giving it back never disturbs the session holding the
-    /// dictation shortcuts.
     transient: bool,
 }
 
@@ -67,10 +49,6 @@ fn group_bindings(bindings: &[HotkeyBinding]) -> Vec<ShortcutGroup> {
     let mut groups: HashMap<String, ShortcutGroup> = HashMap::new();
 
     for b in bindings.iter().filter(|b| !b.disabled && !b.keys.is_empty()) {
-        // Only the app's own stop-key binding may be held transiently. A user
-        // who binds dictation to bare Escape shares this group with it, and
-        // their binding is a standing one - so the group is too, and the stop
-        // key rides along on a registration that is never given back.
         let transient =
             crate::trigger::is_reserved_for_the_desktop(&b.keys) && b.id == TTS_STOP_BINDING_ID;
         let signature = b.trigger_signature();
@@ -103,8 +81,6 @@ fn group_bindings(bindings: &[HotkeyBinding]) -> Vec<ShortcutGroup> {
 }
 
 /// Portal shortcut ids must be stable across restarts - the compositor keys the
-/// user's chosen binding off them - and may not contain the separators the
-/// portal uses in object paths.
 fn shortcut_id(signature: &str) -> String {
     let slug: String = signature
         .to_ascii_lowercase()
@@ -115,15 +91,6 @@ fn shortcut_id(signature: &str) -> String {
 }
 
 /// Shortcut ids FotonVoice Engine binds only while it is speaking.
-///
-/// A reserved key (bare Escape) is registered when playback starts and dropped
-/// again a moment after it ends, so the rest of the desktop keeps the key. That
-/// makes it *absent* from the registered set for most of the session, and
-/// `sync_kde_shortcuts` must not read that absence as "the user deleted this
-/// binding": KDE stores the user's enabled tick against the shortcut id, and
-/// pruning the id would throw it away - so the next arm would register a fresh
-/// shortcut, disabled by default (bugs.kde.org #483639), and the stop key would
-/// never fire again.
 fn transient_shortcut_ids() -> std::collections::HashSet<String> {
     crate::trigger::RESERVED_KEYS
         .iter()
@@ -132,31 +99,9 @@ fn transient_shortcut_ids() -> std::collections::HashSet<String> {
 }
 
 /// The application id FotonVoice Engine declares to the desktop.
-///
-/// Matches the Tauri bundle identifier, the `StartupWMClass` in the desktop
-/// entry, and the installed `ai.fotonvoice.engine.desktop` file - which is how the
-/// desktop's own shortcut settings find a human-readable name and icon for the
-/// shortcuts registered below, instead of showing a bare D-Bus address.
 pub const APP_ID: &str = "ai.fotonvoice.engine";
 
 /// Tell xdg-desktop-portal who we are, before asking it for anything.
-///
-/// A sandboxed app gets an application id from its sandbox. A normal app on the
-/// host has none, and since xdg-desktop-portal 1.20 it is expected to declare
-/// one through `org.freedesktop.host.portal.Registry`. From 1.21 the
-/// GlobalShortcuts portal refuses a session outright without one - that is
-/// exactly the `org.freedesktop.portal.Error.NotAllowed: An app id is required`
-/// a current KDE session reports.
-///
-/// Order matters, and is the whole reason this runs before the shortcuts proxy
-/// is built: registration is allowed **once per D-Bus connection** and only
-/// **before the first portal call** on it. ashpd shares one connection across
-/// every portal it opens, so anything that touches a portal first can spend
-/// that one chance. `register_host_app` no-ops inside a sandbox, where the id
-/// already comes from elsewhere.
-///
-/// Returns what happened, in the user's words, so a failure is visible in the
-/// setup window instead of only in a log nobody reads.
 async fn register_host_app_id() -> Result<(), String> {
     let app_id = match ashpd::AppID::try_from(APP_ID) {
         Ok(id) => id,
@@ -168,10 +113,6 @@ async fn register_host_app_id() -> Result<(), String> {
             tracing::debug!("Declared `{APP_ID}` to the desktop portal");
             Ok(())
         }
-        // A portal older than 1.20 does not serve this interface, and does not
-        // need it: it derives the id from the process's systemd scope. The
-        // registry is documented as something that may be removed again, so a
-        // missing interface has to stay non-fatal.
         Err(ashpd::Error::PortalNotFound(_)) => {
             tracing::debug!(
                 "This xdg-desktop-portal has no host app registry; it predates the app-id \
@@ -184,16 +125,12 @@ async fn register_host_app_id() -> Result<(), String> {
 }
 
 /// Bring up a portal session and start dispatching shortcuts into `tx`.
-///
-/// Returns once the session is bound; the listening loop runs on a spawned
-/// task for the life of the process.
 pub async fn start(
     bindings: Vec<HotkeyBinding>,
     tx: GestureSender,
     rx_reload: ReloaderReceiver,
     health: Arc<ListenerHealth>,
 ) -> Result<(), PortalError> {
-    // Before the first portal call of any kind - see `register_host_app_id`.
     let registration = register_host_app_id().await;
 
     let portal = GlobalShortcuts::new()
@@ -205,18 +142,10 @@ pub async fn start(
         .await
         .map_err(|e| session_error(e, &registration))?;
 
-    // The standing shortcuts - everything but a transiently-held stop key - are
-    // what this session carries, and it is never rebuilt for the stop key's
-    // sake. That separation is the point: re-registering these ids under a new
-    // session, then closing the old one, is what left the compositor with no
-    // working dictation shortcut at all.
     let (groups, transient_groups) = split_groups(group_bindings(&bindings));
     let known = [groups.clone(), transient_groups.clone()].concat();
     let bound = bind_groups(&portal, &session, &groups, Some(&known)).await?;
     health.set_bound_shortcuts(bound);
-    // Claimed here rather than by the caller after the await: the listener task
-    // below can fail immediately, and a late `set_backend(Portal)` racing that
-    // failure would report a dead session as healthy.
     health.set_backend(crate::Backend::Portal);
 
     tracing::info!(
@@ -242,10 +171,6 @@ pub async fn start(
 }
 
 /// Turn a refused session into something the user can act on.
-///
-/// The app-id case is worth separating: it is not "your desktop has no portal",
-/// and whether FotonVoice Engine managed to declare an id decides whether the next step is
-/// "update xdg-desktop-portal" or "here is why the declaration failed".
 fn session_error(e: ashpd::Error, registration: &Result<(), String>) -> PortalError {
     let message = format!("{e}");
     if !message.contains("app id") {
@@ -264,20 +189,12 @@ fn session_error(e: ashpd::Error, registration: &Result<(), String>) -> PortalEr
 }
 
 /// Register `groups` on `session`.
-///
-/// `known` is every group FotonVoice Engine currently has across all of its sessions, and
-/// only matters for the KDE housekeeping: pruning is keyed on "an id FotonVoice Engine no
-/// longer uses", so it has to see the whole picture rather than the subset this
-/// session happens to carry. Pass `None` to skip that housekeeping entirely -
-/// arming the stop key changes no user-visible binding, and rewriting the user's
-/// shortcut store every time FotonVoice Engine speaks would be pure churn.
 async fn bind_groups(
     portal: &GlobalShortcuts,
     session: &Session<GlobalShortcuts>,
     groups: &[ShortcutGroup],
     known: Option<&[ShortcutGroup]>,
 ) -> Result<Vec<BoundShortcut>, PortalError> {
-    // Sync shortcut names in KDE settings and unregister any deleted shortcuts.
     if let Some(known) = known {
         sync_kde_shortcuts(known).await;
     }
@@ -307,13 +224,6 @@ async fn bind_groups(
 }
 
 /// Query KDE's KGlobalAccel over D-Bus to unregister deleted shortcuts, and
-/// synchronize display names in `~/.config/kglobalshortcutsrc` for renamed shortcuts.
-///
-/// xdg-desktop-portal-kde persists registered global shortcuts in KDE's
-/// KGlobalAccel (and `~/.config/kglobalshortcutsrc`), but does not clean them
-/// up or update their display names when an application stops requesting or renames
-/// them. Pruning deleted shortcuts and syncing descriptions ensures that KDE's shortcut
-/// settings stay in sync with FotonVoice Engine's configured bindings, labels, and names.
 async fn sync_kde_shortcuts(groups: &[ShortcutGroup]) {
     let transient = transient_shortcut_ids();
     let group_details: std::collections::HashMap<&str, (&str, Option<&str>)> = groups
@@ -321,7 +231,6 @@ async fn sync_kde_shortcuts(groups: &[ShortcutGroup]) {
         .map(|g| (g.id.as_str(), (g.description.as_str(), g.trigger.as_deref())))
         .collect();
 
-    // 1. Unregister deleted shortcuts over D-Bus from KGlobalAccel
     if let Ok(connection) = zbus::Connection::session().await {
         if let Ok(proxy) = zbus::Proxy::new(
             &connection,
@@ -380,7 +289,6 @@ async fn sync_kde_shortcuts(groups: &[ShortcutGroup]) {
         }
     }
 
-    // 2. Synchronize descriptions in ~/.config/kglobalshortcutsrc
     update_kglobalshortcutsrc(&group_details, &transient).await;
 }
 
@@ -459,12 +367,8 @@ async fn update_kglobalshortcutsrc(
                         new_lines.push(format!("{key}={val},{expected_desc}"));
                     }
                 } else if transient.contains(key) {
-                    // Bound only while FotonVoice Engine speaks. Keep the line exactly as
-                    // it is: it carries the key the user assigned and whether
-                    // they enabled it, and the next arm needs both.
                     new_lines.push(line.to_string());
                 } else {
-                    // Stale or deleted shortcut - omit from file
                     tracing::debug!("Removing stale shortcut `{key}` from kglobalshortcutsrc");
                 }
                 continue;
@@ -483,14 +387,11 @@ async fn update_kglobalshortcutsrc(
 }
 
 /// Split the registered groups into the ones held for the session and the ones
-/// FotonVoice Engine only holds while it needs them.
 fn split_groups(groups: Vec<ShortcutGroup>) -> (Vec<ShortcutGroup>, Vec<ShortcutGroup>) {
     groups.into_iter().partition(|g| !g.transient)
 }
 
 /// Do these two sets ask the compositor for the same thing? Ids, names and
-/// triggers are what a registration carries; anything else changed in a binding
-/// is the gesture engine's business, not the portal's.
 fn same_groups(a: &[ShortcutGroup], b: &[ShortcutGroup]) -> bool {
     a.len() == b.len()
         && a.iter().zip(b.iter()).all(|(a, b)| {
@@ -511,11 +412,6 @@ fn shortcut_map(
 }
 
 /// A fresh session carrying `groups`, or the reason there is not one.
-///
-/// The caller closes whatever the new session replaces - and, for a set of ids
-/// that is moving between sessions, closes it *first*: two sessions registering
-/// the same id under the same app id, one of them then closing, is how a
-/// desktop ends up holding neither.
 async fn rebind(
     portal: &GlobalShortcuts,
     groups: &[ShortcutGroup],
@@ -535,7 +431,6 @@ async fn rebind(
 }
 
 /// What the compositor actually bound, so the UI can show the real shortcut
-/// rather than the one FotonVoice Engine asked for.
 fn describe(groups: &[ShortcutGroup], shortcuts: &[Shortcut]) -> Vec<BoundShortcut> {
     groups
         .iter()
@@ -565,12 +460,8 @@ async fn run(
     health: Arc<ListenerHealth>,
 ) {
     let mut engine = GestureEngine::new(bindings);
-    // Transient shortcuts get their own session so arming and releasing them
-    // leaves the standing one - the dictation shortcuts - untouched.
     let mut transient_session: Option<Session<GlobalShortcuts>> = None;
     if !transient_groups.is_empty() {
-        // Only reachable when the listener starts while FotonVoice Engine is already
-        // speaking, which the "Approve shortcuts" button can do.
         match rebind(&portal, &transient_groups, None).await {
             Ok((session, _)) => transient_session = Some(session),
             Err(e) => tracing::warn!("Could not register the stop key: {e}"),
@@ -593,10 +484,6 @@ async fn run(
 
     loop {
         tokio::select! {
-            // Matched as Option rather than `Some(..) = ..` on purpose: a
-            // stream that ends means the portal session is gone, and a pattern
-            // guard would silently disable the branch and leave the loop
-            // spinning on the reload poll while reporting itself healthy.
             event = activated.next() => {
                 let Some(event) = event else { break };
                 match by_shortcut.get(event.shortcut_id()) {
@@ -610,9 +497,6 @@ async fn run(
                             engine.apply(id, Transition::Activated, &tx);
                         }
                     }
-                    // The compositor is delivering a shortcut FotonVoice Engine no longer
-                    // knows about - worth saying, because the mirror image
-                    // (a shortcut that stops arriving) looks identical from here.
                     None => tracing::debug!(
                         "portal hotkeys: `{}` fired but matches no binding",
                         event.shortcut_id()
@@ -628,18 +512,11 @@ async fn run(
                             event.shortcut_id(),
                             ids.join(", ")
                         );
-                        // A portal shortcut is atomic: there is no partial release
-                        // to distinguish, so the combo ending and every key being
-                        // up are the same moment.
                         for id in ids {
                             engine.apply(id, Transition::Deactivated, &tx);
                             engine.apply(id, Transition::Released, &tx);
                         }
                     }
-                    // Mirrors the `activated` branch's logging: a `Deactivated`
-                    // for a shortcut still held active would otherwise look
-                    // identical to one that simply never arrives (see
-                    // `gestures::STUCK_HOLD_MAX` for what covers the latter).
                     None => tracing::debug!(
                         "portal hotkeys: `{}` released but matches no binding",
                         event.shortcut_id()
@@ -648,7 +525,6 @@ async fn run(
             }
             event = changed.next() => {
                 let Some(event) = event else { break };
-                // The user re-assigned a shortcut in the desktop's settings.
                 let known = [groups.clone(), transient_groups.clone()].concat();
                 health.set_bound_shortcuts(describe(&known, event.shortcuts()));
             }
@@ -656,11 +532,6 @@ async fn run(
                 let Some(new_bindings) = new_bindings else { break };
                 tracing::info!("portal hotkeys: reloading {} bindings", new_bindings.len());
                 if new_bindings.is_empty() {
-                    // Nothing upstream should ever send this: it would ask the
-                    // compositor to forget every shortcut FotonVoice Engine has, and only
-                    // a restart would bring them back. Refusing costs nothing -
-                    // a genuine "no shortcuts" state is indistinguishable from a
-                    // failed read, and the second is the likely one.
                     tracing::warn!(
                         "portal hotkeys: ignoring an empty binding set; keeping the \
                          shortcuts already registered"
@@ -677,14 +548,7 @@ async fn run(
                 transient_groups = new_transient;
                 by_shortcut = shortcut_map(&groups, &transient_groups);
 
-                // A stop key going up or down must not touch the session that
-                // holds the dictation shortcuts. Re-registering those ids under
-                // a second session and then closing the first is what left a
-                // compositor with no working shortcut at all once playback had
-                // been cancelled once.
                 if standing_changed {
-                    // Sessions allow `bind_shortcuts` exactly once, so a real
-                    // change to the user's bindings needs a new one.
                     tracing::info!(
                         "portal hotkeys: the standing shortcuts changed ({} now), \
                          re-creating their session",
@@ -710,10 +574,6 @@ async fn run(
                 }
 
                 if transient_changed {
-                    // Close first: the old session and the new one would be
-                    // registering the same shortcut id under the same app id,
-                    // and closing the loser afterwards takes the winner's
-                    // registration with it on at least one desktop.
                     if let Some(old) = transient_session.take() {
                         let _ = old.close().await;
                     }
@@ -723,9 +583,6 @@ async fn run(
                              was not touched"
                         );
                     } else {
-                        // No KDE housekeeping here: nothing the user configured
-                        // has changed, and rewriting their shortcut store every
-                        // time FotonVoice Engine speaks would be pure churn.
                         match rebind(&portal, &transient_groups, None).await {
                             Ok((session, bound)) => {
                                 transient_session = Some(session);
@@ -747,8 +604,6 @@ async fn run(
         }
     }
 
-    // Losing the session means no shortcut can arrive again, and anything held
-    // at that moment would otherwise record until the safety timeout.
     engine.reset(&tx);
     health.set_backend_failed("the portal session ended".to_string());
     tracing::warn!("Portal shortcut session ended; global hotkeys are inactive");
@@ -794,8 +649,6 @@ mod tests {
 
     #[test]
     fn bindings_sharing_keys_share_one_system_shortcut() {
-        // Both gestures must see the same press, and the compositor must not be
-        // asked to bind one accelerator twice.
         let groups = group_bindings(&[
             binding("tap", &["KEY_LEFTMETA"], GestureType::DoubleTap),
             binding("hold", &["KEY_LEFTMETA"], GestureType::DoubleTapHold),
@@ -818,9 +671,6 @@ mod tests {
 
     #[test]
     fn a_reserved_key_is_registered_like_any_other_when_it_is_handed_over() {
-        // Arming is the app's call, not the portal's: when the stop binding is
-        // in the list the compositor is asked for it, and when the app drops it
-        // for the idle stretches the group simply is not there.
         let stop = binding("__tts_stop__", &["KEY_ESC"], GestureType::Hold);
         let groups = group_bindings(std::slice::from_ref(&stop));
         assert_eq!(groups.len(), 1);
@@ -831,11 +681,6 @@ mod tests {
 
     #[test]
     fn a_transiently_bound_shortcut_is_never_pruned_from_kdes_store() {
-        // KDE keys the user's "enabled" tick to the shortcut id. Escape is
-        // absent from the registered set for most of a session - it is bound
-        // only while FotonVoice Engine speaks - and treating that absence as a deleted
-        // binding would discard the tick, so the next arm would register a
-        // fresh, disabled shortcut (bugs.kde.org #483639) that never fires.
         let ids = transient_shortcut_ids();
         for spelling in ["KEY_ESC", "KEY_ESCAPE"] {
             let id = group_bindings(&[binding("s", &[spelling], GestureType::Hold)])[0]
@@ -847,8 +692,6 @@ mod tests {
             );
         }
 
-        // And the protection is exactly that wide: an ordinary shortcut the
-        // user really did delete still gets cleaned up.
         let ordinary = group_bindings(&[binding(
             "d",
             &["KEY_LEFTMETA", "KEY_SPACE"],
@@ -861,11 +704,6 @@ mod tests {
 
     #[test]
     fn the_stop_key_is_split_away_from_the_shortcuts_that_stay_registered() {
-        // The regression this exists for: arming and releasing the stop key
-        // used to rebuild the one session that also held the dictation
-        // shortcuts - re-registering their ids under a new session and closing
-        // the old one - and after the first release the compositor fired none
-        // of them. The two now live in separate sessions.
         let (standing, transient) = split_groups(group_bindings(&[
             binding("dictate", &["KEY_LEFTMETA", "KEY_SPACE"], GestureType::Hold),
             binding("__tts_stop__", &["KEY_ESC"], GestureType::Hold),
@@ -877,8 +715,6 @@ mod tests {
         assert_eq!(transient[0].binding_ids, vec!["__tts_stop__"]);
         assert_eq!(transient[0].trigger.as_deref(), Some("Escape"));
 
-        // Both still reach the gesture engine: whichever session delivers the
-        // activation, it is looked up by shortcut id.
         let map = shortcut_map(&standing, &transient);
         assert_eq!(map.len(), 2);
         assert!(map.values().any(|ids| ids == &vec!["__tts_stop__".to_string()]));
@@ -886,9 +722,6 @@ mod tests {
 
     #[test]
     fn arming_the_stop_key_leaves_the_standing_shortcuts_alone() {
-        // What the reload compares. Adding or dropping the stop key must not
-        // read as a change to the standing set, or the session holding the
-        // user's dictation shortcuts would be rebuilt for it after all.
         let dictate = binding("dictate", &["KEY_LEFTMETA", "KEY_SPACE"], GestureType::Hold);
         let stop = binding("__tts_stop__", &["KEY_ESC"], GestureType::Hold);
 
@@ -902,11 +735,6 @@ mod tests {
 
     #[test]
     fn a_dictation_binding_on_escape_keeps_its_standing_registration() {
-        // Only FotonVoice Engine's own stop key is held transiently. A user who chose
-        // Escape to start dictation means it, and a shortcut that worked only
-        // while FotonVoice Engine happened to be speaking would be worse than the grab
-        // they were warned about - so the shared group stays standing and the
-        // stop key rides along on it.
         let mut mine = binding("__tts_stop__", &["KEY_ESC"], GestureType::Hold);
         mine.id = "__tts_stop__".to_string();
         let theirs = binding("dictate-on-escape", &["KEY_ESC"], GestureType::Hold);
