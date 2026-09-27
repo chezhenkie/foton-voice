@@ -1,0 +1,69 @@
+name: cache-cleanup
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    # Only gh api calls; a hang means something is wrong with the token, not
+    # that the job needs more time.
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Fetch caches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/${{ github.repository }}/actions/caches" \
+            --jq '.actions_caches[] | [.id, .key, .ref, .created_at, (.last_accessed_at // .created_at)] | @tsv' > caches.txt
+          wc -l < caches.txt
+
+      - name: Delete branch caches older than 7 days
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          cutoff=$(date -u -d "7 days ago" +%s)
+          while IFS=$'\t' read -r id key ref created accessed; do
+            if [ "$ref" != "$DEFAULT_REF" ]; then
+              t=$(date -u -d "$accessed" +%s)
+              if [ "$t" -lt "$cutoff" ]; then
+                gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" > /dev/null 2>&1 || true
+                echo "deleted branch cache $id ($key)"
+              fi
+            fi
+          done < caches.txt
+
+      - name: Delete default branch caches except newest per key-prefix
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          awk -F'\t' -v ref="$DEFAULT_REF" '$3 == ref { print }' caches.txt > main.txt
+          declare -A best bestid
+          while IFS=$'\t' read -r id key ref created accessed; do
+            prefix=${key%-*}
+            if [ "$created" \> "${best[$prefix]}" ] 2>/dev/null || [ -z "${best[$prefix]}" ]; then
+              best[$prefix]=$created
+              bestid[$prefix]=$id
+            fi
+          done < main.txt
+          while IFS=$'\t' read -r id key ref created accessed; do
+            prefix=${key%-*}
+            if [ "$id" != "${bestid[$prefix]}" ]; then
+              gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" > /dev/null 2>&1 || true
+              echo "deleted stale default branch cache $id ($key)"
+            fi
+          done < main.txt
