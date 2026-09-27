@@ -233,3 +233,5 @@ jobs:
         with:
           name: fotonvoice-linux-vulkan
           path: fotonvoice-src/fotonvoice-engine-0.5.8/upload/
+          # 500 MB account quota: two weeks is enough for a manual download.
+          retention-days: 14

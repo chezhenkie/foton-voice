@@ -49,3 +49,5 @@ jobs:
         with:
           name: fotonvoice-msvc-webgpu
           path: fotonvoice-src/fotonvoice-engine-0.5.8/publish/
+          # 500 MB account quota: two weeks is enough for a manual download.
+          retention-days: 14
