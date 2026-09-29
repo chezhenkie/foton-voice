@@ -71,34 +71,6 @@
     let unsubscribeLoaded: () => void;
     unsubscribeLoaded = configLoaded.subscribe((loaded) => {
       if (loaded) {
-        const cfg = $config;
-        if (cfg && cfg.engine && cfg.engine.whisper_cpp) {
-          const modelSize = cfg.engine.whisper_cpp.model_size;
-          if (cfg.engine.backend === "whisper-cpp") {
-            invoke<boolean>("check_model_downloaded", {
-              modelSize,
-              modelDir: cfg.engine.whisper_cpp.model_dir || "",
-            })
-              .then(async (isDownloaded) => {
-                if (!isDownloaded) {
-                  activeTab = "engine";
-                  if (cfg?.ui?.auto_show_settings) {
-                    try {
-                      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                      const currentWin = getCurrentWindow();
-                      await currentWin.show();
-                      await currentWin.setFocus();
-                    } catch (winErr) {
-                      console.error("Failed to programmatically show settings window on startup:", winErr);
-                    }
-                  }
-                }
-              })
-              .catch((e) => {
-                console.error("Failed to check model download status on startup:", e);
-              });
-          }
-        }
         if (unsubscribeLoaded) {
           unsubscribeLoaded();
         } else {

@@ -3,25 +3,10 @@ use fotonvoice_inference::moonshine;
 #[cfg(feature = "nemotron-streaming")]
 use fotonvoice_inference::nemotron_streaming;
 
-#[tauri::command]
-pub async fn check_model_downloaded(model_size: String, model_dir: Option<String>) -> Result<bool, String> {
-    let dir = model_dir.unwrap_or_default();
-    Ok(fotonvoice_inference::whisper_cpp::is_model_downloaded(&model_size, &dir))
-}
-
-#[tauri::command]
-pub async fn download_model(model_size: String, model_dir: String) -> Result<(), String> {
-    fotonvoice_inference::whisper_cpp::download_model(&model_size, &model_dir)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Delete the whisper.cpp GGUF file(s) for `model_size`.
-#[tauri::command]
-pub async fn delete_model(model_size: String, model_dir: String) -> Result<(), String> {
-    fotonvoice_inference::whisper_cpp::delete_model(&model_size, &model_dir)
-        .map_err(|e| e.to_string())
-}
+// whisper.cpp model commands (check_model_downloaded / download_model /
+// delete_model) removed 2026-09-29 with the whisper deactivation: no UI entry,
+// no downloads, no runs. The whisper_cpp module stays compiled in for the
+// future GGUF lane.
 
 /// One set of check/download/delete commands per in-process ONNX STT backend.
 /// The three commands differ only in the feature gate, module path and the

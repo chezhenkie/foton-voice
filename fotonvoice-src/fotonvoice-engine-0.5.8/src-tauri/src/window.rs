@@ -297,6 +297,12 @@ pub async fn setup_blocker(state: &Arc<AppState>) -> Option<String> {
 
     let cfg = state.config.lock().await;
     let eng = &cfg.data.engine;
+    if eng.backend == fotonvoice_config::BackendChoice::WhisperCpp {
+        return Some(
+            "Whisper.cpp is deactivated in this version. Open Settings -> Engine and pick another backend."
+                .to_string(),
+        );
+    }
     let uses_whisper_model = eng.backend != fotonvoice_config::BackendChoice::RemoteOpenAi
         && (eng.backend != fotonvoice_config::BackendChoice::Moonshine
             || !fotonvoice_inference::MOONSHINE_COMPILED)

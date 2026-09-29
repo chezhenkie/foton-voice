@@ -181,7 +181,6 @@ use fotonvoice_config::{AppConfig, BackendChoice};
 
 use backend::{TranscribeRequest, TranscriptionBackend, TranscriptionResult};
 use postprocess::{run_pipeline, PostProcessConfig, is_silence_hallucination};
-use whisper_cpp::WhisperCppBackend;
 
 
 pub type AudioChunk = Vec<f32>;
@@ -487,8 +486,17 @@ impl InferenceEngine {
 
 fn build_backend(config: &AppConfig) -> Box<dyn TranscriptionBackend> {
     match config.engine.backend {
+        // Product decision 2026-09-29: whisper.cpp stays compiled in as the
+        // future GGUF lane but is deactivated - no UI entry, no downloads, no
+        // runs. Legacy configs carrying backend "whisper-cpp" get a loud error.
         BackendChoice::WhisperCpp => {
-            Box::new(WhisperCppBackend::new(config.engine.whisper_cpp.clone()))
+            error!(
+                "Whisper.cpp backend is deactivated in this version. Open Settings -> Engine and pick another backend."
+            );
+            Box::new(unavailable_backend(
+                "Whisper.cpp (deactivated)",
+                "whisper-cpp",
+            ))
         }
         BackendChoice::Moonshine => {
             #[cfg(feature = "moonshine")]

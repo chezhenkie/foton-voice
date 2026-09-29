@@ -272,6 +272,7 @@ pub fn auto_download_speech_model_if_needed(
 
     let show_settings = cfg_data.ui.auto_show_settings;
     let uses_whisper_model = cfg_data.engine.backend != fotonvoice_config::BackendChoice::RemoteOpenAi
+        && cfg_data.engine.backend != fotonvoice_config::BackendChoice::WhisperCpp
         && (cfg_data.engine.backend != fotonvoice_config::BackendChoice::Moonshine
             || !fotonvoice_inference::MOONSHINE_COMPILED)
         && (cfg_data.engine.backend != fotonvoice_config::BackendChoice::NemotronStreaming

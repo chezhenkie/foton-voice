@@ -13,7 +13,7 @@ FotonVoice Engine acts as an intelligent desktop voice gateway, routing speech t
 ## * Key Features
 
 * **High-Performance Offline Speech Recognition**:
-  * **whisper.cpp**: Native local inference via `whisper-rs` (GGUF models) with Vulkan/CUDA GPU compute and CPU fallback.
+  * **whisper.cpp**: GGUF lane compiled in but deactivated - no UI entry, no downloads, no runs (product decision 2026-09-29).
   * **Moonshine**: Streaming ONNX speech recognition with WebGPU Direct3D 12 acceleration on Windows and CPU execution on Linux.
   * **Nemotron Streaming**: Cache-aware streaming transcription via NVIDIA Nemotron Speech ONNX models with true incremental decoding.
   * **Remote Speech Engine**: Offload transcription to any OpenAI-compatible `/v1/audio/transcriptions` network endpoint (Faster-Whisper, vLLM, Whisper standalone, or cloud APIs) with zero local RAM/VRAM overhead.
@@ -73,7 +73,7 @@ FotonVoice Engine is designed with strict modularity, memory isolation, and high
 | **`fotonvoice-app`** | Tauri 2 application shell, Svelte IPC commands, system tray, and window management. |
 | **`fotonvoice-core`** | Shared domain types, audio buffer representations, and engine traits. |
 | **`fotonvoice-audio`** | `cpal` audio input stream, ring buffers, device enumeration, VAD, and RNNoise. |
-| **`fotonvoice-inference`** | Multi-engine STT runner (`whisper.cpp`, `Moonshine`, `Nemotron Streaming`, and remote HTTP). |
+| **`fotonvoice-inference`** | Multi-engine STT runner (`Moonshine`, `Nemotron Streaming`, remote HTTP; whisper.cpp GGUF lane compiled in but deactivated). |
 | **`fotonvoice-llm-sidecar`** | Independent companion process running `llama.cpp` (`llama_cpp_2`) with Vulkan GPU offload and CPU fallback for S1-mini text cleanup. |
 | **`fotonvoice-llm`** | IPC client communicating with `fotonvoice-llm-sidecar` and external OpenAI-compatible LLM endpoints. |
 | **`fotonvoice-routing`** | 11-way delivery router, voice command prefix matcher, and multi-target dispatch. |
@@ -278,7 +278,7 @@ For in-depth guides, architectural references, and developer documentation:
 | Guide | Description |
 | :--- | :--- |
 | **[Architecture](docs/architecture.md)** | Workspace crate design, concurrency model, and data flow. |
-| **[Speech Recognition](docs/speech-recognition.md)** | Whisper.cpp, Moonshine, Nemotron Streaming, Remote STT, and S1-mini sidecar. |
+| **[Speech Recognition](docs/speech-recognition.md)** | Moonshine, Nemotron Streaming, Remote STT, and S1-mini sidecar (whisper.cpp deactivated). |
 | **[Output Routing](docs/routing.md)** | Comprehensive reference for all 11 delivery mechanisms. |
 | **[Text-to-Speech](docs/tts.md)** | Engine setup, voice cloning, prompt design, and on-demand memory. |
 | **[Global Hotkeys](docs/hotkeys.md)** | XDG portal shortcuts, gesture recognizer, and platform details. |

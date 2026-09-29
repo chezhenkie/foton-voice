@@ -14,21 +14,6 @@
     configDirty.set(true);
   }
 
-  const MODEL_SIZES = [
-    "small",
-    "small.en",
-    "medium",
-    "medium.en",
-    "large-v3",
-    "large-v3-turbo",
-    "small-q8",
-    "small.en-q8",
-    "medium-q8",
-    "medium.en-q8",
-    "large-v3-turbo-q8",
-  ];
-
-  let whisperGpu = $state<string | null>(null);
   let moonshineGpu = $state<string | null>(null);
   let nemotronStreamingGpu = $state<string | null>(null);
 
@@ -56,19 +41,6 @@
     { value: "remote-openai", label: "Remote Speech Engine (OpenAI API)" },
   ]);
 
-  let whisperModelSizeOptions = $derived(
-    MODEL_SIZES.map(s => ({
-      value: s,
-      label: `${s}${s.endsWith("-q8") ? "" : " q5"}${whisperModels.downloaded[s] ? " +" : ""}`
-    }))
-  );
-
-  let deviceOptions = $derived([
-    { value: "auto", label: whisperGpu ? `Auto (${gpuLabel(whisperGpu)})` : "Auto" },
-    ...(whisperGpu ? [{ value: whisperGpu, label: gpuLabel(whisperGpu) }] : []),
-    { value: "cpu", label: "CPU" },
-  ]);
-
   const moonshineModelSizeOptions = [
     { value: "base", label: "Base" },
     { value: "tiny", label: "Tiny" }
@@ -78,21 +50,6 @@
     { value: "fp16", label: "FP16 (~1.2 GB, GPU-accel)" },
     { value: "int8-static", label: "INT8 static (~876 MB, CUDA / CPU)" }
   ];
-
-  const whisperModels = createModelManager({
-    sizes: MODEL_SIZES,
-    check: (size) =>
-      invoke<boolean>("check_model_downloaded", {
-        modelSize: size,
-        modelDir: cfg.engine.whisper_cpp.model_dir,
-      }),
-    download: (size) =>
-      invoke("download_model", { modelSize: size, modelDir: cfg.engine.whisper_cpp.model_dir }),
-    remove: (size) =>
-      invoke("delete_model", { modelSize: size, modelDir: cfg.engine.whisper_cpp.model_dir }),
-  });
-
-  let modelDirError = $state<string | null>(null);
 
   let moonshineAvailable = $state(true);
   const moonshineModels = createModelManager({
@@ -170,38 +127,7 @@
     await nemotronModels.verify(cfg.engine.nemotron_streaming.model_size);
   }
 
-  async function onModelChanged() {
-    markDirty();
-    await whisperModels.verify(cfg.engine.whisper_cpp.model_size);
-  }
-
-  async function validateModelDir() {
-    const path = cfg.engine.whisper_cpp.model_dir;
-    if (!path) {
-      modelDirError = null;
-      return;
-    }
-    const exists = await invoke<boolean>("check_directory_exists", { path });
-    modelDirError = exists
-      ? null
-      : "This folder does not exist. Please create it first or leave blank for the default location.";
-    if (!modelDirError) {
-      await whisperModels.refreshAll();
-    }
-  }
-
-  function onModelDirChange() {
-    markDirty();
-  }
-
-  function onModelDirKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      (e.currentTarget as HTMLInputElement).blur();
-    }
-  }
-
   onMount(async () => {
-    whisperModels.refreshAll();
     try {
       moonshineAvailable = await invoke<boolean>("moonshine_available");
     } catch (e) {
@@ -216,13 +142,11 @@
     nemotronModels.refreshAll();
     try {
       const support = await invoke<{
-        whisper_gpu: string | null;
         moonshine_gpu: string | null;
         nemotron_streaming_gpu: string | null;
         nemotron_streaming_gpu_present: boolean;
         s1_mini_gpu: string | null;
       }>("accelerator_support");
-      whisperGpu = support.whisper_gpu ?? null;
       moonshineGpu = support.moonshine_gpu ?? null;
       nemotronStreamingGpu = support.nemotron_streaming_gpu ?? null;
       nemotronGpuPresent = support.nemotron_streaming_gpu_present;
@@ -232,11 +156,6 @@
       }
     } catch (e) {
       console.error("Failed to query GPU support", e);
-    }
-    const device = cfg.engine.whisper_cpp.device;
-    if (device !== "auto" && device !== "cpu" && device !== whisperGpu) {
-      cfg.engine.whisper_cpp.device = "auto";
-      markDirty();
     }
   });
 </script>
@@ -254,61 +173,10 @@
 
   {#if cfg.engine.backend === "whisper-cpp"}
     <div class="field-group">
-      <h3>Whisper.cpp Settings</h3>
-      <label class="field">
-        <span>Model size</span>
-        <CustomSelect bind:value={cfg.engine.whisper_cpp.model_size} options={whisperModelSizeOptions} onchange={onModelChanged} />
-      </label>
-
-      <ModelStatusRow
-        mgr={whisperModels}
-        size={cfg.engine.whisper_cpp.model_size}
-      />
-
-      <label class="field">
-        <span>Device</span>
-        <CustomSelect bind:value={cfg.engine.whisper_cpp.device} options={deviceOptions} onchange={markDirty} />
-      </label>
-      <div class="field">
-        <span>Model directory (leave blank for default)</span>
-        <input
-          type="text"
-          bind:value={cfg.engine.whisper_cpp.model_dir}
-          onchange={onModelDirChange}
-          onblur={validateModelDir}
-          onkeydown={onModelDirKeydown}
-          class:field-input-error={!!modelDirError}
-        />
-        {#if modelDirError}
-          <p class="field-error-msg">{modelDirError}</p>
-        {/if}
-      </div>
-      <label class="field">
-        <span>Threads (0 = auto)</span>
-        <input
-          type="number"
-          min="0"
-          max="64"
-          bind:value={cfg.engine.whisper_cpp.threads}
-          onchange={markDirty}
-        />
-      </label>
-      <label class="field">
-        <span>Language</span>
-        <input
-          type="text"
-          bind:value={cfg.engine.whisper_cpp.language}
-          placeholder="auto"
-          onchange={markDirty}
-        />
-      </label>
+      <h3>Whisper.cpp</h3>
       <p class="hint">
-        Language code (e.g. <code>en</code>, <code>da</code>, <code>fr</code>) to force transcription in that
-        language, or <code>auto</code> to let whisper.cpp detect it. Forcing a language helps short phrases
-        that auto-detect sometimes misidentifies.
-      </p>
-      <p class="hint">
-        Default model directory: <code>~/.local/share/fotonvoice-engine/models/</code>
+        The whisper.cpp backend is deactivated in this version - it cannot run
+        or download models. Pick another backend above.
       </p>
     </div>
   {:else if cfg.engine.backend === "moonshine"}
@@ -325,9 +193,9 @@
               >Moonshine backend not included in this build</strong
             >
             <p class="m-0 text-slate-200 text-xs leading-relaxed">
-              This build was compiled without Moonshine, so selecting it will fall
-              back to Whisper.cpp (using the Whisper model configured above).
-              Rebuild with <code>--features moonshine</code> to enable it.
+              This build was compiled without Moonshine, so selecting it will
+              report the backend as unavailable. Rebuild with
+              <code>--features moonshine</code> to enable it.
             </p>
           </div>
         </div>
@@ -343,14 +211,10 @@
               >Moonshine runs on the CPU in this build</strong
             >
             <p class="m-0 text-slate-200 text-xs leading-relaxed">
-              ONNX Runtime, which Moonshine uses, has no Vulkan backend, so the
-              Device setting above applies to Whisper.cpp only. Moonshine holds
-              its weights in RAM as fp32 - roughly <code>530&nbsp;MB</code> for
-              <code>base</code>, <code>240&nbsp;MB</code> for <code>tiny</code> -
-              where Whisper.cpp{whisperGpu
-                ? ` puts a quantized model in VRAM via ${gpuLabel(whisperGpu)}`
-                : " uses a smaller quantized model"}. Pick Whisper.cpp if memory
-              matters more than Moonshine's latency.
+              ONNX Runtime, which Moonshine uses, has no Vulkan backend, so
+              Moonshine runs on the CPU in Vulkan builds. It holds its weights
+              in RAM as fp32 - roughly <code>530&nbsp;MB</code> for
+              <code>base</code>, <code>240&nbsp;MB</code> for <code>tiny</code>.
             </p>
           </div>
         </div>
@@ -391,8 +255,8 @@
               >Nemotron streaming backend not included in this build</strong
             >
             <p class="m-0 text-slate-200 text-xs leading-relaxed">
-              This build was compiled without the Nemotron streaming backend, so selecting it
-              will fall back to Whisper.cpp. Rebuild with
+              This build was compiled without the Nemotron streaming backend, so
+              selecting it will report the backend as unavailable. Rebuild with
               <code>--features nemotron-streaming</code> to enable it.
             </p>
           </div>
@@ -565,16 +429,6 @@
 
 <style>
   @reference "../../app.css";
-
-  .field-input-error {
-    @apply border-red-500!;
-  }
-  .field-input-error:focus {
-    @apply border-red-500 shadow-[0_0_0_2px_rgba(239,68,68,0.15),_inset_0_2px_4px_rgba(0,0,0,0.2)];
-  }
-  .field-error-msg {
-    @apply mt-1 text-sm leading-5 text-red-400;
-  }
 
   .test-row {
     @apply flex items-center gap-3 mt-4 flex-wrap;
