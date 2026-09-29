@@ -103,7 +103,7 @@ describe("TargetEditorModal command name", () => {
 
     expect(container.textContent).toContain("Command Name");
     expect(container.textContent).not.toContain("Display Label");
-    expect(container.textContent).toMatch(/FotonVoice Engine,/);
+    expect(container.textContent).toMatch(/Hey Foton,/);
   });
 });
 

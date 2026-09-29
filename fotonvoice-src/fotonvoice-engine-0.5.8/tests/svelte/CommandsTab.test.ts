@@ -44,8 +44,8 @@ describe("Output Commands tab", () => {
     expect(note).toBeTruthy();
 
     const text = note.textContent ?? "";
-    expect(text).toContain("FotonVoice Engine");
-    expect(text.indexOf("FotonVoice Engine notes")).toBeGreaterThan(-1);
+    expect(text).toContain("Hey Foton");
+    expect(text.indexOf("Hey Foton, notes")).toBeGreaterThan(-1);
     expect(text).toMatch(/command's name/);
   });
 
