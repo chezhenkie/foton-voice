@@ -191,7 +191,7 @@ fn default_dynamic_stream() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AudioConfig {
     pub vad_threshold: f32,
     /// None = use default system device
@@ -247,7 +247,7 @@ fn default_command_overlay_duration_secs() -> u32 {
     3
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     pub show_overlay: bool,
     #[serde(default = "default_overlay_position")]
@@ -283,7 +283,7 @@ impl Default for UiConfig {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FeaturesConfig {
     pub remove_fillers: bool,
     pub custom_vocabulary: Vec<String>,
@@ -334,7 +334,7 @@ fn default_user_prompt() -> String {
     "{text}".into()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpenAiConfig {
     pub enabled: bool,
     pub model: String,
@@ -429,7 +429,7 @@ fn default_tts_speed() -> f32 {
     1.0
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PocketTtsConfig {
     /// Bundled reference voice name, e.g. "alba", "anna", "vera", "charles", "michael",
     #[serde(default = "default_pocket_tts_voice")]
@@ -461,7 +461,7 @@ impl Default for PocketTtsConfig {
 }
 
 /// Breeze-TTS-2 (BreezeBlue) - bilingual neural text-to-speech with natural-language
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BreezeTts2Config {
     /// Voice selection mode: "prompt" (Voice Design) or "clone" (Cloned Voice Clip)
     #[serde(default = "default_breeze_voice_mode")]
@@ -513,7 +513,7 @@ impl Default for BreezeTts2Config {
 }
 
 /// VoxCPM2 - neural text-to-speech with natural-language voice design speaker
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VoxCpm2Config {
     /// Voice selection mode: "prompt" (Voice Design) or "clone" (Voice Cloning)
     #[serde(default = "default_vox_cpm_2_voice_mode")]
@@ -578,7 +578,7 @@ fn default_inflect_micro_noise_scale() -> f32 {
 }
 
 /// Inflect-Micro-v2 (<https://huggingface.co/owensong/Inflect-Micro-v2>) - a
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InflectMicroConfig {
     /// Directory holding the ONNX graphs and phoneme vocabulary. Empty = platform
     #[serde(default)]
@@ -630,7 +630,7 @@ fn default_lux_tts_ref_duration() -> f32 {
 }
 
 /// LuxTTS (<https://github.com/ysharma3501/LuxTTS>) - a lightweight ZipVoice-family
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LuxTtsConfig {
     /// Selected reference voice ID from the shared voice folder (e.g. "alba", "my_voice")
     #[serde(default = "default_lux_tts_cloned_voice")]
@@ -685,7 +685,7 @@ impl Default for LuxTtsConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TtsConfig {
     pub enabled: bool,
     pub engine: TtsEngine,
@@ -778,7 +778,7 @@ fn default_visual_feedback() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpConfig {
     pub server_enabled: bool,
     pub record_timeout: f64,
@@ -797,7 +797,7 @@ impl Default for McpConfig {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct AppConfig {
     pub engine: EngineConfig,
     pub audio: AudioConfig,

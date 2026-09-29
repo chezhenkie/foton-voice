@@ -187,7 +187,7 @@ pub fn spawn_status_ticker(
         let mut startup_tick_count: u32 = 0;
         let mut last_flags: Option<(bool, bool, bool, bool, bool, u32, bool)> = None;
         let mut last_emit = tokio::time::Instant::now() - HEARTBEAT;
-        let mut label_inputs: Option<(String, String, bool)> = None;
+        let mut label_inputs: Option<(String, String, bool, u64)> = None;
         let mut cached_label = String::new();
         #[cfg(target_os = "linux")]
         let mut overlay_built = false;
@@ -303,11 +303,13 @@ pub fn spawn_status_ticker(
             let active_target_id = state_for_ticker.active_target.lock().await.clone();
             let binding_label = state_for_ticker.active_binding_label.lock().await.clone();
             let use_binding_label = (is_recording || is_processing) && !binding_label.is_empty();
+            let targets_version = state_for_ticker.targets_version();
             let label_changed = match &label_inputs {
-                Some((target, binding, from_binding)) => {
+                Some((target, binding, from_binding, version)) => {
                     target != &active_target_id
                         || binding != &binding_label
                         || *from_binding != use_binding_label
+                        || *version != targets_version
                 }
                 None => true,
             };
@@ -316,6 +318,7 @@ pub fn spawn_status_ticker(
                     active_target_id.clone(),
                     binding_label.clone(),
                     use_binding_label,
+                    targets_version,
                 ));
                 cached_label = if use_binding_label {
                     binding_label

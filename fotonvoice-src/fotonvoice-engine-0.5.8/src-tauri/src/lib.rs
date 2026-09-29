@@ -189,12 +189,19 @@ pub fn run() {
 
     let router = Arc::new(OutputTargetRouter::new(targets.clone()));
 
+    // Initial runtime snapshot for the inference engine; pushes replace it.
+    let initial_runtime = Arc::new(fotonvoice_inference::InferenceRuntimeInput {
+        app_config: cfg_data.clone(),
+        targets: Arc::new(targets.clone()),
+        bindings: Arc::new(bindings.clone()),
+    });
+
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<fotonvoice_audio::AudioChunk>(64);
     let (text_tx, text_rx) = crossbeam_channel::bounded::<fotonvoice_inference::InferenceOutput>(32);
     let (inference_tx, inference_rx) =
         crossbeam_channel::bounded::<fotonvoice_inference::InferenceRequest>(4);
     let (inference_cfg_tx, inference_cfg_rx) =
-        crossbeam_channel::unbounded::<Arc<fotonvoice_config::AppConfig>>();
+        crossbeam_channel::unbounded::<Arc<fotonvoice_inference::InferenceRuntimeInput>>();
     let (overlay_tx, overlay_rx) = crossbeam_channel::unbounded::<String>();
     let (audio_wake_tx, audio_wake_rx) = crossbeam_channel::bounded::<()>(1);
 
@@ -225,6 +232,8 @@ pub fn run() {
         active_binding_label: Arc::new(Mutex::new("Focused Window".to_string())),
         active_binding_id: Arc::new(Mutex::new(String::new())),
         targets: Arc::new(Mutex::new(targets.clone())),
+        bindings: Arc::new(Mutex::new(bindings.clone())),
+        targets_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         audio_tx: audio_tx.clone(),
         audio_wake: audio_wake_tx,
         inference_config_tx: inference_cfg_tx,
@@ -269,35 +278,11 @@ pub fn run() {
     );
 
     fotonvoice_inference::run_worker_with_config(
-        cfg_data.clone(),
+        initial_runtime,
         inference_rx,
         text_tx.clone(),
         inference_cfg_rx,
     );
-
-    let _tts_handle = if cfg_data.tts.enabled {
-        Some(fotonvoice_tts::TtsEngineWorker::start(
-            cfg_data.tts.clone(),
-            cfg_data.features.custom_vocabulary.clone(),
-            None,
-            None,
-            None,
-        ))
-    } else {
-        None
-    };
-
-    let state_for_tts = app_state.clone();
-    let tts_handle_clone = _tts_handle.clone();
-    tokio::spawn(async move {
-        {
-            let mut handle = state_for_tts.tts_handle.lock().await;
-            *handle = tts_handle_clone.clone();
-        }
-        if let Some(tts) = tts_handle_clone {
-            state_for_tts.spawn_fifo_responders(tts).await;
-        }
-    });
 
     #[cfg(target_os = "linux")]
     {

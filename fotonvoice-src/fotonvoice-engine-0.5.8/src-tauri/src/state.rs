@@ -55,16 +55,28 @@ pub struct AppState {
     /// Currently active hotkey binding ID
     pub active_binding_id: Arc<Mutex<String>>,
 
-    /// Currently configured target definitions (in-memory cache for fast lookups)
+    /// Currently configured target definitions (in-memory cache for fast lookups).
+    /// Replace it through [`AppState::set_targets`], which also bumps
+    /// `targets_version`.
     pub targets: Arc<Mutex<Vec<fotonvoice_routing::OutputTarget>>>,
+
+    /// Currently configured hotkey bindings (in-memory cache; replaced by the
+    /// bindings save and canary stop-key plumbing reads it instead of disk).
+    pub bindings: Arc<Mutex<Vec<fotonvoice_routing::HotkeyBinding>>>,
+
+    /// Incremented every time `targets` is replaced, so anything caching a
+    /// value derived from the targets (the tray's target label) can tell its
+    /// cache is stale without re-deriving it on every tick.
+    pub targets_version: Arc<std::sync::atomic::AtomicU64>,
 
     /// Channel sender to send empty audio chunks as sentinels to unblock the coordinator thread
     pub audio_tx: crossbeam_channel::Sender<Vec<f32>>,
     /// Nudges the audio capture supervisor when a flag it watches changes, so
     pub audio_wake: crossbeam_channel::Sender<()>,
 
-    /// Channel sender for notifying the inference worker thread of configuration changes
-    pub inference_config_tx: crossbeam_channel::Sender<Arc<fotonvoice_config::AppConfig>>,
+    /// Channel sender for pushing runtime snapshots (config, targets, bindings)
+    pub inference_config_tx:
+        crossbeam_channel::Sender<Arc<fotonvoice_inference::InferenceRuntimeInput>>,
 
     /// Playback engine handle
     pub tts_handle: Arc<Mutex<Option<fotonvoice_tts::TtsEngineHandle>>>,
@@ -204,6 +216,33 @@ impl AppState {
             .is_some_and(|until| std::time::Instant::now() < until)
     }
 
+    /// Replace the in-memory targets cache and mark it changed.
+    pub async fn set_targets(&self, targets: Vec<fotonvoice_routing::OutputTarget>) {
+        *self.targets.lock().await = targets;
+        self.targets_version.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Replace the in-memory bindings cache.
+    pub async fn set_bindings(&self, bindings: Vec<fotonvoice_routing::HotkeyBinding>) {
+        *self.bindings.lock().await = bindings;
+    }
+
+    /// Build the runtime snapshot the inference engine transcribes with and
+    /// push it. Called once after each change to the config, the targets or
+    /// the bindings, replacing the per-utterance config-directory reads.
+    pub async fn push_inference_runtime(&self) {
+        let snapshot = Arc::new(fotonvoice_inference::InferenceRuntimeInput {
+            app_config: Arc::new(self.config.lock().await.data.clone()),
+            targets: Arc::new(self.targets.lock().await.clone()),
+            bindings: Arc::new(self.bindings.lock().await.clone()),
+        });
+        let _ = self.inference_config_tx.send(snapshot);
+    }
+
+    pub fn targets_version(&self) -> u64 {
+        self.targets_version.load(Ordering::SeqCst)
+    }
+
     pub fn increment_words(&self, n: u32) {
         self.word_count.fetch_add(n, Ordering::SeqCst);
     }
@@ -213,12 +252,15 @@ impl AppState {
     }
 
     /// Start loading the TTS model now, before anything asks it to speak.
+    ///
+    /// The load takes seconds, so kicking it off the moment we know speech is
+    /// coming (the user has just started dictating, or a spoken command was
+    /// recognised) hides most of that behind the time they spend talking. That
+    /// holds in both memory modes: on-demand drops the model when idle, and
+    /// always-loaded without pre-warming loads it lazily. When the model is
+    /// already resident the worker treats this as a no-op.
     pub async fn preload_tts(&self) {
-        let unloads_when_idle = {
-            let cfg = self.config.lock().await;
-            cfg.data.tts.enabled && cfg.data.tts.unloads_when_idle()
-        };
-        if !unloads_when_idle {
+        if !self.config.lock().await.data.tts.enabled {
             return;
         }
         if let Some(tts) = self.tts_handle.lock().await.as_ref() {
@@ -244,19 +286,23 @@ impl AppState {
         }
     }
 
-    pub async fn spawn_fifo_responders(&self, tts: fotonvoice_tts::TtsEngineHandle) {
+    /// Start a responder for every target response pipe not already watched.
+    ///
+    /// Responders look the TTS worker up per line (see
+    /// `fotonvoice_tts::run_fifo_responder`), so one started while TTS is off
+    /// begins speaking as soon as it is turned on, and none needs restarting
+    /// when the worker is replaced.
+    pub async fn spawn_fifo_responders(&self) {
         let targets_guard = self.targets.lock().await;
         let mut active_fifos_guard = self.active_fifos.lock().await;
 
         for target in targets_guard.iter() {
             if let Some(ref pipe_path) = target.response_pipe {
-                if !pipe_path.trim().is_empty() && !active_fifos_guard.contains(pipe_path) {
-                    active_fifos_guard.insert(pipe_path.clone());
-                    let tts_clone = tts.clone();
-                    let pipe_path_clone = pipe_path.clone();
-                    tokio::spawn(async move {
-                        fotonvoice_tts::run_fifo_responder(pipe_path_clone, tts_clone).await;
-                    });
+                if !pipe_path.trim().is_empty() && active_fifos_guard.insert(pipe_path.clone()) {
+                    tokio::spawn(fotonvoice_tts::run_fifo_responder(
+                        pipe_path.clone(),
+                        self.tts_handle.clone(),
+                    ));
                 }
             }
         }

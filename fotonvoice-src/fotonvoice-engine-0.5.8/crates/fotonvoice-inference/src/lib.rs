@@ -239,15 +239,36 @@ pub struct InferenceOutput {
 }
 
 
+/// Everything the engine needs for one utterance, pushed to it instead of
+/// read from disk per utterance: the app config, the target list and the
+/// hotkey bindings. The app-src sends a new one whenever any of the three is
+/// saved, so disk-backed mtime caches disappear from the transcription path.
+pub struct InferenceRuntimeInput {
+    pub app_config: Arc<AppConfig>,
+    pub targets: Arc<Vec<fotonvoice_routing::OutputTarget>>,
+    pub bindings: Arc<Vec<fotonvoice_routing::HotkeyBinding>>,
+}
+
+
 pub struct InferenceEngine {
     config: Arc<AppConfig>,
     backend: Box<dyn TranscriptionBackend>,
+    targets: Arc<Vec<fotonvoice_routing::OutputTarget>>,
+    bindings: Arc<Vec<fotonvoice_routing::HotkeyBinding>>,
 }
 
 impl InferenceEngine {
-    pub fn new(config: Arc<AppConfig>) -> Self {
-        let backend = build_backend(&config);
-        Self { config, backend }
+    pub fn new(runtime: Arc<InferenceRuntimeInput>) -> Self {
+        let backend = build_backend(&runtime.app_config);
+        let config = runtime.app_config.clone();
+        let targets = runtime.targets.clone();
+        let bindings = runtime.bindings.clone();
+        Self {
+            config,
+            backend,
+            targets,
+            bindings,
+        }
     }
 
     /// Load the selected backend model. Blocks until ready.
@@ -259,31 +280,43 @@ impl InferenceEngine {
         self.backend.unload();
     }
 
-    /// Update engine configuration. If backend or backend model settings changed,
-    pub fn update_config(&mut self, new_config: Arc<AppConfig>) -> bool {
-        let backend_changed = self.config.engine.backend != new_config.engine.backend
-            || (new_config.engine.backend == BackendChoice::WhisperCpp
-                && self.config.engine.whisper_cpp != new_config.engine.whisper_cpp)
-            || (new_config.engine.backend == BackendChoice::Moonshine
-                && self.config.engine.moonshine != new_config.engine.moonshine)
-            || (new_config.engine.backend == BackendChoice::Parakeet
-                && self.config.engine.parakeet != new_config.engine.parakeet)
-            || (new_config.engine.backend == BackendChoice::RemoteOpenAi
-                && self.config.engine.remote_openai != new_config.engine.remote_openai);
+    /// Update engine runtime from a pushed snapshot. If backend or backend
+    pub fn update_runtime(&mut self, new_runtime: Arc<InferenceRuntimeInput>) -> bool {
+        let new_app_config = new_runtime.app_config.clone();
+        let backend_changed = self.config.engine.backend != new_app_config.engine.backend
+            || (new_app_config.engine.backend == BackendChoice::WhisperCpp
+                && self.config.engine.whisper_cpp != new_app_config.engine.whisper_cpp)
+            || (new_app_config.engine.backend == BackendChoice::Moonshine
+                && self.config.engine.moonshine != new_app_config.engine.moonshine)
+            || (new_app_config.engine.backend == BackendChoice::Parakeet
+                && self.config.engine.parakeet != new_app_config.engine.parakeet)
+            || (new_app_config.engine.backend == BackendChoice::RemoteOpenAi
+                && self.config.engine.remote_openai != new_app_config.engine.remote_openai);
 
-        self.config = new_config.clone();
+        self.config = new_runtime.app_config.clone();
+        self.targets = new_runtime.targets.clone();
+        self.bindings = new_runtime.bindings.clone();
 
         if backend_changed {
             info!(
                 "Inference backend configuration changed, switching backend to {:?}",
-                new_config.engine.backend
+                new_app_config.engine.backend
             );
             self.backend.unload();
-            self.backend = build_backend(&new_config);
-            true
-        } else {
-            false
+            self.backend = build_backend(&new_app_config);
+            return true;
         }
+        false
+    }
+
+    /// Legacy shape: a config-only update that keeps the pushed targets and
+    /// bindings unchanged. Used only where nothing else changed.
+    pub fn update_config_only(&mut self, new_config: Arc<AppConfig>) -> bool {
+        self.update_runtime(Arc::new(InferenceRuntimeInput {
+            app_config: new_config,
+            targets: self.targets.clone(),
+            bindings: self.bindings.clone(),
+        }))
     }
 
     /// Transcribe and post-process. Returns the final text.
@@ -330,8 +363,7 @@ impl InferenceEngine {
             });
         }
 
-        let dir = fotonvoice_routing::config_dir();
-        let targets = fotonvoice_routing::load_targets_cached(&dir);
+        let targets: &Vec<fotonvoice_routing::OutputTarget> = &self.targets;
 
         let mut merged_prompt = String::from("FotonVoice Engine is a voice control assistant application. FotonVoice Engine commands start with FotonVoice Engine. ");
 
@@ -365,7 +397,7 @@ impl InferenceEngine {
             processed = String::new();
         }
 
-        let bindings = fotonvoice_routing::load_bindings_cached(&dir);
+        let bindings: &Vec<fotonvoice_routing::HotkeyBinding> = &self.bindings;
         let binding = req.binding_id.as_ref().and_then(|bid| bindings.iter().find(|b| &b.id == bid));
 
         let binding_wants_openai = binding
@@ -373,7 +405,7 @@ impl InferenceEngine {
             .unwrap_or(false);
 
         if binding_wants_openai && !processed.is_empty() {
-            let mut openai_cfg = fotonvoice_config::Config::load().data.openai;
+            let mut openai_cfg = self.config.openai.clone();
             openai_cfg.enabled = true;
 
             if let Some(ref b) = binding {
@@ -583,26 +615,30 @@ impl TranscriptionBackend for UnavailableBackend {
 }
 
 /// Run the inference engine on a dedicated OS thread.
+///
+/// Legacy shape without a runtime-config channel: config updates never
+/// arrive, targets and bindings stay as pushed in `runtime`.
 pub fn run_worker(
-    config: Arc<AppConfig>,
+    runtime: Arc<InferenceRuntimeInput>,
     rx: Receiver<InferenceRequest>,
     tx: Sender<InferenceOutput>,
 ) {
     let (_dummy_tx, dummy_rx) = crossbeam_channel::unbounded();
-    run_worker_with_config(config, rx, tx, dummy_rx);
+    run_worker_with_config(runtime, rx, tx, dummy_rx);
 }
 
-/// Run the inference engine on a dedicated OS thread with dynamic config reloading.
+/// Run the inference engine on a dedicated OS thread with pushed runtime
+/// snapshots (app config, targets, bindings).
 pub fn run_worker_with_config(
-    config: Arc<AppConfig>,
+    runtime: Arc<InferenceRuntimeInput>,
     rx: Receiver<InferenceRequest>,
     tx: Sender<InferenceOutput>,
-    config_rx: Receiver<Arc<AppConfig>>,
+    config_rx: Receiver<Arc<InferenceRuntimeInput>>,
 ) {
     std::thread::Builder::new()
         .name("fotonvoice-inference".into())
         .spawn(move || {
-            let mut engine = InferenceEngine::new(config);
+            let mut engine = InferenceEngine::new(runtime);
             let mut loaded = match engine.load() {
                 Ok(()) => {
                     info!("Inference engine ready");
@@ -662,12 +698,12 @@ pub fn run_worker_with_config(
                             }
                         }
                     }
-                    recv(config_rx) -> new_cfg_res => {
-                        let new_cfg = match new_cfg_res {
+                    recv(config_rx) -> new_rt_res => {
+                        let new_rt = match new_rt_res {
                             Ok(c) => c,
                             Err(_) => break,
                         };
-                        let needs_reload = engine.update_config(new_cfg);
+                        let needs_reload = engine.update_runtime(new_rt);
                         if needs_reload {
                             loaded = match engine.load() {
                                 Ok(()) => {
@@ -691,13 +727,25 @@ pub fn run_worker_with_config(
 mod tests {
     use super::*;
 
+    fn runtime(cfg: AppConfig) -> Arc<InferenceRuntimeInput> {
+        runtime_with(Arc::new(cfg))
+    }
+
+    fn runtime_with(app_config: Arc<AppConfig>) -> Arc<InferenceRuntimeInput> {
+        Arc::new(InferenceRuntimeInput {
+            app_config,
+            targets: Arc::new(Vec::new()),
+            bindings: Arc::new(Vec::new()),
+        })
+    }
+
     #[test]
     fn test_language_is_none_for_all_whisper_devices() {
         for device in &["auto", "cpu", "cuda", "vulkan"] {
             let mut cfg = AppConfig::default();
             cfg.engine.whisper_cpp.device = device.to_string();
             cfg.engine.moonshine.language = "fr".to_string();
-            let engine = InferenceEngine::new(Arc::new(cfg));
+            let engine = InferenceEngine::new(runtime(cfg));
             assert_eq!(engine.config.engine.whisper_cpp.device, *device);
             let _ = engine; // ensure engine is not optimised out
         }
@@ -707,9 +755,37 @@ mod tests {
     fn test_process_uses_in_memory_config_not_disk() {
         let mut cfg = AppConfig::default();
         cfg.features.remove_fillers = true;
-        let engine = InferenceEngine::new(Arc::new(cfg.clone()));
+        let engine = InferenceEngine::new(runtime(cfg.clone()));
         assert!(engine.config.features.remove_fillers);
-        assert!(engine.config.features.remove_fillers);
+        assert_eq!(*engine.config, cfg);
+    }
+
+    #[test]
+    fn pushed_runtime_snapshot_replaces_targets_and_bindings() {
+        let mut cfg = AppConfig::default();
+        cfg.features.custom_vocabulary = vec!["alpha".into()];
+        let mut engine = InferenceEngine::new(runtime(cfg.clone()));
+        assert!(engine.targets.is_empty());
+
+        let mut target = fotonvoice_routing::OutputTarget::default_inject();
+        target.id = "notes".into();
+        let mut binding = fotonvoice_routing::loader::default_bindings()[0].clone();
+        binding.id = "main".into();
+        binding.keys = vec!["KEY_R".into()];
+        let snap = Arc::new(InferenceRuntimeInput {
+            app_config: Arc::new(cfg.clone()),
+            targets: Arc::new(vec![target]),
+            bindings: Arc::new(vec![binding]),
+        });
+        assert!(!engine.update_runtime(snap.clone()));
+        assert_eq!(engine.targets.len(), 1);
+        assert_eq!(engine.bindings.len(), 1);
+        assert_eq!(engine.config.features.custom_vocabulary, vec!["alpha"]);
+
+        // A config-only change keeps the pushed targets and bindings.
+        assert!(!engine.update_config_only(Arc::new(cfg)));
+        assert_eq!(engine.targets.len(), 1);
+        assert_eq!(engine.bindings.len(), 1);
     }
 
     #[test]
@@ -729,21 +805,21 @@ mod tests {
     }
 
     #[test]
-    fn test_engine_update_config_switches_backend() {
+    fn test_engine_update_runtime_switches_backend() {
         let cfg = AppConfig::default();
-        let mut engine = InferenceEngine::new(Arc::new(cfg.clone()));
+        let mut engine = InferenceEngine::new(runtime(cfg.clone()));
         assert_eq!(engine.backend.name(), "parakeet");
 
         let mut new_cfg = cfg.clone();
         new_cfg.engine.backend = BackendChoice::RemoteOpenAi;
         new_cfg.engine.remote_openai.endpoint = "http://localhost:5000/v1".to_string();
-        let reloaded = engine.update_config(Arc::new(new_cfg));
+        let reloaded = engine.update_runtime(runtime_with(Arc::new(new_cfg)));
         assert!(reloaded);
         assert_eq!(engine.backend.name(), "remote-openai");
 
         let mut features_cfg = engine.config.as_ref().clone();
         features_cfg.features.remove_fillers = !features_cfg.features.remove_fillers;
-        let reloaded_features = engine.update_config(Arc::new(features_cfg));
+        let reloaded_features = engine.update_runtime(runtime_with(Arc::new(features_cfg)));
         assert!(!reloaded_features);
         assert_eq!(engine.backend.name(), "remote-openai");
     }

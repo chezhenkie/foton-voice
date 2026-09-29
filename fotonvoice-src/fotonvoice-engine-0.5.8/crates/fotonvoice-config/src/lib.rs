@@ -12,6 +12,7 @@ pub enum ConfigError {
 
 pub mod portable;
 
+pub mod migrate;
 mod store;
 mod structs;
 

@@ -16,6 +16,12 @@
   let commandTimerId: any = null;
   let unlistenCommandExecuted: (() => void) | null = null;
 
+  // Recording wins: starting to dictate interrupts playback (begin_recording
+  // stops TTS), and until the speaking flag catches up the user must still
+  // see that they are being recorded rather than a stale SYSTEM RESPONDING.
+  let isSystemResponding = $derived(
+    $speaking && $config.tts.enabled && $config.tts.response_overlay && !$recording
+  );
   let isRecordingOrSpeaking = $derived(
     ($recording && $config.ui.show_overlay) ||
     ($speaking && $config.tts.enabled && $config.tts.response_overlay) ||
@@ -156,9 +162,12 @@
 
 <div class="overlay-root" data-recording={$recording} data-speaking={$speaking} data-processing={$status.processing}>
   {#if renderOverlay && visible}
-    <Terminal recording={$recording} active={animateActive} />
+    <!-- The target visualizer belongs to recording; it never shows over SYSTEM RESPONDING. -->
+    {#if !isSystemResponding}
+      <Terminal recording={$recording} active={animateActive} />
+    {/if}
 
-    {#if $speaking}
+    {#if isSystemResponding}
       <div class="system-response-box speaking" class:on={animateActive}>
         <span class="mini-eq">
           {#each [0, 1, 2, 3, 4] as i}

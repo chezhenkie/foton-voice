@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::{AppConfig, ConfigError};
+use crate::{AppConfig, ConfigError, migrate};
 
 /// Lift a HuggingFace token stored per engine onto the single `tts.hf_token`,
 fn migrate_hf_token(data: &mut AppConfig) -> bool {
@@ -121,33 +121,22 @@ impl Config {
             AppConfig::default()
         };
 
+        let mut dirty = false;
         if let Some(legacy_notif) = data.features.show_notification {
             data.ui.show_notification = legacy_notif;
             data.features.show_notification = None;
-            let clean_config = Self { data: data.clone(), path: path.clone() };
-            if let Err(e) = clean_config.save() {
-                tracing::error!("Failed to save clean migrated config: {e}");
-            }
+            dirty = true;
         }
 
-        let needs_escape_fix = data.tts.stop_key.iter().any(|k| k == "KEY_ESCAPE");
-        if needs_escape_fix {
-            data.tts.stop_key = data.tts.stop_key
-                .into_iter()
-                .map(|k| if k == "KEY_ESCAPE" { "KEY_ESC".to_string() } else { k })
-                .collect();
-            let clean_config = Self { data: data.clone(), path: path.clone() };
-            if let Err(e) = clean_config.save() {
-                tracing::error!("Failed to save migrated stop_key: {e}");
-            }
+        // Legacy key names in the stop key ("KEY_ESCAPE", or a punctuation key
+        // saved as e.g. "KEY_.") -> the evdev names the backends report.
+        if migrate::canonicalize_key_names(&mut data.tts.stop_key) {
+            dirty = true;
         }
 
         if data.openai.timeout_secs == 8 {
             data.openai.timeout_secs = 30;
-            let clean_config = Self { data: data.clone(), path: path.clone() };
-            if let Err(e) = clean_config.save() {
-                tracing::error!("Failed to save migrated OpenAI timeout: {e}");
-            }
+            dirty = true;
         }
 
         if let Some(legacy_prompt) = data.openai.custom_prompt.take() {
@@ -155,17 +144,11 @@ impl Config {
                 data.openai.user_prompt = legacy_prompt;
                 data.openai.system_prompt = String::new();
             }
-            let clean_config = Self { data: data.clone(), path: path.clone() };
-            if let Err(e) = clean_config.save() {
-                tracing::error!("Failed to save migrated OpenAI custom prompt: {e}");
-            }
+            dirty = true;
         }
 
         if migrate_hf_token(&mut data) {
-            let migrated = Self { data: data.clone(), path: path.clone() };
-            if let Err(e) = migrated.save() {
-                tracing::error!("Failed to save migrated HuggingFace token: {e}");
-            }
+            dirty = true;
         }
 
         migrate_cloned_voices_dir();
@@ -175,6 +158,13 @@ impl Config {
         } else {
             data.tts.speed.clamp(0.90, 1.10)
         };
+
+        if dirty {
+            let migrated = Self { data: data.clone(), path: path.clone() };
+            if let Err(e) = migrated.save() {
+                tracing::error!("Failed to save migrated config: {e}");
+            }
+        }
 
         Self { data, path }
     }
@@ -199,20 +189,7 @@ impl Config {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(&self.data)?;
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&self.path)?;
-            f.write_all(json.as_bytes())?;
-        }
-        #[cfg(not(unix))]
-        std::fs::write(&self.path, json)?;
+        write_private(&self.path, json.as_bytes())?;
         Ok(())
     }
 
@@ -225,6 +202,34 @@ impl Default for Config {
     fn default() -> Self {
         Self::load()
     }
+}
+
+/// Write `bytes` to a sibling tmp file next to `path`, then rename it into
+/// place. The rename is atomic on both platforms, so a crash mid-write can
+/// never leave a truncated config behind, and the file keeps its permissions.
+#[cfg(unix)]
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let tmp = path.with_extension("json.tmp");
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        std::io::Write::write_all(&mut f, bytes)?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 

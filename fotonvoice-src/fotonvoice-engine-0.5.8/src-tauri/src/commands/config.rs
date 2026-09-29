@@ -22,42 +22,15 @@ pub async fn save_config(
     state.set_noise_suppression(new_config.audio.noise_suppression);
     state.set_overlay_enabled(new_config.ui.show_overlay);
 
+    // Dynamic TTS engine lifecycle management: a running worker takes the new
+    // settings live; one is started only when TTS was off until now.
     {
         let mut handle = state.tts_handle.lock().await;
-        let mut need_restart = true;
 
         if let Some(ref tts) = *handle {
             tts.update_config(new_config.tts.clone());
-            need_restart = false;
-        }
-
-        if need_restart {
-            if new_config.tts.enabled {
-                let app_handle = app.clone();
-                let app_handle_end = app.clone();
-                let app_handle_err = app.clone();
-                let state_clone = state.inner().clone();
-                let state_clone_end = state.inner().clone();
-                let new_tts = fotonvoice_tts::TtsEngineWorker::start(
-                    new_config.tts.clone(),
-                    new_config.features.custom_vocabulary.clone(),
-                    Some(std::sync::Arc::new(move || {
-                        state_clone.set_speaking(true);
-                        let _ = app_handle.emit("tts-playback-start", ());
-                    })),
-                    Some(std::sync::Arc::new(move || {
-                        state_clone_end.set_speaking(false);
-                        let _ = app_handle_end.emit("tts-playback-end", ());
-                    })),
-                    Some(std::sync::Arc::new(move |msg: String| {
-                        let _ = app_handle_err.emit("tts-error", msg);
-                    })),
-                );
-                *handle = Some(new_tts.clone());
-                state.spawn_fifo_responders(new_tts).await;
-            } else {
-                *handle = None;
-            }
+        } else if new_config.tts.enabled {
+            *handle = Some(crate::services::start_tts_worker(&app, state.inner(), &new_config));
         }
     }
 
@@ -67,14 +40,16 @@ pub async fn save_config(
     guard.save().map_err(|e| e.to_string())?;
     info!("Config saved");
 
-    let _ = state.inference_config_tx.send(Arc::new(new_config.clone()));
-
     let (overlay_position, overlay_monitor) = (
         guard.data.ui.overlay_position.clone(),
         guard.data.ui.overlay_monitor.clone(),
     );
 
     drop(guard);
+
+    // Push the new runtime snapshot (config, targets, bindings) to inference.
+    state.push_inference_runtime().await;
+
     if stop_key_changed {
         if let Some(bindings) = crate::stop_key::listener_bindings_from_disk(&state).await {
             let reloader_guard = state.hotkey_reloader.lock().await;

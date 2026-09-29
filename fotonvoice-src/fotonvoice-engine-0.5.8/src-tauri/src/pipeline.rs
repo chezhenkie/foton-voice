@@ -70,15 +70,20 @@ async fn process_remote_transcription(
         return;
     }
 
-    let dir = fotonvoice_routing::config_dir();
-    let targets = fotonvoice_routing::load_targets_cached(&dir);
+    // Targets and app config come from the in-memory state; the inference
+    // crate owns the same rule, no config-directory read per utterance.
+    let targets = state.targets.lock().await;
     let target_ids: Vec<&str> = target_id
         .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .collect();
     let first_target_id = target_ids.first().copied().unwrap_or("default");
-    let target = targets.iter().find(|t| t.id == first_target_id);
+    let target = targets
+        .iter()
+        .find(|t| t.id == first_target_id)
+        .cloned();
+    drop(targets);
 
     let features = {
         let guard = state.config.lock().await;
@@ -86,18 +91,22 @@ async fn process_remote_transcription(
     };
 
     let remove_fillers = target
+        .as_ref()
         .and_then(|t| t.processing.remove_fillers)
         .unwrap_or(features.remove_fillers);
 
     let spoken_punctuation = target
+        .as_ref()
         .and_then(|t| t.processing.spoken_punctuation)
         .unwrap_or(features.spoken_punctuation);
 
     let auto_format_lists = target
+        .as_ref()
         .and_then(|t| t.processing.auto_format_lists)
         .unwrap_or(features.auto_format_lists);
 
     let code_mode = target
+        .as_ref()
         .and_then(|t| t.processing.code_mode)
         .unwrap_or(false);
 
@@ -126,7 +135,7 @@ async fn process_remote_transcription(
         processed = String::new();
     }
 
-    let bindings = fotonvoice_routing::load_bindings_cached(&dir);
+    let bindings = state.bindings.lock().await.clone();
     let binding = bindings.iter().find(|b| b.id == binding_id);
 
     let binding_wants_openai = binding
@@ -134,7 +143,10 @@ async fn process_remote_transcription(
         .unwrap_or(false);
 
     if binding_wants_openai && !processed.is_empty() {
-        let mut openai_cfg = fotonvoice_config::Config::load().data.openai;
+        let mut openai_cfg = {
+            let guard = state.config.lock().await;
+            guard.data.openai.clone()
+        };
         openai_cfg.enabled = true;
 
         if let Some(b) = binding {
@@ -317,14 +329,13 @@ pub fn spawn_text_delivery_worker(
                 (cfg_lock.data.engine.s1_mini.enabled, cfg_lock.data.engine.s1_mini.styling.clone())
             };
 
-            let dir = fotonvoice_routing::config_dir();
-            let bindings = fotonvoice_routing::load_bindings_cached(&dir);
+            let bindings = state.bindings.blocking_lock().clone();
             let binding = output.binding_id.as_ref().and_then(|bid| bindings.iter().find(|b| &b.id == bid));
             let s1_mini_enabled = binding
                 .and_then(|b| b.s1_mini_enabled)
                 .unwrap_or(global_s1_mini_enabled);
 
-            let targets = fotonvoice_routing::load_targets_cached(&dir);
+            let targets = state.targets.blocking_lock().clone();
             let (target_id, text) = if let Some(parsed) = fotonvoice_routing::targets::parse_voice_command(&output.text, &targets) {
                 let matched_id = parsed.matched_target_id.clone();
                 let payload = parsed.payload;

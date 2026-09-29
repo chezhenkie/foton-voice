@@ -19,19 +19,16 @@ pub async fn save_targets(
 ) -> Result<(), String> {
     let dir = fotonvoice_routing::config_dir();
     fotonvoice_routing::save_targets(&targets, &dir).map_err(|e| e.to_string())?;
-    
-    *state.targets.lock().await = targets.clone();
+
+    state.set_targets(targets.clone()).await;
 
     state.router.reload(targets).await;
     info!("Targets saved and router reloaded");
 
-    let tts_handle_opt = {
-        let guard = state.tts_handle.lock().await;
-        guard.clone()
-    };
-    if let Some(tts) = tts_handle_opt {
-        state.spawn_fifo_responders(tts).await;
-    }
+    // Start listeners for any response pipes the save added, then push the
+    // runtime snapshot (new targets) to inference.
+    state.spawn_fifo_responders().await;
+    state.push_inference_runtime().await;
 
     Ok(())
 }
@@ -52,7 +49,9 @@ pub async fn save_bindings(
     let dir = fotonvoice_routing::config_dir();
     fotonvoice_routing::save_bindings(&bindings, &dir).map_err(|e| e.to_string())?;
     info!("Bindings saved");
-    
+
+    state.set_bindings(bindings.clone()).await;
+
     let all_bindings = crate::stop_key::listener_bindings(&state, bindings.clone()).await;
     let reloader_guard = state.hotkey_reloader.lock().await;
     if let Some(reloader) = &*reloader_guard {
@@ -81,6 +80,10 @@ pub async fn save_bindings(
             Err(e) => tracing::warn!("Failed to sync Linux Mint native shortcut settings: {e}"),
         }
     }
+
+    // Push the runtime snapshot (new binding-level post-processing flags) to
+    // inference.
+    state.push_inference_runtime().await;
 
     Ok(())
 }

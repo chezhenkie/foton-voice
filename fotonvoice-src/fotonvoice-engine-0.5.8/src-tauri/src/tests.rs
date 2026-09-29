@@ -75,6 +75,8 @@ fn make_test_state() -> AppState {
         active_binding_label: Arc::new(Mutex::new("Focused Window".to_string())),
         active_binding_id: Arc::new(Mutex::new(String::new())),
         targets: Arc::new(Mutex::new(Vec::new())),
+        bindings: Arc::new(Mutex::new(Vec::new())),
+        targets_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         audio_tx,
         audio_wake,
         inference_config_tx,
@@ -712,4 +714,27 @@ async fn test_speak_target_delivery() {
     if !spoken_text.is_empty() {
         assert_eq!(*spoken_text, "Test Speak Target from Tauri");
     }
+}
+
+/// The tray caches the target label and re-derives it only when its inputs
+/// change; a label renamed in Settings must count as a change.
+#[tokio::test]
+async fn replacing_targets_marks_them_changed() {
+    let state = make_test_state();
+    let before = state.targets_version();
+    let mut target = fotonvoice_routing::models::OutputTarget::default_inject();
+    target.id = "notes".into();
+    target.label = "Renamed".into();
+
+    state.set_targets(vec![target]).await;
+
+    assert_ne!(
+        state.targets_version(),
+        before,
+        "a targets save did not invalidate cached labels"
+    );
+    assert_eq!(
+        state.targets.lock().await.iter().find(|t| t.id == "notes").map(|t| t.label.clone()),
+        Some("Renamed".to_string())
+    );
 }

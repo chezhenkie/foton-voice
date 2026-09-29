@@ -67,24 +67,23 @@ fn api_base(endpoint: &str) -> String {
 }
 
 
+/// How long to wait for the API server to accept a connection.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
 #[derive(Clone)]
 pub struct OpenAiClient {
     config: OpenAiConfig,
     http: reqwest::Client,
-    available: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
 }
 
 impl OpenAiClient {
     pub fn new(config: OpenAiConfig) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
+            .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .expect("reqwest client");
-        Self {
-            config,
-            http,
-            available: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        }
+        Self { config, http }
     }
 
     /// Attach the configured API key as a Bearer token, if one is set.
@@ -95,23 +94,16 @@ impl OpenAiClient {
         }
     }
 
-    /// Lazily probe if the API server is reachable. Cached after first check.
+    /// Probe whether the API server is reachable (used by the Settings test).
     pub async fn is_available(&self) -> bool {
-        {
-            let guard = self.available.lock().unwrap();
-            if let Some(v) = *guard {
-                return v;
-            }
-        }
         let url = format!("{}/models", api_base(&self.config.endpoint));
         let ok = self
             .with_auth(self.http.get(&url))
-            .timeout(Duration::from_secs(2))
+            .timeout(CONNECT_TIMEOUT)
             .send()
             .await
             .map(|r| r.status().is_success())
             .unwrap_or(false);
-        *self.available.lock().unwrap() = Some(ok);
         if ok {
             info!("OpenAI API reachable at {}", self.config.endpoint);
         } else {
@@ -121,11 +113,12 @@ impl OpenAiClient {
     }
 
     /// Post-process text through the OpenAI API. Returns original text on any failure.
+    ///
+    /// No reachability probe first: an unreachable server already fails within
+    /// [`CONNECT_TIMEOUT`] and falls back to the original text below, so a
+    /// probe would only add a round trip to every rewrite that succeeds.
     pub async fn process(&self, text: &str) -> String {
         if !self.config.enabled {
-            return text.to_string();
-        }
-        if !self.is_available().await {
             return text.to_string();
         }
 
@@ -207,11 +200,6 @@ impl OpenAiClient {
                 text.to_string()
             }
         }
-    }
-
-    /// Reset the availability cache (e.g., user changed endpoint in settings).
-    pub fn reset_availability(&self) {
-        *self.available.lock().unwrap() = None;
     }
 
     /// Retrieve the list of available models from the OpenAI-compatible server.
