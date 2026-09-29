@@ -2,6 +2,7 @@
 *.log
 
 fotonvoice-src/target/
+fotonvoice-src/target-msvc/
 fotonvoice-src/*/target/
 fotonvoice-src/*/node_modules/
 fotonvoice-src/pristine-*/
@@ -21,3 +22,28 @@ INDEX TTS2 2.5 klein snel emoties TTS EN/
 LuksTTS erg klein met voice cloning 48khz TTS EN/
 pr3.txt
 agents.md
+
+# Local-only planning docs. The repo is public, so these must never be pushed.
+# Ignored here so a stray `git add -A` cannot leak them, not to rely on discipline.
+BUILD-PLAN.md
+CHANGELOG.md
+fotonvoice-engine-specsheet.md
+fotonvoice-engine-noise-robustness.md
+fotonvoice-flow-architecture-diagram.md
+fotonvoice-parity-voxctrl-releases.md
+plan-fotonvoice-youtube-transcriber.md
+voice routing.png
+
+# Local-only reference material and build outputs
+_upstream-*
+voxctrl-diff-*.json
+*_upstream_*.bare/
+fotonvoice-src/*/voxctrl-review-v07/
+fotonvoice-src/*/dist/
+fotonvoice-src/*/scratch-*/
+_cleanup/
+tools/
+backups/
+artifacts/
+deploy-fotonvoice.ps1
+ci-watch.ps1

@@ -53,12 +53,16 @@ assets/banner.xcf
 # Node
 node_modules/
 
-# NOTE: dist/ (the `vite build` output) is intentionally tracked, not ignored.
-# src-tauri/Cargo.toml sets `default = ["custom-protocol"]`, which forces
-# Tauri's generate_context! into production mode on every build (including
-# `tauri dev`), and that requires frontendDist (../dist) to exist at compile
-# time. Keep dist/ committed and regenerate it (`npm run build`) when the
-# frontend changes.
+# NOTE: dist/ is the `vite build` output and is NOT tracked. It must EXIST at
+# compile time: src-tauri/Cargo.toml sets `default = ["custom-protocol", ...]`,
+# which forces Tauri's generate_context! into production mode on every build
+# (including `tauri dev`), and that reads frontendDist ("../dist") from
+# tauri.conf.json. So it has to be built, but it does not have to be committed:
+# both CI lanes run `npm ci && npm run build` before the Rust build
+# (build-msvc.yml, build-linux.yml), which regenerates it. `beforeBuildCommand`
+# is only `echo skip`, so that CI step is the sole thing producing dist/.
+# A LOCAL build must run `npm run build` first or cargo check will fail on the
+# missing frontendDist.
 
 # Vite config temp files
 vite.config.ts.timestamp-*.mjs
