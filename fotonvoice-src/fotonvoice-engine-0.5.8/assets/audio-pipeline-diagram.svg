@@ -45,7 +45,7 @@
   <text x="320" y="458" text-anchor="middle" fill="#7e8896" font-size="11">ONNX/WebGPU</text>
 
   <rect x="416" y="414" width="168" height="64" rx="10" fill="#14181f" stroke="#2a313c"></rect>
-  <text x="500" y="440" text-anchor="middle" fill="#22d4ef" font-size="13" font-weight="600">Parakeet</text>
+  <text x="500" y="440" text-anchor="middle" fill="#22d4ef" font-size="13" font-weight="600">Nemotron</text>
   <text x="500" y="458" text-anchor="middle" fill="#7e8896" font-size="11">ONNX</text>
 
   <rect x="596" y="414" width="168" height="64" rx="10" fill="#14181f" stroke="#2a313c"></rect>

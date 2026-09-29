@@ -13,12 +13,8 @@ pub struct AcceleratorSupport {
     /// `"cuda"`, `"coreml"`, or `None` - `None` in every build shipped today.
     pub moonshine_gpu: Option<String>,
     /// `"cuda"`, `"coreml"`, `"webgpu"`, or `None`.
-    pub parakeet_gpu: Option<String>,
-    /// True when the GPU backend is compiled in and a device is present at
-    pub parakeet_gpu_present: bool,
-    /// Same providers as `parakeet_gpu`, for the Nemotron streaming lane.
     pub nemotron_streaming_gpu: Option<String>,
-    /// Same contract as `parakeet_gpu_present` for the Nemotron lane.
+    /// True when the GPU backend is compiled in and a device is present at
     pub nemotron_streaming_gpu_present: bool,
     /// `"vulkan"` or `None`.
     pub s1_mini_gpu: Option<String>,
@@ -29,8 +25,6 @@ pub fn accelerator_support() -> AcceleratorSupport {
     AcceleratorSupport {
         whisper_gpu: fotonvoice_inference::whisper_gpu_backend().map(str::to_string),
         moonshine_gpu: fotonvoice_inference::moonshine_gpu_backend().map(str::to_string),
-        parakeet_gpu: fotonvoice_inference::parakeet_gpu_backend().map(str::to_string),
-        parakeet_gpu_present: fotonvoice_inference::parakeet_gpu_available(),
         nemotron_streaming_gpu: fotonvoice_inference::nemotron_gpu_backend().map(str::to_string),
         nemotron_streaming_gpu_present: fotonvoice_inference::nemotron_gpu_available(),
         s1_mini_gpu: fotonvoice_inference::s1_mini_gpu_backend().map(str::to_string),

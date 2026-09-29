@@ -591,7 +591,7 @@ mod tests {
     fn legacy_auto_backend_loads_as_whisper_cpp() {
         let parsed: BackendChoice = serde_json::from_str(r#""auto""#).unwrap();
         assert_eq!(parsed, BackendChoice::WhisperCpp);
-        assert_eq!(BackendChoice::default(), BackendChoice::Parakeet);
+        assert_eq!(BackendChoice::default(), BackendChoice::NemotronStreaming);
     }
 
     #[test]
@@ -605,8 +605,8 @@ mod tests {
             r#""moonshine""#
         );
         assert_eq!(
-            serde_json::to_string(&BackendChoice::Parakeet).unwrap(),
-            r#""parakeet""#
+            serde_json::to_string(&BackendChoice::NemotronStreaming).unwrap(),
+            r#""nemotron-streaming""#
         );
         assert_eq!(
             serde_json::to_string(&BackendChoice::RemoteOpenAi).unwrap(),
@@ -616,6 +616,12 @@ mod tests {
         assert_eq!(parsed, BackendChoice::RemoteOpenAi);
         let parsed_alias: BackendChoice = serde_json::from_str(r#""openai-compatible""#).unwrap();
         assert_eq!(parsed_alias, BackendChoice::RemoteOpenAi);
+    }
+
+    #[test]
+    fn legacy_parakeet_backend_loads_as_nemotron_streaming() {
+        let parsed: BackendChoice = serde_json::from_str(r#""parakeet""#).unwrap();
+        assert_eq!(parsed, BackendChoice::NemotronStreaming);
     }
 
     #[test]

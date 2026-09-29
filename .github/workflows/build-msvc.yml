@@ -37,7 +37,7 @@ jobs:
           npm run build
 
       - name: Build (msvc, WebGPU features)
-        run: cargo build --release -p fotonvoice-app --features parakeet-webgpu,moonshine-webgpu,nemotron-streaming-webgpu
+        run: cargo build --release -p fotonvoice-app --features moonshine-webgpu,nemotron-streaming-webgpu
 
       - name: Collect
         run: |

@@ -300,8 +300,6 @@ pub async fn setup_blocker(state: &Arc<AppState>) -> Option<String> {
     let uses_whisper_model = eng.backend != fotonvoice_config::BackendChoice::RemoteOpenAi
         && (eng.backend != fotonvoice_config::BackendChoice::Moonshine
             || !fotonvoice_inference::MOONSHINE_COMPILED)
-        && (eng.backend != fotonvoice_config::BackendChoice::Parakeet
-            || !fotonvoice_inference::PARAKEET_COMPILED)
         && (eng.backend != fotonvoice_config::BackendChoice::NemotronStreaming
             || !fotonvoice_inference::NEMOTRON_STREAMING_COMPILED);
     if !uses_whisper_model {

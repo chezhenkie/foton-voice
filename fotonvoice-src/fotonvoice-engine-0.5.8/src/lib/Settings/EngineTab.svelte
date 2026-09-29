@@ -30,7 +30,6 @@
 
   let whisperGpu = $state<string | null>(null);
   let moonshineGpu = $state<string | null>(null);
-  let parakeetGpu = $state<string | null>(null);
   let nemotronStreamingGpu = $state<string | null>(null);
 
   const GPU_LABELS: Record<string, string> = {
@@ -47,12 +46,6 @@
       label: moonshineGpu
         ? `Moonshine (${gpuLabel(moonshineGpu)})`
         : "Moonshine (CPU only)",
-    },
-    {
-      value: "parakeet",
-      label: parakeetGpu
-        ? `Parakeet TDT (${gpuLabel(parakeetGpu)})`
-        : "Parakeet TDT (CPU only)",
     },
     {
       value: "nemotron-streaming",
@@ -79,11 +72,6 @@
   const moonshineModelSizeOptions = [
     { value: "base", label: "Base" },
     { value: "tiny", label: "Tiny" }
-  ];
-
-  const parakeetModelSizeOptions = [
-    { value: "tdt-0.6b-v3", label: "TDT 0.6B v3 (INT8, ~665 MB, CPU-lean)" },
-    { value: "tdt-0.6b-v3-fp32", label: "TDT 0.6B v3 (FP32, ~2.4 GB, GPU-accel)" }
   ];
 
   const nemotronModelSizeOptions = [
@@ -114,15 +102,6 @@
     remove: (size) => invoke("delete_moonshine_model", { modelSize: size }),
   });
 
-  let parakeetAvailable = $state(true);
-  let parakeetGpuPresent = $state(true);
-  const parakeetModels = createModelManager({
-    sizes: parakeetModelSizeOptions.map((o) => o.value),
-    check: (size) => invoke<boolean>("check_parakeet_downloaded", { modelSize: size }),
-    download: (size) => invoke("download_parakeet_model", { modelSize: size }),
-    remove: (size) => invoke("delete_parakeet_model", { modelSize: size }),
-  });
-
   let nemotronAvailable = $state(true);
   let nemotronGpuPresent = $state(true);
   const nemotronModels = createModelManager({
@@ -131,11 +110,6 @@
     download: (size) => invoke("download_nemotron_streaming_model", { modelSize: size }),
     remove: (size) => invoke("delete_nemotron_streaming_model", { modelSize: size }),
   });
-
-  async function onParakeetModelChanged() {
-    markDirty();
-    await parakeetModels.verify(cfg.engine.parakeet.model_size);
-  }
 
   interface RemoteSttTestResult {
     success: boolean;
@@ -235,12 +209,6 @@
     }
     moonshineModels.refreshAll();
     try {
-      parakeetAvailable = await invoke<boolean>("parakeet_available");
-    } catch (e) {
-      console.error("Failed to query Parakeet availability", e);
-    }
-    parakeetModels.refreshAll();
-    try {
       nemotronAvailable = await invoke<boolean>("nemotron_streaming_available");
     } catch (e) {
       console.error("Failed to query Nemotron streaming availability", e);
@@ -250,22 +218,14 @@
       const support = await invoke<{
         whisper_gpu: string | null;
         moonshine_gpu: string | null;
-        parakeet_gpu: string | null;
-        parakeet_gpu_present: boolean;
         nemotron_streaming_gpu: string | null;
         nemotron_streaming_gpu_present: boolean;
         s1_mini_gpu: string | null;
       }>("accelerator_support");
       whisperGpu = support.whisper_gpu ?? null;
       moonshineGpu = support.moonshine_gpu ?? null;
-      parakeetGpu = support.parakeet_gpu ?? null;
-      parakeetGpuPresent = support.parakeet_gpu_present;
       nemotronStreamingGpu = support.nemotron_streaming_gpu ?? null;
       nemotronGpuPresent = support.nemotron_streaming_gpu_present;
-      if (!parakeetGpuPresent && cfg.engine.parakeet?.gpu) {
-        cfg.engine.parakeet.gpu = false;
-        markDirty();
-      }
       if (!nemotronGpuPresent && cfg.engine.nemotron_streaming?.gpu) {
         cfg.engine.nemotron_streaming.gpu = false;
         markDirty();
@@ -416,77 +376,6 @@
           onchange={markDirty}
         />
       </label>
-    </div>
-  {:else if cfg.engine.backend === "parakeet"}
-    <div class="field-group">
-      <h3>Parakeet Settings</h3>
-
-      {#if !parakeetAvailable}
-        <div
-          class="flex items-center gap-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 mb-4"
-        >
-          <span class="text-2xl leading-none text-yellow-500">!</span>
-          <div class="flex-1">
-            <strong class="block text-yellow-200 font-semibold text-sm mb-1"
-              >Parakeet backend not included in this build</strong
-            >
-            <p class="m-0 text-slate-200 text-xs leading-relaxed">
-              This build was compiled without Parakeet, so selecting it will fall
-              back to Whisper.cpp. Rebuild with <code>--features parakeet</code> to enable it.
-            </p>
-          </div>
-        </div>
-      {/if}
-
-      <label class="field">
-        <span>Model size</span>
-        <CustomSelect bind:value={cfg.engine.parakeet.model_size} options={parakeetModelSizeOptions} onchange={onParakeetModelChanged} />
-      </label>
-
-      {#if parakeetAvailable}
-        <ModelStatusRow
-          mgr={parakeetModels}
-          size={cfg.engine.parakeet.model_size}
-        />
-        <p class="hint" style="margin-top: 6px;">
-          Model source: <a class="credit-name-link" href="https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx" target="_blank" rel="noreferrer">istupakov/parakeet-tdt-0.6b-v3-onnx</a>
-        </p>
-      {/if}
-
-      <label class="field">
-        <span>GPU acceleration</span>
-        <input
-          type="checkbox"
-          bind:checked={cfg.engine.parakeet.gpu}
-          onchange={markDirty}
-          disabled={!parakeetGpuPresent}
-        />
-      </label>
-      <p class="hint">
-        {#if parakeetGpuPresent}
-          Attach the GPU execution provider (WebGPU, CUDA or CoreML per platform) when
-          one is available. Off keeps the GPU free for other processes. INT8 graphs are
-          CPU-lean and dequantize on the GPU; FP32 runs natively on the GPU but needs
-          the larger download. Changing either reloads the model.
-        {:else}
-          No GPU acceleration is available in this build or on this machine, so the
-          toggle is disabled and Parakeet runs on the CPU.
-        {/if}
-      </p>
-
-      <label class="field">
-        <span>Language</span>
-        <input
-          type="text"
-          bind:value={cfg.engine.parakeet.language}
-          placeholder="auto"
-          onchange={markDirty}
-        />
-      </label>
-      <p class="hint">
-        NVIDIA FastConformer TDT 0.6B with 128-mel ONNX preprocessor. INT8 (~665 MB)
-        or FP32 (~2.4 GB) graph export, 25 European languages.
-      </p>
     </div>
   {:else if cfg.engine.backend === "nemotron-streaming"}
     <div class="field-group">

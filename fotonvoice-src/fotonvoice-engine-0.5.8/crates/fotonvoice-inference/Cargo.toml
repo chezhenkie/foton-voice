@@ -86,14 +86,8 @@ moonshine-coreml = ["moonshine", "ort/coreml"]
 # `x86_64-pc-windows-msvc+wgpu` is a prebuilt that exists.
 moonshine-webgpu = ["moonshine", "ort/webgpu"]
 
-# Parakeet ONNX backend via onnxruntime.
-parakeet = ["dep:ort"]
-parakeet-cuda = ["parakeet", "ort/cuda"]
-parakeet-coreml = ["parakeet", "ort/coreml"]
-parakeet-webgpu = ["parakeet", "ort/webgpu"]
-
 # Nemotron streaming STT backend (cache-aware FastConformer-RNNT, English).
-# Same onnxruntime pairing as parakeet; mel preprocessing is pure Rust
+# Same onnxruntime pairing as moonshine; mel preprocessing is pure Rust
 # (realfft), the graphs are the danielbodart 560ms-chunk exports.
 nemotron-streaming = ["dep:ort", "dep:realfft"]
 nemotron-streaming-cuda = ["nemotron-streaming", "ort/cuda"]

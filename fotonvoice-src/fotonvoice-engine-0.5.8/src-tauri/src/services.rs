@@ -274,8 +274,6 @@ pub fn auto_download_speech_model_if_needed(
     let uses_whisper_model = cfg_data.engine.backend != fotonvoice_config::BackendChoice::RemoteOpenAi
         && (cfg_data.engine.backend != fotonvoice_config::BackendChoice::Moonshine
             || !fotonvoice_inference::MOONSHINE_COMPILED)
-        && (cfg_data.engine.backend != fotonvoice_config::BackendChoice::Parakeet
-            || !fotonvoice_inference::PARAKEET_COMPILED)
         && (cfg_data.engine.backend != fotonvoice_config::BackendChoice::NemotronStreaming
             || !fotonvoice_inference::NEMOTRON_STREAMING_COMPILED);
     if uses_whisper_model {

@@ -33,7 +33,7 @@
         Native, on-device voice-to-text for Linux and Windows.
         Uses <a href="https://github.com/ggerganov/whisper.cpp" target="_blank">whisper.cpp</a>,
         <a href="https://github.com/usefulsensors/moonshine" target="_blank">Moonshine</a>,
-        and <a href="https://github.com/NVIDIA/NeMo" target="_blank">NVIDIA Parakeet</a>
+        and <a href="https://github.com/NVIDIA/NeMo" target="_blank">NVIDIA Nemotron Streaming</a>
         for offline transcription and routes speech to any destination.
       </p>
     </div>
@@ -43,7 +43,7 @@
     <h3>System</h3>
     <div class="kv"><span>Frontend</span><span>Svelte 5 + Tauri 2</span></div>
     <div class="kv"><span>Backend</span><span>Rust (Tokio async)</span></div>
-    <div class="kv"><span>Inference</span><span>whisper.cpp, Moonshine, Parakeet TDT & Nemotron Streaming</span></div>
+    <div class="kv"><span>Inference</span><span>whisper.cpp, Moonshine & Nemotron Streaming</span></div>
     <div class="kv"><span>Config</span><span><code>~/.config/fotonvoice-engine/</code></span></div>
     <div class="kv"><span>Models</span><span><code>~/.local/share/fotonvoice-engine/models/</code></span></div>
     {#if clonedTtsVoicesDir}
@@ -64,10 +64,6 @@
       <div class="credit-item">
         <a class="credit-name-link" href="https://github.com/usefulsensors/moonshine" target="_blank">Useful Sensors Moonshine</a>
         <span class="credit-license">Apache 2.0</span>
-      </div>
-      <div class="credit-item">
-        <a class="credit-name-link" href="https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3" target="_blank">NVIDIA Parakeet TDT (model)</a>
-        <span class="credit-license">CC-BY-4.0</span>
       </div>
       <div class="credit-item">
         <a class="credit-name-link" href="https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b" target="_blank">NVIDIA Nemotron Speech Streaming (model)</a>

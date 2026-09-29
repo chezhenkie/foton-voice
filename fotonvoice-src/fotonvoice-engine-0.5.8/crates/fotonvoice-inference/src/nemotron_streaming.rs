@@ -460,7 +460,7 @@ impl NemotronStreamingBackend {
             ))]
             {
                 let devices = crate::webgpu::webgpu_devices();
-                let name = crate::parakeet_gpu_provider().unwrap_or("WebGPU");
+                let name = crate::nemotron_gpu_provider().unwrap_or("WebGPU");
 
                 if devices.is_empty() {
                     tracing::warn!(
@@ -490,7 +490,7 @@ impl NemotronStreamingBackend {
                 #[cfg(all(feature = "nemotron-streaming-coreml", not(feature = "nemotron-streaming-cuda")))]
                 let ep = ort::ep::CoreML::default().build().error_on_failure();
 
-                let name = crate::parakeet_gpu_provider().unwrap_or("GPU");
+                let name = crate::nemotron_gpu_provider().unwrap_or("GPU");
 
                 match builder.with_execution_providers([ep]) {
                     Ok(with_ep) => {

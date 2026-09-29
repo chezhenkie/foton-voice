@@ -18,10 +18,9 @@ export interface S1MiniConfig {
 }
 
 export interface EngineConfig {
-  backend: "whisper-cpp" | "moonshine" | "parakeet" | "nemotron-streaming" | "remote-openai";
+  backend: "whisper-cpp" | "moonshine" | "nemotron-streaming" | "remote-openai";
   whisper_cpp: WhisperCppConfig;
   moonshine: MoonshineConfig;
-  parakeet: ParakeetConfig;
   nemotron_streaming: NemotronStreamingConfig;
   remote_openai: RemoteOpenAiConfig;
   s1_mini: S1MiniConfig;
@@ -46,12 +45,6 @@ export interface WhisperCppConfig {
 export interface MoonshineConfig {
   model_size: string;
   language: string;
-}
-
-export interface ParakeetConfig {
-  model_size: string;
-  language: string;
-  gpu: boolean;
 }
 
 export interface NemotronStreamingConfig {
@@ -181,7 +174,7 @@ export interface McpConfig {
 
 const defaultConfig: AppConfig = {
   engine: {
-    backend: "parakeet",
+    backend: "nemotron-streaming",
     whisper_cpp: {
       model_dir: "",
       model_size: "tiny",
@@ -190,7 +183,6 @@ const defaultConfig: AppConfig = {
       language: "auto",
     },
     moonshine: { model_size: "base", language: "en" },
-    parakeet: { model_size: "tdt-0.6b-v3", language: "auto", gpu: true },
     nemotron_streaming: { model_size: "fp16", language: "en", gpu: true },
     remote_openai: {
       endpoint: "http://localhost:8000/v1",

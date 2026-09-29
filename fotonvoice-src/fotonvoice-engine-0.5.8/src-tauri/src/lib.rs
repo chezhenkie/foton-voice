@@ -147,10 +147,10 @@ pub fn run() {
     tracing::info!("Whisper device: {}", config.data.engine.whisper_cpp.device);
     tracing::info!("Whisper threads: {}", config.data.engine.whisper_cpp.threads);
     tracing::info!(
-        "GPU support in this build - whisper.cpp: {}, Moonshine: {}, Parakeet: {}",
+        "GPU support in this build - whisper.cpp: {}, Moonshine: {}, Nemotron streaming: {}",
         fotonvoice_inference::whisper_gpu_backend().unwrap_or("none (CPU)"),
         fotonvoice_inference::moonshine_gpu_backend().unwrap_or("none (CPU)"),
-        fotonvoice_inference::parakeet_gpu_backend().unwrap_or("none (CPU)"),
+        fotonvoice_inference::nemotron_gpu_backend().unwrap_or("none (CPU)"),
     );
     tracing::info!("Moonshine model size: {}", config.data.engine.moonshine.model_size);
     tracing::info!("Moonshine language: {}", config.data.engine.moonshine.language);
@@ -475,10 +475,6 @@ pub fn run() {
             check_moonshine_downloaded,
             download_moonshine_model,
             delete_moonshine_model,
-            parakeet_available,
-            check_parakeet_downloaded,
-            download_parakeet_model,
-            delete_parakeet_model,
             nemotron_streaming_available,
             check_nemotron_streaming_downloaded,
             download_nemotron_streaming_model,

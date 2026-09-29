@@ -2,8 +2,6 @@
 use fotonvoice_inference::moonshine;
 #[cfg(feature = "nemotron-streaming")]
 use fotonvoice_inference::nemotron_streaming;
-#[cfg(feature = "parakeet")]
-use fotonvoice_inference::parakeet;
 
 #[tauri::command]
 pub async fn check_model_downloaded(model_size: String, model_dir: Option<String>) -> Result<bool, String> {
@@ -87,16 +85,6 @@ onnx_engine_commands!(
     download_moonshine_model,
     delete_moonshine_model,
     "Moonshine"
-);
-onnx_engine_commands!(
-    parakeet,
-    "parakeet",
-    fotonvoice_inference::PARAKEET_COMPILED,
-    parakeet_available,
-    check_parakeet_downloaded,
-    download_parakeet_model,
-    delete_parakeet_model,
-    "Parakeet"
 );
 onnx_engine_commands!(
     nemotron_streaming,

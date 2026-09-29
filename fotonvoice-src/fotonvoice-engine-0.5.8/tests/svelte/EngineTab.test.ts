@@ -31,9 +31,9 @@ const mockConfig = {
       model_size: "base",
       language: "en",
     },
-    parakeet: {
-      model_size: "tdt-0.6b-v3",
-      language: "auto",
+    nemotron_streaming: {
+      model_size: "fp16",
+      language: "en",
     },
   },
 } as any;
@@ -58,15 +58,15 @@ describe("EngineTab.svelte model status", () => {
     expect(await screen.findByText("model installed")).not.toBeNull();
   });
 
-  test("shows the Parakeet model as installed when the backend is Parakeet", async () => {
-    const parakeetConfig = {
+  test("shows the Nemotron streaming model as installed when the backend is Nemotron streaming", async () => {
+    const nemotronConfig = {
       ...mockConfig,
       engine: {
         ...mockConfig.engine,
-        backend: "parakeet",
+        backend: "nemotron-streaming",
       },
     };
-    render(EngineTab, { cfg: parakeetConfig });
+    render(EngineTab, { cfg: nemotronConfig });
 
     expect(await screen.findByText("model installed")).not.toBeNull();
   });
@@ -93,13 +93,13 @@ describe("EngineTab.svelte Backend selector", () => {
   });
 
   test("shows the selected backend in the trigger", async () => {
-    const parakeetConfig = {
+    const nemotronConfig = {
       ...mockConfig,
-      engine: { ...mockConfig.engine, backend: "parakeet" },
+      engine: { ...mockConfig.engine, backend: "nemotron-streaming" },
     };
-    const { container } = render(EngineTab, { cfg: parakeetConfig });
+    const { container } = render(EngineTab, { cfg: nemotronConfig });
     const trigger = container.querySelector(".custom-select-trigger") as HTMLElement;
-    expect(trigger.textContent).toContain("Parakeet");
+    expect(trigger.textContent).toContain("Nemotron");
   });
 });
 
@@ -111,9 +111,9 @@ describe("EngineTab.svelte Backend selector", () => {
  */
 describe("EngineTab.svelte GPU support", () => {
   /** Answer `accelerator_support` with a given build, keeping the model checks. */
-  function buildWith(support: { whisper_gpu: string | null; moonshine_gpu: string | null; parakeet_gpu?: string | null }) {
+  function buildWith(support: { whisper_gpu: string | null; moonshine_gpu: string | null }) {
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) => {
-      if (cmd === "accelerator_support") return { parakeet_gpu: null, s1_mini_gpu: null, ...support };
+      if (cmd === "accelerator_support") return { s1_mini_gpu: null, ...support };
       if (cmd === "check_model_downloaded") return args?.modelSize === "base";
       return true;
     });

@@ -3,7 +3,7 @@ name: build-linux
 # Linux lane, mirroring build-msvc.yml's shape: CI artifact only (no
 # releases, no version gates). Produces a portable Vulkan AppImage + deb.
 # Whisper accelerates through the host Vulkan driver (glslc compiled at
-# build time); parakeet/moonshine ride CPU ONNX here, same as upstream's
+# build time); moonshine/nemotron ride CPU ONNX here, same as upstream's
 # proven Linux lane. fotonvoice-llm-sidecar ships as the 0-byte build.rs
 # placeholder (lane dormant) exactly like the Windows artifact.
 on:

@@ -77,7 +77,7 @@ gtk = { version = "0.18", features = ["v3_24"] }
 # fetched at build time - so building requires network access to that host.
 # Use `--no-default-features --features custom-protocol` for an offline build
 # without either engine.
-default = ["custom-protocol", "moonshine", "parakeet", "inflect-micro", "luxtts"]
+default = ["custom-protocol", "moonshine", "nemotron-streaming", "inflect-micro", "luxtts"]
 custom-protocol = ["tauri/custom-protocol"]
 cuda = ["fotonvoice-inference/cuda"]
 vulkan = ["fotonvoice-inference/vulkan"]
@@ -96,15 +96,10 @@ moonshine-coreml = ["fotonvoice-inference/moonshine-coreml"]
 # the Windows GPU release build uses. See fotonvoice-inference's Cargo.toml for why
 # this is WebGPU and not DirectML.
 moonshine-webgpu = ["fotonvoice-inference/moonshine-webgpu"]
-# Compiles the Parakeet ONNX speech-to-text backend into the app. On by
-# default; without it a "parakeet" backend selection falls back to whisper-cpp.
-parakeet = ["fotonvoice-inference/parakeet"]
-parakeet-cuda = ["fotonvoice-inference/parakeet-cuda"]
-parakeet-coreml = ["fotonvoice-inference/parakeet-coreml"]
-parakeet-webgpu = ["fotonvoice-inference/parakeet-webgpu"]
 # Compiles the Nemotron streaming speech-to-text backend (English, 560ms
-# cache-aware chunks) into the app. OFF by default until Phase 2 ships stable;
-# without it a "nemotron-streaming" selection falls back to whisper-cpp.
+# cache-aware chunks) into the app. On by default since 2026-09-29, when it
+# replaced Parakeet as the default backend; without it a "nemotron-streaming"
+# selection falls back to whisper-cpp.
 nemotron-streaming = ["fotonvoice-inference/nemotron-streaming"]
 nemotron-streaming-cuda = ["nemotron-streaming", "fotonvoice-inference/nemotron-streaming-cuda"]
 nemotron-streaming-coreml = ["nemotron-streaming", "fotonvoice-inference/nemotron-streaming-coreml"]

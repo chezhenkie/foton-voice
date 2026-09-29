@@ -3,13 +3,11 @@ pub mod backend;
 pub mod moonshine;
 #[cfg(feature = "nemotron-streaming")]
 pub mod nemotron_streaming;
-#[cfg(feature = "parakeet")]
-pub mod parakeet;
 pub mod postprocess;
 pub mod remote_openai;
 pub mod s1_mini;
 mod util;
-#[cfg(any(feature = "moonshine", feature = "parakeet", feature = "nemotron-streaming"))]
+#[cfg(any(feature = "moonshine", feature = "nemotron-streaming"))]
 mod webgpu;
 pub mod whisper_cpp;
 
@@ -19,9 +17,6 @@ pub use remote_openai::{
 
 /// Whether the Moonshine ONNX backend was compiled into this build. When false,
 pub const MOONSHINE_COMPILED: bool = cfg!(feature = "moonshine");
-
-/// Whether the Parakeet ONNX backend was compiled into this build. When false,
-pub const PARAKEET_COMPILED: bool = cfg!(feature = "parakeet");
 
 /// Whether the Nemotron streaming ONNX backend was compiled into this build.
 pub const NEMOTRON_STREAMING_COMPILED: bool = cfg!(feature = "nemotron-streaming");
@@ -68,29 +63,6 @@ pub(crate) fn moonshine_gpu_provider() -> Option<&'static str> {
     }
 }
 
-/// Which GPU backend the Parakeet ONNX backend can offload to in this build,
-pub fn parakeet_gpu_backend() -> Option<&'static str> {
-    if cfg!(feature = "parakeet-cuda") {
-        Some("cuda")
-    } else if cfg!(feature = "parakeet-coreml") {
-        Some("coreml")
-    } else if cfg!(feature = "parakeet-webgpu") {
-        Some("webgpu")
-    } else {
-        None
-    }
-}
-
-/// True when the GPU backend is compiled in AND a device is actually present
-pub fn parakeet_gpu_available() -> bool {
-    match parakeet_gpu_backend() {
-        #[cfg(any(feature = "moonshine", feature = "parakeet", feature = "nemotron-streaming"))]
-        Some("webgpu") => !webgpu::webgpu_devices().is_empty(),
-        Some(_) => true,
-        None => false,
-    }
-}
-
 /// Which GPU backend the Nemotron streaming ONNX backend can offload to in
 pub fn nemotron_gpu_backend() -> Option<&'static str> {
     if cfg!(feature = "nemotron-streaming-cuda") {
@@ -104,10 +76,10 @@ pub fn nemotron_gpu_backend() -> Option<&'static str> {
     }
 }
 
-/// Same contract as [`parakeet_gpu_available`] for the Nemotron lane.
+/// True when the GPU backend is compiled in AND a device is actually present
 pub fn nemotron_gpu_available() -> bool {
     match nemotron_gpu_backend() {
-        #[cfg(any(feature = "moonshine", feature = "parakeet", feature = "nemotron-streaming"))]
+        #[cfg(any(feature = "moonshine", feature = "nemotron-streaming"))]
         Some("webgpu") => !webgpu::webgpu_devices().is_empty(),
         Some(_) => true,
         None => false,
@@ -125,14 +97,14 @@ pub fn s1_mini_gpu_backend() -> Option<&'static str> {
 
 #[cfg_attr(
     not(any(
-        feature = "parakeet-cuda",
-        feature = "parakeet-coreml",
-        feature = "parakeet-webgpu"
+        feature = "nemotron-streaming-cuda",
+        feature = "nemotron-streaming-coreml",
+        feature = "nemotron-streaming-webgpu"
     )),
     allow(dead_code)
 )]
-pub(crate) fn parakeet_gpu_provider() -> Option<&'static str> {
-    match parakeet_gpu_backend() {
+pub(crate) fn nemotron_gpu_provider() -> Option<&'static str> {
+    match nemotron_gpu_backend() {
         Some("cuda") => Some("CUDA"),
         Some("coreml") => Some("CoreML"),
         Some("webgpu") => Some("WebGPU"),
@@ -157,13 +129,13 @@ mod gpu_backend_tests {
                 "a CPU-only build named a GPU provider"
             ),
         }
-        match parakeet_gpu_backend() {
+        match nemotron_gpu_backend() {
             Some(backend) => assert!(
-                parakeet_gpu_provider().is_some(),
+                nemotron_gpu_provider().is_some(),
                 "{backend} is reported to the UI but has no ONNX Runtime spelling"
             ),
             None => assert_eq!(
-                parakeet_gpu_provider(),
+                nemotron_gpu_provider(),
                 None,
                 "a CPU-only build named a GPU provider"
             ),
@@ -180,11 +152,11 @@ mod gpu_backend_tests {
             assert_eq!(moonshine_gpu_backend(), None);
         }
         if cfg!(not(any(
-            feature = "parakeet-cuda",
-            feature = "parakeet-coreml",
-            feature = "parakeet-webgpu"
+            feature = "nemotron-streaming-cuda",
+            feature = "nemotron-streaming-coreml",
+            feature = "nemotron-streaming-webgpu"
         ))) {
-            assert_eq!(parakeet_gpu_backend(), None);
+            assert_eq!(nemotron_gpu_backend(), None);
         }
     }
 
@@ -288,8 +260,8 @@ impl InferenceEngine {
                 && self.config.engine.whisper_cpp != new_app_config.engine.whisper_cpp)
             || (new_app_config.engine.backend == BackendChoice::Moonshine
                 && self.config.engine.moonshine != new_app_config.engine.moonshine)
-            || (new_app_config.engine.backend == BackendChoice::Parakeet
-                && self.config.engine.parakeet != new_app_config.engine.parakeet)
+            || (new_app_config.engine.backend == BackendChoice::NemotronStreaming
+                && self.config.engine.nemotron_streaming != new_app_config.engine.nemotron_streaming)
             || (new_app_config.engine.backend == BackendChoice::RemoteOpenAi
                 && self.config.engine.remote_openai != new_app_config.engine.remote_openai);
 
@@ -532,20 +504,6 @@ fn build_backend(config: &AppConfig) -> Box<dyn TranscriptionBackend> {
                 Box::new(unavailable_backend("Moonshine", "moonshine"))
             }
         }
-        BackendChoice::Parakeet => {
-            #[cfg(feature = "parakeet")]
-            {
-                info!(
-                    "Using Parakeet backend ({} model)",
-                    config.engine.parakeet.model_size
-                );
-                Box::new(parakeet::ParakeetBackend::new(config.engine.parakeet.clone()))
-            }
-            #[cfg(not(feature = "parakeet"))]
-            {
-                Box::new(unavailable_backend("Parakeet", "parakeet"))
-            }
-        }
         BackendChoice::NemotronStreaming => {
             #[cfg(feature = "nemotron-streaming")]
             {
@@ -576,11 +534,13 @@ fn build_backend(config: &AppConfig) -> Box<dyn TranscriptionBackend> {
 
 /// A backend for engines the build was compiled without. Fails loudly at load
 /// and transcription time instead of silently substituting whisper.cpp.
+#[allow(dead_code)]
 struct UnavailableBackend {
     label: &'static str,
     feature: &'static str,
 }
 
+#[allow(dead_code)]
 fn unavailable_backend(label: &'static str, feature: &'static str) -> UnavailableBackend {
     UnavailableBackend { label, feature }
 }
@@ -789,9 +749,14 @@ mod tests {
     }
 
     #[test]
-    fn default_backend_is_parakeet() {
+    fn default_backend_is_nemotron_streaming() {
         let cfg = AppConfig::default();
-        assert_eq!(build_backend(&cfg).name(), "parakeet");
+        let backend = build_backend(&cfg);
+        let name = backend.name();
+        assert!(
+            name.eq_ignore_ascii_case("nemotron-streaming") || name.eq_ignore_ascii_case("nemotron streaming"),
+            "unexpected default backend: {name}"
+        );
     }
 
     #[test]
@@ -808,7 +773,11 @@ mod tests {
     fn test_engine_update_runtime_switches_backend() {
         let cfg = AppConfig::default();
         let mut engine = InferenceEngine::new(runtime(cfg.clone()));
-        assert_eq!(engine.backend.name(), "parakeet");
+        let initial = engine.backend.name();
+        assert!(
+            initial.eq_ignore_ascii_case("nemotron-streaming") || initial.eq_ignore_ascii_case("nemotron streaming"),
+            "unexpected default backend: {initial}"
+        );
 
         let mut new_cfg = cfg.clone();
         new_cfg.engine.backend = BackendChoice::RemoteOpenAi;

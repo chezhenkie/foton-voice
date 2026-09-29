@@ -49,19 +49,6 @@ impl Default for MoonshineConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ParakeetConfig {
-    pub model_size: String,
-    pub language: String,
-    /// Attach the GPU execution provider (WebGPU/CUDA/CoreML per platform)
-    #[serde(default = "default_parakeet_gpu")]
-    pub gpu: bool,
-}
-
-fn default_parakeet_gpu() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NemotronStreamingConfig {
     /// Precision variant of the danielbodart 560ms-chunk export:
     pub model_size: String,
@@ -82,16 +69,6 @@ impl Default for NemotronStreamingConfig {
             model_size: "fp16".into(),
             language: "en".into(),
             gpu: default_nemotron_gpu(),
-        }
-    }
-}
-
-impl Default for ParakeetConfig {
-    fn default() -> Self {
-        Self {
-            model_size: "tdt-0.6b-v3".into(),
-            language: "auto".into(),
-            gpu: default_parakeet_gpu(),
         }
     }
 }
@@ -129,8 +106,9 @@ pub enum BackendChoice {
     #[serde(alias = "auto")]
     WhisperCpp,
     Moonshine,
-    Parakeet,
-    #[serde(rename = "nemotron-streaming", alias = "nemotron_streaming")]
+    /// `alias = "parakeet"` migrates configs written before the Parakeet
+    /// backend was removed (2026-09-29): they load as Nemotron streaming.
+    #[serde(rename = "nemotron-streaming", alias = "nemotron_streaming", alias = "parakeet")]
     NemotronStreaming,
     #[serde(rename = "remote-openai", alias = "remote-open-ai", alias = "remote_openai", alias = "openai-compatible", alias = "remote")]
     RemoteOpenAi,
@@ -138,8 +116,10 @@ pub enum BackendChoice {
 
 impl Default for BackendChoice {
     /// Whisper.cpp is UI-dormant since 2026-09-21 (measured: NVIDIA transducers
+    /// beat same-size GGUF models on WER at usable RTF), and the Parakeet
+    /// backend was removed 2026-09-29, so Nemotron streaming is the default.
     fn default() -> Self {
-        Self::Parakeet
+        Self::NemotronStreaming
     }
 }
 
@@ -172,8 +152,6 @@ pub struct EngineConfig {
     pub whisper_cpp: WhisperCppConfig,
     #[serde(default)]
     pub moonshine: MoonshineConfig,
-    #[serde(default)]
-    pub parakeet: ParakeetConfig,
     #[serde(default)]
     pub nemotron_streaming: NemotronStreamingConfig,
     #[serde(default)]
