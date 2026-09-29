@@ -136,11 +136,11 @@
 
   <p class="usage-note">
     <strong>Saying a command by name.</strong> Start dictation and say
-    <em>"FotonVoice Engine"</em>, then the command's name, then what you want to send - for
-    example <em>"FotonVoice Engine notes, remember to call the plumber"</em> routes
+    <em>"Hey Foton"</em>, then the command's name, then what you want to send - for
+    example <em>"Hey Foton, notes, remember to call the plumber"</em> routes
     <em>remember to call the plumber</em> to the command named <strong>notes</strong>.
     Everything after the name is the text. Natural phrasing works too
-    (<em>"FotonVoice Engine, add this to my notes: ..."</em>). Say nothing of the sort and
+    (<em>"Hey Foton, add this to my notes: ..."</em>). Say nothing of the sort and
     dictation goes wherever your hotkey already points.
   </p>
 

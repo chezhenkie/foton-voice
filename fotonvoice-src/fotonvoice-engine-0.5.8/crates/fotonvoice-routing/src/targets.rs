@@ -1209,39 +1209,60 @@ fn clean_payload(post: &str) -> String {
     text_without_punct.to_string()
 }
 
-/// Parse text for keyword "FotonVoice Engine" and target name/label matching.
+/// Lowercase `s` without changing any character's byte length, so byte offsets
+/// found in the result are valid in `s` too. The few characters whose lowercase
+/// form is longer or shorter in UTF-8 (e.g. `İ`, `ß`) are left as they are,
+/// which only costs them case-insensitive matching.
+fn fold_case(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let mut lower = c.to_lowercase();
+            match (lower.next(), lower.next()) {
+                (Some(l), None) if l.len_utf8() == c.len_utf8() => l,
+                _ => c,
+            }
+        })
+        .collect()
+}
+
+/// Parse text for a trigger keyword ("Hey Foton", plus ASR mishearings within
+/// edit distance 1 on the leading words) followed by a target name/label.
+/// Supports both direct commands (e.g. "Hey Foton notes Hi there") and natural,
+/// conversational phrasing (e.g. "Hey Foton, add this to my notes. What are you
+/// doing here?"). Without an explicit trigger nothing matches, so normal
+/// dictation is never misclassified as a command. Returns
+/// `Some(VoiceCommandParseResult)` if the trigger was found AND a target
+/// matched; otherwise `None`.
 pub fn parse_voice_command(
     text: &str,
     targets: &[OutputTarget],
 ) -> Option<VoiceCommandParseResult> {
-    let lower_text = text.to_lowercase();
+    let lower_text = fold_case(text);
     let mut found_pos = None;
     let mut trigger_len = 0;
 
-    let exact_triggers = ["fotonvoice-engine", "vox ctrl", "vox-ctrl", "vox control"];
+    let exact_triggers = ["hey foton", "hey, foton", "hey-foton", "hey_foton"];
     for trigger in &exact_triggers {
-        if let Some(pos) = lower_text.find(trigger) {
-            if found_pos.map_or(true, |p| pos < p) {
-                found_pos = Some(pos);
-                trigger_len = trigger.len();
-            }
-        }
-    }
-
-    if found_pos.is_none() {
-        let words: Vec<&str> = lower_text.split_whitespace().collect();
-        for (i, word) in words.iter().enumerate() {
-            let clean_w = word.trim_matches(|c: char| c.is_ascii_punctuation());
-            if clean_w == "control" || clean_w == "ctrl" || clean_w == "ctl" || clean_w == "kontrol" {
-                if i > 0 {
-                    let start_idx = lower_text.find(words[0]).unwrap_or(0);
-                    let ctrl_pos = lower_text.find(word).unwrap_or(0);
-                    let end_pos = ctrl_pos + word.len();
-                    found_pos = Some(start_idx);
-                    trigger_len = end_pos - start_idx;
-                    break;
+        let mut search_start = 0;
+        while let Some(match_idx) = lower_text[search_start..].find(trigger) {
+            let pos = search_start + match_idx;
+            let end_idx = pos + trigger.len();
+            let is_boundary_start = pos == 0 || {
+                let prev = lower_text[..pos].chars().last().unwrap();
+                prev.is_whitespace() || prev.is_ascii_punctuation()
+            };
+            let is_boundary_end = end_idx == lower_text.len() || {
+                let next = lower_text[end_idx..].chars().next().unwrap();
+                next.is_whitespace() || next.is_ascii_punctuation()
+            };
+            if is_boundary_start && is_boundary_end {
+                if found_pos.map_or(true, |p| pos < p) {
+                    found_pos = Some(pos);
+                    trigger_len = trigger.len();
                 }
+                break;
             }
+            search_start = pos + 1;
         }
     }
 
@@ -1249,16 +1270,29 @@ pub fn parse_voice_command(
         let words: Vec<&str> = lower_text.split_whitespace().collect();
         if !words.is_empty() {
             for len in (1..=2.min(words.len())).rev() {
-                let candidate = words[..len].join(" ");
-                let clean_cand = candidate.trim_matches(|c: char| c.is_ascii_punctuation());
-                let dist1 = levenshtein_distance(clean_cand, "fotonvoice-engine");
-                let dist2 = levenshtein_distance(clean_cand, "vox control");
-                if dist1 <= 2 || dist2 <= 3 {
-                    if let Some(pos) = lower_text.find(clean_cand) {
-                        found_pos = Some(pos);
-                        trigger_len = clean_cand.len();
-                        break;
-                    }
+                let clean_tokens: Vec<&str> = words[..len]
+                    .iter()
+                    .map(|w| w.trim_matches(|c: char| c.is_ascii_punctuation()))
+                    .filter(|w| !w.is_empty())
+                    .collect();
+                let clean_cand = clean_tokens.join(" ");
+                let dist = if clean_cand.is_empty() {
+                    usize::MAX
+                } else {
+                    levenshtein_distance(&clean_cand, "hey foton")
+                };
+                if dist <= 1 {
+                    let first_word = words[0];
+                    let last_word = words[len - 1];
+                    let start_idx = lower_text.find(first_word).unwrap_or(0);
+                    let last_pos = lower_text[start_idx..]
+                        .find(last_word)
+                        .map(|p| start_idx + p)
+                        .unwrap_or(start_idx);
+                    let end_idx = last_pos + last_word.len();
+                    found_pos = Some(start_idx);
+                    trigger_len = end_idx - start_idx;
+                    break;
                 }
             }
         }
@@ -1282,10 +1316,10 @@ pub fn parse_voice_command(
 
     candidate_entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 
-    let after_trigger_lower = after_trigger.to_lowercase();
+    let after_trigger_lower = fold_case(after_trigger);
 
     for (target_id, candidate) in candidate_entries {
-        let cand_lower = candidate.to_lowercase();
+        let cand_lower = fold_case(candidate);
 
         let mut search_start = 0;
         while let Some(match_idx) = after_trigger_lower[search_start..].find(&cand_lower) {
@@ -1315,7 +1349,11 @@ pub fn parse_voice_command(
                 }
             }
 
-            search_start = abs_match_start + 1;
+            search_start = abs_match_start
+                + after_trigger_lower[abs_match_start..]
+                    .chars()
+                    .next()
+                    .map_or(1, char::len_utf8);
         }
     }
 

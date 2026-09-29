@@ -1668,6 +1668,12 @@ fn test_parse_voice_command_no_keyword() {
     ];
 
     assert!(parse_voice_command("hi there", &targets).is_none());
+    assert!(parse_voice_command("Hey folks, notes about meeting", &targets).is_none());
+    assert!(parse_voice_command("Hey boss, notes about meeting", &targets).is_none());
+    assert!(parse_voice_command("They photosynthesize notes and models", &targets).is_none());
+    assert!(parse_voice_command("Take control, say hello", &targets).is_none());
+    assert!(parse_voice_command("I lost control notes about the meeting", &targets).is_none());
+    assert!(parse_voice_command("The remote control, say what you will", &targets).is_none());
 }
 
 #[test]
@@ -1714,23 +1720,23 @@ fn test_parse_voice_command_matched_target() {
         },
     ];
 
-    let res = parse_voice_command("FotonVoice Engine notes Hi there", &targets).expect("should match");
+    let res = parse_voice_command("Hey Foton notes Hi there", &targets).expect("should match");
     assert_eq!(res.matched_target_id, "notes");
     assert_eq!(res.payload, "Hi there");
 
-    let res2 = parse_voice_command("vox ctrl: Notes, please write this down", &targets).expect("should match");
+    let res2 = parse_voice_command("Hey Foton: Notes, please write this down", &targets).expect("should match");
     assert_eq!(res2.matched_target_id, "notes");
     assert_eq!(res2.payload, "please write this down");
 
-    let res3 = parse_voice_command("FotonVoice Engine add this to my notes. What are you doing here?", &targets).expect("should match conversational notes");
+    let res3 = parse_voice_command("Hey Foton add this to my notes. What are you doing here?", &targets).expect("should match conversational notes");
     assert_eq!(res3.matched_target_id, "notes");
     assert_eq!(res3.payload, "What are you doing here?");
 
-    let res4 = parse_voice_command("FotonVoice Engine put this into my Notes: What are you doing here?", &targets).expect("should match conversational put into notes");
+    let res4 = parse_voice_command("Hey Foton put this into my Notes: What are you doing here?", &targets).expect("should match conversational put into notes");
     assert_eq!(res4.matched_target_id, "notes");
     assert_eq!(res4.payload, "What are you doing here?");
 
-    let res5 = parse_voice_command("FotonVoice Engine send us to my notes. I love you.", &targets).expect("should match conversational send us to my notes");
+    let res5 = parse_voice_command("Hey Foton send us to my notes. I love you.", &targets).expect("should match conversational send us to my notes");
     assert_eq!(res5.matched_target_id, "notes");
     assert_eq!(res5.payload, "I love you.");
 
@@ -1743,15 +1749,15 @@ fn test_parse_voice_command_matched_target() {
         },
     ];
 
-    let res6 = parse_voice_command("box control speak text", &speak_targets).expect("should match box control homophone");
+    let res6 = parse_voice_command("Hay Foton speak text", &speak_targets).expect("should match Hay Foton homophone");
     assert_eq!(res6.matched_target_id, "speak");
     assert_eq!(res6.payload, "text");
 
-    let res7 = parse_voice_command("Box control, speak, eat my ass.", &speak_targets).expect("should match Box control homophone with punctuation");
+    let res7 = parse_voice_command("Hey Foto, speak, hello there.", &speak_targets).expect("should match Hey Foto homophone with punctuation");
     assert_eq!(res7.matched_target_id, "speak");
-    assert_eq!(res7.payload, "eat my ass.");
+    assert_eq!(res7.payload, "hello there.");
 
-    let res8 = parse_voice_command("Walks control speak how are you?", &speak_targets).expect("should match Walks control dynamic trigger pattern");
+    let res8 = parse_voice_command("Hey Fotan speak how are you?", &speak_targets).expect("should match Hey Fotan homophone");
     assert_eq!(res8.matched_target_id, "speak");
     assert_eq!(res8.payload, "how are you?");
 }
@@ -1837,7 +1843,7 @@ fn test_parse_voice_command_disambiguates_longest_target_name() {
         },
     ];
 
-    let res = parse_voice_command("FotonVoice Engine, send this to my personal notes, help", &targets)
+    let res = parse_voice_command("Hey Foton, send this to my personal notes, help", &targets)
         .expect("should match personal notes");
     assert_eq!(res.matched_target_id, "personal_notes");
     assert_eq!(res.payload, "help");
@@ -1929,7 +1935,7 @@ async fn test_voice_command_router_integration() {
     ];
 
     let router = OutputTargetRouter::new(targets);
-    let res = router.deliver("cmd", "FotonVoice Engine notes Hello routed target").await;
+    let res = router.deliver("cmd", "Hey Foton notes Hello routed target").await;
     assert!(res.success);
 
     let content = std::fs::read_to_string(&temp_path).unwrap();
@@ -2030,7 +2036,7 @@ async fn test_command_trigger_callback_notification() {
     ];
 
     let router = OutputTargetRouter::new(targets);
-    let res = router.deliver("cmd", "FotonVoice Engine notes Buy milk").await;
+    let res = router.deliver("cmd", "Hey Foton notes Buy milk").await;
     assert!(res.success);
     assert!(CALLED.load(Ordering::SeqCst));
     let _ = std::fs::remove_file(temp_path);
@@ -2113,4 +2119,60 @@ async fn command_targets_keep_newlines_when_not_stripping() {
 
     let text = delivered.expect("delivery produced no text");
     assert_eq!(text, "first line\nsecond line ");
+}
+
+#[test]
+fn test_parse_voice_command_requires_wake_word() {
+    use crate::targets::parse_voice_command;
+
+    let targets = vec![
+        OutputTarget {
+            id: "say_target".into(),
+            label: "Say".into(),
+            delivery: DeliveryType::Speak,
+            ..OutputTarget::default_inject()
+        },
+        OutputTarget {
+            id: "notes".into(),
+            label: "Notes".into(),
+            delivery: DeliveryType::File,
+            ..OutputTarget::default_inject()
+        },
+    ];
+
+    assert!(parse_voice_command("say hello world", &targets).is_none());
+    assert!(parse_voice_command("notes: buy groceries", &targets).is_none());
+    assert!(parse_voice_command("what the hell is going on. And why is it happening?", &targets).is_none());
+    assert!(parse_voice_command("There have been several changes made in this branch.", &targets).is_none());
+    assert!(parse_voice_command("Do you hear me? Do you know what's happening?", &targets).is_none());
+
+    let res1 = parse_voice_command("Hey Foton, say hello", &targets).expect("should match with hey foton trigger");
+    assert_eq!(res1.matched_target_id, "say_target");
+    assert_eq!(res1.payload, "hello");
+
+    let res2 = parse_voice_command("Hey Foton, add this to my notes: buy groceries", &targets).expect("should match notes with filler");
+    assert_eq!(res2.matched_target_id, "notes");
+    assert_eq!(res2.payload, "buy groceries");
+}
+
+#[test]
+fn test_parse_voice_command_non_ascii_text_and_targets() {
+    use crate::targets::parse_voice_command;
+
+    let targets = vec![OutputTarget {
+        id: "uber".into(),
+        label: "\u{dc}berblick".into(),
+        delivery: DeliveryType::File,
+        ..OutputTarget::default_inject()
+    }];
+
+    let res = parse_voice_command(
+        "\u{130}\u{130} Hey Foton, \u{dc}berblick gr\u{fc}\u{df}e aus \u{130}stanbul",
+        &targets,
+    )
+    .expect("should match non-ASCII label after non-ASCII prefix");
+    assert_eq!(res.matched_target_id, "uber");
+    assert_eq!(res.payload, "gr\u{fc}\u{df}e aus \u{130}stanbul");
+
+    assert!(parse_voice_command("Hey Foton, x\u{dc}berblick hallo", &targets).is_none());
 }

@@ -299,7 +299,7 @@ impl Default for FeaturesConfig {
     fn default() -> Self {
         Self {
             remove_fillers: true,
-            custom_vocabulary: vec!["FotonVoice Engine".into()],
+            custom_vocabulary: vec!["Hey Foton".into()],
             spoken_punctuation: true,
             auto_format_lists: true,
             show_notification: None,

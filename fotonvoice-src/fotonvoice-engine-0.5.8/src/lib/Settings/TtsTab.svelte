@@ -1610,7 +1610,7 @@
     <div class="field-label-row">
       <div style="display: flex; flex-direction: column;">
         <h3 style="margin-bottom: 0;">TTS Snippets (Pronunciation Guide)</h3>
-        <p class="hint" style="margin-top: 4px;">Type a word (e.g. "fotonvoice-engine") -> its spoken expansion/pronunciation (e.g. "vox control"). Only affects speech playback.</p>
+        <p class="hint" style="margin-top: 4px;">Type a word (e.g. "gpu") -> its spoken expansion/pronunciation (e.g. "G P U"). Only affects speech playback.</p>
       </div>
       <button class="btn-add-inline" type="button" onclick={addEmptyTtsSnippetRow}>
         + Add Pronunciation

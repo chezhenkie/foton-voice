@@ -365,7 +365,7 @@ impl InferenceEngine {
 
         let targets: &Vec<fotonvoice_routing::OutputTarget> = &self.targets;
 
-        let mut merged_prompt = String::from("FotonVoice Engine is a voice control assistant application. FotonVoice Engine commands start with FotonVoice Engine. ");
+        let mut merged_prompt = String::from("FotonVoice Engine is a voice control assistant application. Voice commands start with Hey Foton. ");
 
         if !app_config.features.custom_vocabulary.is_empty() {
             merged_prompt.push_str("Vocabulary: ");

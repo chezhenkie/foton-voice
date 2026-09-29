@@ -234,7 +234,7 @@ pub fn spawn_audio_coordinator(
                             )
                         };
                         let mut merged_prompt = String::from(
-                            "FotonVoice Engine is a voice control assistant application. FotonVoice Engine commands start with FotonVoice Engine. ",
+                            "FotonVoice Engine is a voice control assistant application. Voice commands start with Hey Foton. ",
                         );
                         if !custom_vocabulary.is_empty() {
                             merged_prompt.push_str("Vocabulary: ");
@@ -336,7 +336,7 @@ pub fn spawn_text_delivery_worker(
                 .unwrap_or(global_s1_mini_enabled);
 
             let targets = state.targets.blocking_lock().clone();
-            let (target_id, text) = if let Some(parsed) = fotonvoice_routing::targets::parse_voice_command(&output.text, &targets) {
+            let (target_id, raw_text) = if let Some(parsed) = fotonvoice_routing::targets::parse_voice_command(&output.text, &targets) {
                 let matched_id = parsed.matched_target_id.clone();
                 let payload = parsed.payload;
                 let matched_label = targets
@@ -345,20 +345,18 @@ pub fn spawn_text_delivery_worker(
                     .map(|t| if t.label.is_empty() { t.id.clone() } else { t.label.clone() })
                     .unwrap_or_else(|| matched_id.clone());
                 fotonvoice_routing::targets::notify_command_trigger(&matched_label, &payload);
-
-                let cleaned_payload = if s1_mini_enabled && !payload.trim().is_empty() {
-                    fotonvoice_inference::s1_mini::clean_dictation(&payload, &s1_mini_styling, None)
-                } else {
-                    payload
-                };
-                (matched_id, cleaned_payload)
+                (matched_id, payload)
             } else {
-                let cleaned_text = if s1_mini_enabled && !output.text.trim().is_empty() {
-                    fotonvoice_inference::s1_mini::clean_dictation(&output.text, &s1_mini_styling, None)
-                } else {
-                    output.text.clone()
-                };
-                (output.target_id.clone(), cleaned_text)
+                (output.target_id.clone(), output.text.clone())
+            };
+
+            let is_speak_target = targets
+                .iter()
+                .any(|t| t.id == target_id && t.delivery == fotonvoice_routing::DeliveryType::Speak);
+            let text = if !is_speak_target && s1_mini_enabled && !raw_text.trim().is_empty() {
+                fotonvoice_inference::s1_mini::clean_dictation(&raw_text, &s1_mini_styling, None)
+            } else {
+                raw_text
             };
 
             if text.trim().is_empty() {

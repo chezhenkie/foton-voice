@@ -302,7 +302,7 @@
         </label>
         <p class="hint">
           Names this target in the app, and is what you say to send dictation here through a
-          Voice Command Router target: &ldquo;FotonVoice Engine, <em>{editingTarget.label || "Obsidian Notes"}</em>,
+          Voice Command Router target: &ldquo;Hey Foton, <em>{editingTarget.label || "Obsidian Notes"}</em>,
           buy milk tomorrow&rdquo;. The Target ID works as a spoken name too, so pick something
           easy to say and easy for speech recognition to catch.
         </p>
@@ -312,7 +312,7 @@
           <CustomSelect
             bind:value={editingTarget.delivery}
             options={[
-              { value: "command", label: "Voice Command Router (FotonVoice Engine keyword)" },
+              { value: "command", label: "Voice Command Router (Hey Foton keyword)" },
               { value: "inject", label: "Inject Text Directly (Simulate keyboard)" },
               { value: "clipboard", label: "Save to Clipboard" },
               { value: "exec", label: "Execute Command" },
@@ -333,7 +333,7 @@
           <div class="morph-section mcp-container">
             <h5>Voice Command Router Settings</h5>
             <p class="hint">
-              Types dictated text into your active application by default. If your dictation contains <code>FotonVoice Engine &lt;target_name&gt; &lt;text&gt;</code> (for example, <em>"FotonVoice Engine Notes Hello world"</em>), FotonVoice Engine dynamically reroutes the text to that target instead.
+              Types dictated text into your active application by default. If your dictation contains <code>Hey Foton &lt;target_name&gt; &lt;text&gt;</code> (for example, <em>"Hey Foton Notes Hello world"</em>), FotonVoice Engine dynamically reroutes the text to that target instead.
             </p>
           </div>
         {/if}

@@ -223,7 +223,7 @@ const defaultConfig: AppConfig = {
   },
   features: {
     remove_fillers: true,
-    custom_vocabulary: ["FotonVoice Engine"],
+    custom_vocabulary: ["Hey Foton"],
     spoken_punctuation: true,
     auto_format_lists: true,
     snippets: {},
