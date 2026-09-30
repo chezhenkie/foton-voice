@@ -70,17 +70,17 @@ FotonVoice Engine is designed with strict modularity, memory isolation, and high
 
 | Crate | Responsibility |
 | :--- | :--- |
-| **`fotonvoice-app`** | Tauri 2 application shell, Svelte IPC commands, system tray, and window management. |
-| **`fotonvoice-core`** | Shared domain types, audio buffer representations, and engine traits. |
-| **`fotonvoice-audio`** | `cpal` audio input stream, ring buffers, device enumeration, VAD, and RNNoise. |
+| **`fotonvoice-app`** | Tauri 2 application shell, Svelte IPC commands, system tray, and window management. Package name is `fotonvoice-app`; the directory is `src-tauri/`. |
+| **`fotonvoice-audio`** | `cpal` audio input stream, device enumeration and negotiation, per-stream gain, pre-roll, resample, and RNNoise behind the `noisereduce` feature. There is no VAD and no ring buffer here; the RMS noise gate lives in the app pipeline. |
 | **`fotonvoice-inference`** | Multi-engine STT runner (`Moonshine`, `Nemotron Streaming`, remote HTTP; whisper.cpp GGUF lane compiled in but deactivated). |
 | **`fotonvoice-llm-sidecar`** | Independent companion process running `llama.cpp` (`llama_cpp_2`) with Vulkan GPU offload and CPU fallback for S1-mini text cleanup. |
 | **`fotonvoice-llm`** | IPC client communicating with `fotonvoice-llm-sidecar` and external OpenAI-compatible LLM endpoints. |
-| **`fotonvoice-routing`** | 11-way delivery router, voice command prefix matcher, and multi-target dispatch. |
+| **`fotonvoice-routing`** | 13-way delivery router (`DeliveryType`: inject, clipboard, exec, pipe, socket, file, dbus, http, webhook, mcp, speak, chat, command), voice command prefix matcher, and multi-target dispatch. |
 | **`fotonvoice-hotkeys`** | XDG Desktop Portal `GlobalShortcuts` integration and gesture state machine. |
 | **`fotonvoice-tts`** | Neural TTS orchestration (Breeze-TTS-2, VoxCPM2, Pocket-TTS, Piper, Inflect, eSpeak) and idle memory unloading. |
 | **`fotonvoice-inject`** | Wayland (`wtype`) and X11 (`xdotool`) simulated keyboard typing. |
 | **`fotonvoice-winput`** | Windows native typing via `SendInput` (`KEYEVENTF_UNICODE`) with clipboard fallback. |
+| **`fotonvoice-dbus`** | Linux D-Bus dictation lane, emitting a signal to the focused text field. |
 | **`fotonvoice-mcp`** | Native Model Context Protocol (MCP) JSON-RPC server and client. |
 | **`fotonvoice-config`** | Hot-reloadable TOML and JSON configuration management and validation. |
 | **`fotonvoice-text`** | Text normalization, filler-word sanitization, and regex replacement filters. |
