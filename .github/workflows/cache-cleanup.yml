@@ -67,3 +67,37 @@ jobs:
               echo "deleted stale default branch cache $id ($key)"
             fi
           done < main.txt
+
+      # Artifacts share the account-wide 500 MB quota with Packages, so a
+      # 120 MB AppImage per push fills it within a day. The repo retention
+      # cap is 7 days; this keeps only the newest artifact per name, which is
+      # the one a download page links to.
+      - name: Fetch artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/${{ github.repository }}/actions/artifacts" \
+            --jq '.artifacts[] | [.id, .name, .created_at] | @tsv' > artifacts.txt
+          wc -l < artifacts.txt
+
+      - name: Delete artifacts except newest per name
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # read ... || [ -n "$id" ] so a file without a trailing newline does
+          # not silently drop its last record from the sweep.
+          declare -A best bestid
+          while IFS=$'\t' read -r id name created || [ -n "$id" ]; do
+            if [ "$created" \> "${best[$name]}" ] 2>/dev/null || [ -z "${best[$name]}" ]; then
+              best[$name]=$created
+              bestid[$name]=$id
+            fi
+          done < artifacts.txt
+          while IFS=$'\t' read -r id name created || [ -n "$id" ]; do
+            if [ "$id" != "${bestid[$name]}" ]; then
+              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" > /dev/null 2>&1 || true
+              echo "deleted superseded artifact $id ($name)"
+            fi
+          done < artifacts.txt
