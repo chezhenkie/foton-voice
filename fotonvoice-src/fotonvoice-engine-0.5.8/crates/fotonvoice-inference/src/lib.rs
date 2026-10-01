@@ -486,16 +486,13 @@ impl InferenceEngine {
 
 fn build_backend(config: &AppConfig) -> Box<dyn TranscriptionBackend> {
     match config.engine.backend {
-        // Product decision 2026-09-29: whisper.cpp stays compiled in as the
-        // future GGUF lane but is deactivated - no UI entry, no downloads, no
-        // runs. Legacy configs carrying backend "whisper-cpp" get a loud error.
         BackendChoice::WhisperCpp => {
-            error!(
-                "Whisper.cpp backend is deactivated in this version. Open Settings -> Engine and pick another backend."
+            info!(
+                "Using Whisper.cpp backend ({} model)",
+                config.engine.whisper_cpp.model_size
             );
-            Box::new(unavailable_backend(
-                "Whisper.cpp (deactivated)",
-                "whisper-cpp",
+            Box::new(whisper_cpp::WhisperCppBackend::new(
+                config.engine.whisper_cpp.clone(),
             ))
         }
         BackendChoice::Moonshine => {

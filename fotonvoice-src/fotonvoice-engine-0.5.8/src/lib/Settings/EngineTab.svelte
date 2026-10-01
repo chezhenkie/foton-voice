@@ -14,6 +14,7 @@
     configDirty.set(true);
   }
 
+  let whisperGpu = $state<string | null>(null);
   let moonshineGpu = $state<string | null>(null);
   let nemotronStreamingGpu = $state<string | null>(null);
 
@@ -26,6 +27,12 @@
   const gpuLabel = (id: string) => GPU_LABELS[id] ?? id;
 
   let backendOptions = $derived([
+    {
+      value: "whisper-cpp",
+      label: whisperGpu
+        ? `Whisper.cpp (${gpuLabel(whisperGpu)})`
+        : "Whisper.cpp (CPU only)",
+    },
     {
       value: "moonshine",
       label: moonshineGpu
@@ -40,6 +47,31 @@
     },
     { value: "remote-openai", label: "Remote Speech Engine (OpenAI API)" },
   ]);
+
+  const whisperModelSizeOptions = [
+    { value: "large-v3-turbo-q8", label: "Whisper large-v3-turbo Q8_0 (874 MB, best quality)" },
+    { value: "large-v3-turbo", label: "Whisper large-v3-turbo Q5_0 (574 MB, fastest)" },
+    { value: "large-v3", label: "Whisper large-v3 Q5_0 (1.03 GB, most accurate)" },
+  ];
+
+  let whisperModels = createModelManager({
+    sizes: whisperModelSizeOptions.map((o) => o.value),
+    check: (size) =>
+      invoke<boolean>("check_whisper_model_downloaded", {
+        modelSize: size,
+        modelDir: cfg.engine.whisper_cpp.model_dir || null,
+      }),
+    download: (size) =>
+      invoke("download_whisper_model", {
+        modelSize: size,
+        modelDir: cfg.engine.whisper_cpp.model_dir || null,
+      }),
+    remove: (size) =>
+      invoke("delete_whisper_model", {
+        modelSize: size,
+        modelDir: cfg.engine.whisper_cpp.model_dir || null,
+      }),
+  });
 
   const moonshineModelSizeOptions = [
     { value: "base", label: "Base" },
@@ -117,6 +149,11 @@
     }
   }
 
+  async function onWhisperModelChanged() {
+    markDirty();
+    await whisperModels.verify(cfg.engine.whisper_cpp.model_size);
+  }
+
   async function onMoonshineModelChanged() {
     markDirty();
     await moonshineModels.verify(cfg.engine.moonshine.model_size);
@@ -128,6 +165,7 @@
   }
 
   onMount(async () => {
+    whisperModels.refreshAll();
     try {
       moonshineAvailable = await invoke<boolean>("moonshine_available");
     } catch (e) {
@@ -142,11 +180,13 @@
     nemotronModels.refreshAll();
     try {
       const support = await invoke<{
+        whisper_gpu: string | null;
         moonshine_gpu: string | null;
         nemotron_streaming_gpu: string | null;
         nemotron_streaming_gpu_present: boolean;
         s1_mini_gpu: string | null;
       }>("accelerator_support");
+      whisperGpu = support.whisper_gpu ?? null;
       moonshineGpu = support.moonshine_gpu ?? null;
       nemotronStreamingGpu = support.nemotron_streaming_gpu ?? null;
       nemotronGpuPresent = support.nemotron_streaming_gpu_present;
@@ -173,10 +213,62 @@
 
   {#if cfg.engine.backend === "whisper-cpp"}
     <div class="field-group">
-      <h3>Whisper.cpp</h3>
+      <h3>Whisper.cpp Settings</h3>
+
+      <label class="field">
+        <span>Model</span>
+        <CustomSelect
+          bind:value={cfg.engine.whisper_cpp.model_size}
+          options={whisperModelSizeOptions}
+          onchange={onWhisperModelChanged}
+        />
+      </label>
+
+      <ModelStatusRow mgr={whisperModels} size={cfg.engine.whisper_cpp.model_size} />
+      <p class="hint" style="margin-top: 6px;">
+        Model source: <a class="credit-name-link" href="https://huggingface.co/ggerganov/whisper.cpp" target="_blank" rel="noreferrer">ggerganov/whisper.cpp</a>
+      </p>
+
+      <label class="field">
+        <span>Language</span>
+        <input
+          type="text"
+          bind:value={cfg.engine.whisper_cpp.language}
+          onchange={markDirty}
+          placeholder="auto"
+        />
+      </label>
+
+      <label class="field">
+        <span>Device</span>
+        <CustomSelect
+          bind:value={cfg.engine.whisper_cpp.device}
+          options={[{ value: "auto", label: "Auto" }, { value: "cpu", label: "CPU only" }]}
+          onchange={markDirty}
+        />
+      </label>
       <p class="hint">
-        The whisper.cpp backend is deactivated in this version - it cannot run
-        or download models. Pick another backend above.
+        {#if whisperGpu}
+          Auto offloads to {gpuLabel(whisperGpu)}. CPU only leaves the GPU free
+          for other processes.
+        {:else}
+          This build has no GPU backend for whisper.cpp, so it runs on the CPU.
+        {/if}
+      </p>
+
+      <label class="field">
+        <span>Threads</span>
+        <input
+          type="number"
+          min="1"
+          bind:value={cfg.engine.whisper_cpp.threads}
+          onchange={markDirty}
+        />
+      </label>
+      <p class="hint">
+        Large v3 Turbo Q8 is the best quality/speed point for dictation. Turbo Q5
+        loads faster and uses less RAM. Large v3 Q5 is the most accurate but needs
+        about 1 GB of weights.
       </p>
     </div>
   {:else if cfg.engine.backend === "moonshine"}

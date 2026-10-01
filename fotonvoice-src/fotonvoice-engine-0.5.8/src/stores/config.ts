@@ -177,7 +177,7 @@ const defaultConfig: AppConfig = {
     backend: "nemotron-streaming",
     whisper_cpp: {
       model_dir: "",
-      model_size: "tiny",
+      model_size: "large-v3-turbo-q8",
       device: "auto",
       threads: 0,
       language: "auto",

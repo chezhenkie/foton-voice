@@ -12,21 +12,16 @@ use fotonvoice_config::WhisperCppConfig;
 use crate::backend::{TranscribeRequest, TranscriptionBackend, TranscriptionResult};
 
 
-static GGUF_MAP: &[(&str, &str)] = &[
-    ("small",             "ggml-small-q5_1.bin"),
-    ("small.en",          "ggml-small.en-q5_1.bin"),
-    ("medium",            "ggml-medium-q5_0.bin"),
-    ("medium.en",         "ggml-medium.en-q5_0.bin"),
+/// The only models the app ships: Whisper large-v3 and large-v3-turbo, plus the
+/// turbo Q8 quant. Each size maps to exactly one legacy ggml `.bin` file - no
+/// fallbacks, so a size can never resolve to a different model than it names.
+static MODEL_MAP: &[(&str, &str)] = &[
     ("large-v3",          "ggml-large-v3-q5_0.bin"),
     ("large-v3-turbo",    "ggml-large-v3-turbo-q5_0.bin"),
-    ("small-q8",          "ggml-small-q8_0.bin"),
-    ("small.en-q8",       "ggml-small.en-q8_0.bin"),
-    ("medium-q8",         "ggml-medium-q8_0.bin"),
-    ("medium.en-q8",      "ggml-medium.en-q8_0.bin"),
     ("large-v3-turbo-q8", "ggml-large-v3-turbo-q8_0.bin"),
 ];
 
-const GGUF_BASE_URL: &str =
+const MODEL_BASE_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
 /// Smallest byte size any shipped model file can plausibly have. Every model
@@ -137,7 +132,7 @@ impl WhisperCppBackend {
             crate::util::expand_tilde(&self.cfg.model_dir)
         };
 
-        let filename = GGUF_MAP
+        let filename = MODEL_MAP
             .iter()
             .find(|(name, _)| *name == size.as_str())
             .map(|(_, file)| *file)
@@ -149,7 +144,7 @@ impl WhisperCppBackend {
         }
 
         bail!(
-            "Whisper model '{size}' is not usable in {} (missing or not a valid GGUF/ggml file). \
+            "Whisper model '{size}' is not usable in {} (missing or not a valid ggml model file). \
              Open Settings -> Engine and download it.",
             model_dir.display()
         )
@@ -268,7 +263,7 @@ fn transcribe_with_state(
 
 /// Presence is keyed to the size's single file - the same file the download
 pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
-    let filename = match GGUF_MAP.iter().find(|(name, _)| *name == size) {
+    let filename = match MODEL_MAP.iter().find(|(name, _)| *name == size) {
         Some((_, file)) => *file,
         None => return false,
     };
@@ -280,9 +275,9 @@ pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
     is_valid_model_file(&dir.join(filename))
 }
 
-/// Remove the GGUF file for `size` from `model_dir` - the same single file the
+/// Remove the model file for `size` from `model_dir` - the same single file the
 pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
-    let filename = match GGUF_MAP.iter().find(|(name, _)| *name == size) {
+    let filename = match MODEL_MAP.iter().find(|(name, _)| *name == size) {
         Some((_, file)) => *file,
         None => bail!("Unknown whisper.cpp model size '{size}'"),
     };
@@ -304,7 +299,7 @@ pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
 static DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
-    let filename = GGUF_MAP
+    let filename = MODEL_MAP
         .iter()
         .find(|(name, _)| *name == size)
         .map(|(_, file)| *file)
@@ -339,7 +334,7 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
         }
     }
 
-    let url = format!("{}{}", GGUF_BASE_URL, filename);
+    let url = format!("{}{}", MODEL_BASE_URL, filename);
     info!("Downloading Whisper model: {}", url);
 
     let response = reqwest::get(&url).await?.error_for_status()?;
@@ -352,7 +347,7 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
     if !is_valid_model_file(&path) {
         let _ = std::fs::remove_file(&path);
         bail!(
-            "Downloaded model failed verification (missing, too small, or not a GGUF file): {}",
+            "Downloaded model failed verification (missing, too small, or not a ggml model file): {}",
             path.display()
         );
     }
@@ -400,15 +395,15 @@ mod tests {
 
     #[test]
     fn test_small_auto_downloadable_retired() {
-        assert!(!is_small_auto_downloadable("small.en"));
-        assert!(!is_small_auto_downloadable("small.en-q8"));
+        assert!(!is_small_auto_downloadable("large-v3-turbo"));
+        assert!(!is_small_auto_downloadable("large-v3-turbo-q8"));
         assert!(!is_small_auto_downloadable("large-v3"));
         assert!(!is_small_auto_downloadable("anything"));
     }
 
     #[test]
     fn test_is_small_auto_downloadable_rejects_larger_models() {
-        for size in ["small", "medium", "large-v3", "large-v3-turbo", "small-q8", "small.en-q8"] {
+        for size in ["large-v3", "large-v3-turbo", "large-v3-turbo-q8"] {
             assert!(!is_small_auto_downloadable(size), "{size} must not auto-download silently");
         }
     }
@@ -423,7 +418,7 @@ mod tests {
     fn test_new_backend() {
         let cfg = WhisperCppConfig {
             model_dir: "/tmp".to_string(),
-            model_size: "small.en".to_string(),
+            model_size: "large-v3".to_string(),
             device: "cpu".to_string(),
             threads: 4,
             language: "auto".to_string(),
@@ -437,7 +432,7 @@ mod tests {
     fn test_threads_calculation() {
         let cfg = WhisperCppConfig {
             model_dir: "".to_string(),
-            model_size: "small.en".to_string(),
+            model_size: "large-v3".to_string(),
             device: "cpu".to_string(),
             threads: 5,
             language: "auto".to_string(),
@@ -447,7 +442,7 @@ mod tests {
 
         let cfg_auto = WhisperCppConfig {
             model_dir: "".to_string(),
-            model_size: "small.en".to_string(),
+            model_size: "large-v3".to_string(),
             device: "cpu".to_string(),
             threads: 0,
             language: "auto".to_string(),
@@ -486,7 +481,7 @@ mod tests {
     fn test_transcribe_unloaded_error() {
         let cfg = WhisperCppConfig {
             model_dir: "".to_string(),
-            model_size: "small.en".to_string(),
+            model_size: "large-v3".to_string(),
             device: "cpu".to_string(),
             threads: 0,
             language: "auto".to_string(),
@@ -519,7 +514,7 @@ mod tests {
         let home = temp_home.path().to_path_buf();
         std::env::set_var("HOME", &home);
 
-        let result = is_model_downloaded("small.en", "");
+        let result = is_model_downloaded("large-v3", "");
 
         if let Some(old) = old_home {
             std::env::set_var("HOME", old);
@@ -533,10 +528,10 @@ mod tests {
     #[test]
     fn test_is_model_downloaded_custom_dir_with_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_valid_model(dir.path(), "ggml-small.en-q5_1.bin");
+        write_valid_model(dir.path(), "ggml-large-v3-q5_0.bin");
 
         assert!(is_model_downloaded(
-            "small.en",
+            "large-v3",
             dir.path().to_str().unwrap()
         ));
     }
@@ -544,10 +539,10 @@ mod tests {
     #[test]
     fn test_is_model_downloaded_rejects_empty_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::File::create(dir.path().join("ggml-small.en-q5_1.bin")).unwrap();
+        std::fs::File::create(dir.path().join("ggml-large-v3-q5_0.bin")).unwrap();
 
         assert!(!is_model_downloaded(
-            "small.en",
+            "large-v3",
             dir.path().to_str().unwrap()
         ));
     }
@@ -555,14 +550,14 @@ mod tests {
     #[test]
     fn test_is_model_downloaded_rejects_wrong_magic() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("ggml-small.en-q5_1.bin");
+        let path = dir.path().join("ggml-large-v3-q5_0.bin");
         std::fs::File::create(&path)
             .unwrap()
             .set_len(MODEL_FILE_MIN_BYTES)
             .unwrap();
 
         assert!(!is_model_downloaded(
-            "small.en",
+            "large-v3",
             dir.path().to_str().unwrap()
         ));
     }
@@ -612,7 +607,10 @@ mod tests {
 
     #[test]
     fn test_is_model_downloaded_nonexistent_path() {
-        assert!(!is_model_downloaded("small.en", "/nonexistent/path/that/does/not/exist"));
+        assert!(!is_model_downloaded(
+            "large-v3",
+            "/nonexistent/path/that/does/not/exist"
+        ));
     }
 
     #[test]
@@ -624,14 +622,8 @@ mod tests {
 
     #[test]
     fn test_q8_entries_point_at_their_own_q8_0_file() {
-        for (name, file) in [
-            ("small-q8", "ggml-small-q8_0.bin"),
-            ("small.en-q8", "ggml-small.en-q8_0.bin"),
-            ("medium-q8", "ggml-medium-q8_0.bin"),
-            ("medium.en-q8", "ggml-medium.en-q8_0.bin"),
-            ("large-v3-turbo-q8", "ggml-large-v3-turbo-q8_0.bin"),
-        ] {
-            let (_, mapped) = GGUF_MAP
+        for (name, file) in [("large-v3-turbo-q8", "ggml-large-v3-turbo-q8_0.bin")] {
+            let (_, mapped) = MODEL_MAP
                 .iter()
                 .find(|(n, _)| *n == name)
                 .expect("q8 entry registered");
@@ -643,7 +635,7 @@ mod tests {
     #[test]
     fn test_q8_size_ignores_a_q5_file_on_disk() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_valid_model(dir.path(), "ggml-small-q5_1.bin");
+        write_valid_model(dir.path(), "ggml-large-v3-q5_0.bin");
 
         assert!(!is_model_downloaded("small-q8", dir.path().to_str().unwrap()));
 
@@ -661,39 +653,41 @@ mod tests {
     #[test]
     fn test_q8_resolves_its_own_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_valid_model(dir.path(), "ggml-small-q8_0.bin");
+        write_valid_model(dir.path(), "ggml-large-v3-turbo-q8_0.bin");
         let cfg = WhisperCppConfig {
             model_dir: dir.path().to_str().unwrap().to_string(),
-            model_size: "small-q8".to_string(),
+            model_size: "large-v3-turbo-q8".to_string(),
             device: "cpu".to_string(),
             threads: 0,
             language: "auto".to_string(),
         };
         let backend = WhisperCppBackend::new(cfg);
         let resolved = backend.resolve_model_path().expect("should resolve");
-        assert_eq!(resolved, dir.path().join("ggml-small-q8_0.bin"));
+        assert_eq!(resolved, dir.path().join("ggml-large-v3-turbo-q8_0.bin"));
     }
 
     #[test]
     fn test_q8_not_downloaded_in_empty_dir() {
-        assert!(!is_model_downloaded("small-q8", "/nonexistent/path/for/q8"));
+        assert!(!is_model_downloaded("large-v3-turbo-q8", "/nonexistent/path/for/q8"));
     }
 
     #[test]
     fn test_delete_model_removes_unknown_size_refused() {
         assert!(delete_model("unknown-size", "").is_err());
-        assert!(delete_model("small-q8", "/nonexistent/path/that/does/not/exist").is_ok());
+        assert!(
+            delete_model("large-v3-turbo-q8", "/nonexistent/path/that/does/not/exist").is_ok()
+        );
     }
 
     #[test]
     fn test_resolve_model_path_uses_custom_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_valid_model(dir.path(), "ggml-small.en-q5_1.bin");
-        let model_path = dir.path().join("ggml-small.en-q5_1.bin");
+        write_valid_model(dir.path(), "ggml-large-v3-q5_0.bin");
+        let model_path = dir.path().join("ggml-large-v3-q5_0.bin");
 
         let cfg = WhisperCppConfig {
             model_dir: dir.path().to_str().unwrap().to_string(),
-            model_size: "small.en".to_string(),
+            model_size: "large-v3".to_string(),
             device: "cpu".to_string(),
             threads: 0,
             language: "auto".to_string(),
@@ -707,7 +701,7 @@ mod tests {
     fn test_resolve_model_path_falls_back_to_default_when_dir_empty() {
         let cfg = WhisperCppConfig {
             model_dir: "".to_string(),
-            model_size: "small.en".to_string(),
+            model_size: "large-v3".to_string(),
             device: "cpu".to_string(),
             threads: 0,
             language: "auto".to_string(),
@@ -734,12 +728,12 @@ mod tests {
         std::env::set_var("HOME", &home);
 
         let dir = tempfile::tempdir_in(&home).expect("tempdir in home");
-        write_valid_model(dir.path(), "ggml-small.en-q5_1.bin");
+        write_valid_model(dir.path(), "ggml-large-v3-q5_0.bin");
 
         let rel = dir.path().strip_prefix(&home).unwrap();
         let tilde_path = format!("~/{}", rel.display());
 
-        let result = is_model_downloaded("small.en", &tilde_path);
+        let result = is_model_downloaded("large-v3", &tilde_path);
 
         if let Some(old) = old_home {
             std::env::set_var("HOME", old);

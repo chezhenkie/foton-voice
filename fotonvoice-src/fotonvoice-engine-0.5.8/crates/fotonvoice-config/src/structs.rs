@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WhisperCppConfig {
-    /// Directory containing GGUF model files. Empty = platform default.
+    /// Directory containing legacy ggml model files (.bin). Empty = platform default.
     pub model_dir: String,
-    /// Model size name: "small", "medium", "large-v3", plus -q8 variants, etc.
+    /// Model size name: "large-v3", "large-v3-turbo", or "large-v3-turbo-q8".
     pub model_size: String,
     /// "auto" | "cuda" | "vulkan" | "cpu"
     pub device: String,
@@ -23,7 +23,7 @@ impl Default for WhisperCppConfig {
     fn default() -> Self {
         Self {
             model_dir: String::new(),
-            model_size: "small.en".into(),
+            model_size: "large-v3-turbo-q8".into(),
             device: "auto".into(),
             threads: 0,
             language: "auto".into(),

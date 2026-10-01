@@ -267,10 +267,7 @@ pub fn find_in_path(name: &str) -> Option<PathBuf> {
 }
 
 
-static VALID_MODEL_SIZES: &[&str] = &[
-    "small", "small.en", "medium", "medium.en", "large-v3", "large-v3-turbo",
-    "small-q8", "small.en-q8", "medium-q8", "medium.en-q8", "large-v3-turbo-q8",
-];
+static VALID_MODEL_SIZES: &[&str] = &["large-v3", "large-v3-turbo", "large-v3-turbo-q8"];
 
 pub fn validate(cfg: &AppConfig) -> Vec<String> {
     let mut errors = Vec::new();
