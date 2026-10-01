@@ -1,10 +1,15 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Build FotonVoice Engine for Windows.
 
 .PARAMETER Cuda
     Enable CUDA GPU acceleration (requires NVIDIA GPU + CUDA Toolkit).
+
+.PARAMETER Vulkan
+    Enable Vulkan GPU acceleration for whisper.cpp (works on NVIDIA, AMD and
+    Intel GPUs; runtime needs only the GPU driver's Vulkan loader). Build needs
+    the LunarG Vulkan SDK with VULKAN_SDK set, or a GitHub CI build.
 
 .PARAMETER Debug
     Build in debug mode (faster compile, larger binary, no optimisation).
@@ -15,11 +20,13 @@
 .EXAMPLE
     .\build_windows.ps1
     .\build_windows.ps1 -Cuda
+    .\build_windows.ps1 -Vulkan
     .\build_windows.ps1 -Debug
 #>
 [CmdletBinding()]
 param(
     [switch]$Cuda,
+    [switch]$Vulkan,
     [switch]$Debug,
     [switch]$SkipNodeInstall
 )
@@ -87,6 +94,24 @@ if ($Cuda) {
     Write-Ok "CUDA_PATH = $env:CUDA_PATH"
 }
 
+# Vulkan check
+if ($Vulkan) {
+    if (-not $env:VULKAN_SDK -and (Test-Path "C:\VulkanSDK")) {
+        $sdkDirs = Get-ChildItem "C:\VulkanSDK" -Directory | Sort-Object Name -Descending
+        if ($sdkDirs) {
+            $env:VULKAN_SDK = $sdkDirs[0].FullName
+            Write-Host "    Auto-detected Vulkan SDK at: $($env:VULKAN_SDK)" -ForegroundColor Yellow
+        }
+    }
+    if (-not $env:VULKAN_SDK -or -not (Test-Path "$env:VULKAN_SDK\Include") -or -not (Test-Path "$env:VULKAN_SDK\Lib")) {
+        Write-Fail "VULKAN_SDK not set (or missing Include/Lib). Install the LunarG Vulkan SDK or build via GitHub CI (.github/workflows/build-msvc.yml, build-vulkan job)."
+    }
+    if (-not (Test-Path "$env:VULKAN_SDK\Bin\glslc.exe")) {
+        Write-Fail "glslc.exe not found at $env:VULKAN_SDK\Bin\glslc.exe. ggml-vulkan compiles its shaders at build time."
+    }
+    Write-Ok "VULKAN_SDK = $env:VULKAN_SDK"
+}
+
 # ── Frontend ──────────────────────────────────────────────────────────────────
 
 if (-not $SkipNodeInstall) {
@@ -106,9 +131,15 @@ if ($Debug) {
     $tauriArgs += "--debug"
 }
 
-if ($Cuda) {
+# Cargo takes one --features list, so combined switches are joined with a comma.
+$features = @()
+
+if ($Cuda)   { $features += "cuda" }
+if ($Vulkan) { $features += "vulkan" }
+
+if ($features.Count -gt 0) {
     $tauriArgs += "--features"
-    $tauriArgs += "cuda"
+    $tauriArgs += ($features -join ",")
 }
 
 Write-Host "    Running: npm run tauri build $($tauriArgs -join ' ')" -ForegroundColor DarkGray

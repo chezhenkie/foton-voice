@@ -51,3 +51,62 @@ jobs:
           path: fotonvoice-src/fotonvoice-engine-0.5.8/publish/
           # 500 MB account quota: two weeks is enough for a manual download.
           retention-days: 14
+
+  # Vulkan lane, mirroring build-linux.yml's Vulkan approach: whisper.cpp
+  # compiles with the ggml Vulkan backend, so Whisper accelerates on
+  # NVIDIA, AMD and Intel GPUs. Nothing extra ships with the exe: the host
+  # GPU driver carries the vulkan-1.dll loader at runtime. glslc, which the
+  # ggml Vulkan backend needs at build time to compile its shaders, comes
+  # from the LunarG SDK installed here (the windows-latest runner image has
+  # CMake and MSVC but no Vulkan SDK).
+  build-vulkan:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: fotonvoice-src/fotonvoice-engine-0.5.8
+    timeout-minutes: 90
+    env:
+      FOTONVOICE_BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fotonvoice-src/fotonvoice-engine-0.5.8
+          key: msvc-vulkan
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          choco install vulkan-sdk --version 1.4.350 -y --no-progress
+          $sdk = Get-ChildItem C:\VulkanSDK -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          "VULKAN_SDK=$($sdk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Add-Content -Path $env:GITHUB_PATH -Value "$($sdk.FullName)\Bin"
+          & "$($sdk.FullName)\Bin\glslc.exe" --version
+
+      - name: Frontend (vite)
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build (msvc, WebGPU + Vulkan features)
+        run: cargo build --release -p fotonvoice-app --features moonshine-webgpu,nemotron-streaming-webgpu,vulkan
+
+      - name: Collect
+        run: |
+          New-Item -ItemType Directory -Force -Path publish-vulkan | Out-Null
+          Copy-Item target\release\fotonvoice-engine.exe publish-vulkan\
+          Copy-Item target\release\fotonvoice-llm-sidecar.exe publish-vulkan\ -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fotonvoice-msvc-vulkan
+          path: fotonvoice-src/fotonvoice-engine-0.5.8/publish-vulkan/
+          # 500 MB account quota: two weeks is enough for a manual download.
+          retention-days: 14

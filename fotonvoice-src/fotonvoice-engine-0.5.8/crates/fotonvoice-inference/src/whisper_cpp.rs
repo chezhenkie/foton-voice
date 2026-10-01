@@ -199,7 +199,17 @@ impl TranscriptionBackend for WhisperCppBackend {
         }
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let state = guard.as_mut().context("whisper state not initialised")?;
-        transcribe_with_state(state, req, self.threads())
+        let threads = self.threads();
+        let result = transcribe_with_state(state, req, threads)?;
+        info!(
+            "Whisper run: backend = {}, device = {}, threads = {}, audio = {} ms, inference = {} ms",
+            self.name(),
+            self.cfg.device,
+            threads,
+            result.duration_ms,
+            result.inference_ms
+        );
+        Ok(result)
     }
 
     fn unload(&mut self) {
