@@ -27,24 +27,9 @@
   const gpuLabel = (id: string) => GPU_LABELS[id] ?? id;
 
   let backendOptions = $derived([
-    {
-      value: "whisper-cpp",
-      label: whisperGpu
-        ? `Whisper.cpp (${gpuLabel(whisperGpu)})`
-        : "Whisper.cpp (CPU only)",
-    },
-    {
-      value: "moonshine",
-      label: moonshineGpu
-        ? `Moonshine (${gpuLabel(moonshineGpu)})`
-        : "Moonshine (CPU only)",
-    },
-    {
-      value: "nemotron-streaming",
-      label: nemotronStreamingGpu
-        ? `Nemotron Streaming (${gpuLabel(nemotronStreamingGpu)})`
-        : "Nemotron Streaming (CPU only)",
-    },
+    { value: "whisper-cpp", label: "Whisper.cpp" },
+    { value: "moonshine", label: "Moonshine" },
+    { value: "nemotron-streaming", label: "Nemotron Streaming" },
     { value: "remote-openai", label: "Remote Speech Engine (OpenAI API)" },
   ]);
 
@@ -53,6 +38,13 @@
     { value: "large-v3-turbo", label: "Whisper large-v3-turbo Q5_0 (574 MB, fastest)" },
     { value: "large-v3", label: "Whisper large-v3 Q5_0 (1.03 GB, most accurate)" },
   ];
+
+  let whisperDeviceOptions = $derived.by(() => [
+    { value: "auto", label: "Auto" },
+    ...(whisperGpu === "cuda" ? [{ value: "cuda", label: "CUDA" }] : []),
+    ...(whisperGpu === "vulkan" ? [{ value: "vulkan", label: "Vulkan" }] : []),
+    { value: "cpu", label: "CPU only" },
+  ]);
 
   let whisperModels = createModelManager({
     sizes: whisperModelSizeOptions.map((o) => o.value),
@@ -220,6 +212,7 @@
         <CustomSelect
           bind:value={cfg.engine.whisper_cpp.model_size}
           options={whisperModelSizeOptions}
+          defaultToFirst={true}
           onchange={onWhisperModelChanged}
         />
       </label>
@@ -240,10 +233,10 @@
       </label>
 
       <label class="field">
-        <span>Device</span>
+        <span>cpu/gpu/igpu</span>
         <CustomSelect
           bind:value={cfg.engine.whisper_cpp.device}
-          options={[{ value: "auto", label: "Auto" }, { value: "cpu", label: "CPU only" }]}
+          options={whisperDeviceOptions}
           onchange={markDirty}
         />
       </label>

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::{AppConfig, ConfigError, migrate};
+use crate::{AppConfig, ConfigError, WhisperCppConfig, migrate};
 
 /// Lift a HuggingFace token stored per engine onto the single `tts.hf_token`,
 fn migrate_hf_token(data: &mut AppConfig) -> bool {
@@ -40,6 +40,23 @@ fn migrate_cloned_voices_dir() {
     if let Some(base) = dirs::data_local_dir() {
         migrate_cloned_voices_dir_at(&base);
     }
+}
+
+/// A whisper_cpp size that was retired 2026-10-01 (the small/medium family)
+/// cannot resolve to a model any more. Left in place it survives as a value no
+/// dropdown offers, so the picker renders the raw string as its label. Snap it to
+/// the default. An explicit path or `.bin` filename is the user pointing at
+/// their own file and is left alone, matching `validate`.
+fn migrate_whisper_model_size(data: &mut AppConfig) -> bool {
+    let size = &data.engine.whisper_cpp.model_size;
+    if VALID_MODEL_SIZES.contains(&size.as_str())
+        || size.ends_with(".bin")
+        || std::path::Path::new(size).is_absolute()
+    {
+        return false;
+    }
+    data.engine.whisper_cpp.model_size = WhisperCppConfig::default().model_size;
+    true
 }
 
 /// Read a config file, keeping every section that parses.
@@ -144,6 +161,13 @@ impl Config {
                 data.openai.user_prompt = legacy_prompt;
                 data.openai.system_prompt = String::new();
             }
+            dirty = true;
+        }
+
+        // A whisper_cpp size that was retired 2026-10-01 (small/medium family)
+        // cannot resolve to a model any more, so it snaps to the default rather
+        // than sitting in the file as a value no dropdown offers.
+        if migrate_whisper_model_size(&mut data) {
             dirty = true;
         }
 
@@ -582,6 +606,40 @@ mod tests {
         assert!(old_dir.join("a.wav").exists());
     }
 
+
+    /// Every size the Whisper dropdown offers must survive a load untouched.
+    #[test]
+    fn every_offered_whisper_size_is_left_alone() {
+        for size in VALID_MODEL_SIZES {
+            let mut data = AppConfig::default();
+            data.engine.whisper_cpp.model_size = (*size).to_string();
+            assert!(!migrate_whisper_model_size(&mut data), "{size}");
+            assert_eq!(data.engine.whisper_cpp.model_size, *size);
+        }
+    }
+
+    /// A size retired from the dropdown snaps to the default instead of sitting
+    /// in the file as a value the picker cannot show.
+    #[test]
+    fn a_retired_whisper_size_snaps_to_the_default() {
+        for retired in ["small", "small.en", "medium", "medium-q8", "tiny"] {
+            let mut data = AppConfig::default();
+            data.engine.whisper_cpp.model_size = retired.to_string();
+            assert!(migrate_whisper_model_size(&mut data), "{retired}");
+            assert_eq!(data.engine.whisper_cpp.model_size, "large-v3-turbo-q8");
+        }
+    }
+
+    /// A user pointing at their own model file is not second-guessed.
+    #[test]
+    fn a_custom_whisper_model_path_is_left_alone() {
+        for custom in ["/models/my-whisper.bin", "some-model.bin"] {
+            let mut data = AppConfig::default();
+            data.engine.whisper_cpp.model_size = custom.to_string();
+            assert!(!migrate_whisper_model_size(&mut data), "{custom}");
+            assert_eq!(data.engine.whisper_cpp.model_size, custom);
+        }
+    }
 
     /// Configs written before the Backend dropdown lost its "Auto-detect"
     #[test]
