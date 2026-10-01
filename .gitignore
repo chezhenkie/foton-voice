@@ -49,3 +49,4 @@ backups/
 artifacts/
 deploy-fotonvoice.ps1
 ci-watch.ps1
+ci-test/
