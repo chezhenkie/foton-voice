@@ -27,6 +27,8 @@ mod window;
 #[cfg(test)]
 mod tests;
 
+pub const DEFAULT_LOG_FILTER: &str = "fotonvoice_app_lib=info,fotonvoice_inference=info";
+
 pub use window::{
     get_app_handle, set_app_handle, setup_blocker, show_and_focus_window, show_setup_window,
     SETUP_WINDOW,
@@ -125,7 +127,7 @@ pub fn run() {
     };
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "fotonvoice-engine=info".parse().unwrap());
+        .unwrap_or_else(|_| DEFAULT_LOG_FILTER.parse().unwrap());
 
     let registry = tracing_subscriber::registry()
         .with(filter)

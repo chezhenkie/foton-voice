@@ -68,8 +68,9 @@ impl<S: Subscriber> Layer<S> for StartupErrorLayer {
 
         let is_error_or_warn = *level == tracing::Level::ERROR || *level == tracing::Level::WARN;
         let is_startup = !STARTUP_COMPLETE.load(Ordering::SeqCst);
+        let is_whisper_diagnostic = msg.starts_with("Whisper acceleration:") || msg.starts_with("Whisper run:");
 
-        if is_error_or_warn || (is_startup && *level == tracing::Level::INFO) {
+        if is_error_or_warn || ((is_startup || is_whisper_diagnostic) && *level == tracing::Level::INFO) {
             let timestamp = chrono::Utc::now().to_rfc3339();
             let log_line = format!(
                 "{} [{}] {}: {}\n",

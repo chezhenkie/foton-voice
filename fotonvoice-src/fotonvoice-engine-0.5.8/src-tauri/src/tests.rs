@@ -32,6 +32,10 @@ fn test_startup_error_layer_privacy_and_levels() {
         
         tracing::info!("Normal runtime info log");
         
+        tracing::info!("Whisper acceleration: vulkan");
+        
+        tracing::info!("Whisper run: backend = whisper-cpp, device = vulkan, threads = 8, audio = 100 ms, inference = 250 ms");
+        
         tracing::error!("System audio device connection lost");
     });
     
@@ -45,6 +49,37 @@ fn test_startup_error_layer_privacy_and_levels() {
     assert!(!content.contains("Hello user"));
     assert!(!content.contains("Normal runtime info log"));
     assert!(!content.contains("OpenAI"));
+    assert!(content.contains("Whisper acceleration: vulkan"));
+    assert!(content.contains("inference = 250 ms"));
+}
+
+#[test]
+fn test_default_log_filter_enables_real_crate_targets() {
+    use tracing_subscriber::prelude::*;
+    use std::io::Read;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let log_path = temp_dir.path().join("test_filter_targets.log");
+
+    let layer = crate::startup_log::StartupErrorLayer::new(log_path.clone()).unwrap();
+    let filter: tracing_subscriber::EnvFilter = crate::DEFAULT_LOG_FILTER.parse().unwrap();
+    let subscriber = tracing_subscriber::registry().with(filter).with(layer);
+
+    crate::startup_log::STARTUP_COMPLETE.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(target: "fotonvoice_app_lib", "=== System Startup Config ===");
+        tracing::info!(target: "fotonvoice_inference::whisper_cpp", "Whisper acceleration: vulkan");
+        tracing::info!(target: "fotonvoice-engine", "hyphenated target must stay filtered out");
+    });
+
+    let mut file = std::fs::File::open(log_path).unwrap();
+    let mut content = String::new();
+    file.read_to_string(&mut content).unwrap();
+
+    assert!(content.contains("=== System Startup Config ==="), "app lib target must be enabled: {content:?}");
+    assert!(content.contains("Whisper acceleration: vulkan"), "inference target must be enabled: {content:?}");
+    assert!(!content.contains("hyphenated target must stay filtered out"), "hyphenated target must not match: {content:?}");
 }
 
 fn make_test_state() -> AppState {
