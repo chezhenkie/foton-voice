@@ -67,8 +67,19 @@ jobs:
     timeout-minutes: 90
     env:
       FOTONVOICE_BUILD_SHA: ${{ github.sha }}
+      # ggml's vulkan-shaders-gen re-runs a bare cmake configure for its host
+      # tool, and that fails compiler discovery under the runner's VS 2026
+      # (v180) toolset ("No CMAKE_C_COMPILER could be found"; also whisper.cpp
+      # #3973, llama.cpp #8562). Force Ninja for both the whisper-rs-sys build
+      # and the nested configure; cmake-rs reads this env var, and bare cmake
+      # runs default to it. The compiler then comes from PATH, which the
+      # msvc-dev-cmd step below populates with cl.exe.
+      CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@v4
+
+      - name: Enable MSVC dev environment (cl.exe on PATH)
+        uses: ilammy/msvc-dev-cmd@v1.13.0
 
       - uses: actions/setup-node@v4
         with:
