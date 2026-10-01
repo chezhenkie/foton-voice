@@ -150,9 +150,3 @@ pub fn lux_tts_available() -> bool {
 pub async fn check_lux_tts_downloaded(model_dir: String) -> Result<bool, String> {
     Ok(fotonvoice_tts::is_lux_tts_downloaded(&model_dir))
 }
-
-/// The resolved, absolute path to the shared voice-cloning reference-clip
-#[tauri::command]
-pub fn get_cloned_tts_voices_dir() -> String {
-    fotonvoice_tts::cloned_tts_voices_dir().display().to_string()
-}

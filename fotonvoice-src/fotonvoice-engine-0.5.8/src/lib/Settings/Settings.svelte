@@ -16,9 +16,8 @@
   import TtsTab from "./TtsTab.svelte";
   import OpenAiTab from "./OpenAiTab.svelte";
   import FeaturesTab from "./FeaturesTab.svelte";
-  import AboutTab from "./AboutTab.svelte";
 
-  type Tab = "general" | "audio" | "engine" | "features" | "hotkeys" | "commands" | "visual" | "tts" | "openai" | "about";
+  type Tab = "general" | "audio" | "engine" | "features" | "hotkeys" | "commands" | "visual" | "tts" | "openai";
   let activeTab = $state<Tab>("general");
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
@@ -31,7 +30,6 @@
     { id: "visual",   label: "Visual Feedback", icon: "" },
     { id: "tts",      label: "TTS",      icon: "" },
     { id: "openai",   label: "OpenAI API", icon: "" },
-    { id: "about",    label: "About",    icon: "i" },
   ];
 
   async function handleSave() {
@@ -159,8 +157,6 @@
         <TtsTab bind:cfg={$config} />
       {:else if activeTab === "openai"}
         <OpenAiTab bind:cfg={$config} />
-      {:else if activeTab === "about"}
-        <AboutTab />
       {/if}
     </div>
 

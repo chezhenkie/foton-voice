@@ -33,6 +33,11 @@ fotonvoice-refactor-plan.md
 plan-fotonvoice-youtube-transcriber.md
 voice routing.png
 
+# Only code lives on GitHub: the remote holds a single fotonvoice-src folder.
+# The repo root README and all working docs are local-only.
+/README.md
+/docs/
+
 # Local-only reference material and build outputs
 _upstream-*
 voxctrl-diff-*.json

@@ -457,5 +457,11 @@
   .tag-btn.active {
     @apply border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10;
   }
+  .credit-name-link {
+    @apply text-[13px] font-normal text-white no-underline transition-colors duration-150 ease-out;
+  }
+  .credit-name-link:hover {
+    @apply text-[var(--color-accent-blue)] underline;
+  }
 
 </style>

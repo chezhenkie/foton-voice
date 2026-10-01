@@ -445,7 +445,6 @@ pub fn run() {
             save_bindings,
             speak_text,
             overlay_content_ready,
-            get_cloned_tts_voices_dir,
             list_audio_devices,
             start_monitoring_audio,
             stop_monitoring_audio,
