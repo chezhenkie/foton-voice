@@ -18,6 +18,12 @@ jobs:
       # Baked into the binary and reported by `--version`, so any artifact from
       # this workflow can say exactly which commit produced it.
       FOTONVOICE_BUILD_SHA: ${{ github.sha }}
+      # The runner CPU supports AVX-512, so without this the toolchain emits
+      # EVEX instructions and the artifact dies with 0xc000001d
+      # STATUS_ILLEGAL_INSTRUCTION on any target without it (for example
+      # Intel Core Ultra 5 226V / Lunar Lake). Ship baseline x86-64 so one
+      # binary runs everywhere; Vulkan compute is unaffected either way.
+      RUSTFLAGS: -C target-feature=-avx512f,-avx512bw,-avx512cd,-avx512dq,-avx512vl,-avx512ifma,-avx512vbmi,-avx512vbmi2,-avx512vnni,-avx512bitalg,-avx512vpopcntdq
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +50,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path publish | Out-Null
           Copy-Item target\release\fotonvoice-engine.exe publish\
           Copy-Item target\release\fotonvoice-llm-sidecar.exe publish\ -ErrorAction SilentlyContinue
+
+      - name: Verify no AVX-512 (portability gate)
+        shell: bash
+        run: bash .github/scripts/check-avx512.sh target/release/fotonvoice-engine.exe
 
       - uses: actions/upload-artifact@v4
         with:
@@ -80,6 +90,9 @@ jobs:
       # crosses the 260-char MAX_PATH wall and cl.exe dies with C1083 on the
       # TryCompile scratch file. A short root-level target dir stays under it.
       CARGO_TARGET_DIR: D:\a\wt\tgt
+      # Same reason as the webgpu job: the runner has AVX-512, the target may
+      # not. Without this the artifact crashes on first model load.
+      RUSTFLAGS: -C target-feature=-avx512f,-avx512bw,-avx512cd,-avx512dq,-avx512vl,-avx512ifma,-avx512vbmi,-avx512vbmi2,-avx512vnni,-avx512bitalg,-avx512vpopcntdq
     steps:
       - uses: actions/checkout@v4
 
@@ -119,6 +132,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path publish-vulkan | Out-Null
           Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-engine.exe publish-vulkan\
           Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-llm-sidecar.exe publish-vulkan\ -ErrorAction SilentlyContinue
+
+      - name: Verify no AVX-512 (portability gate)
+        shell: bash
+        run: bash .github/scripts/check-avx512.sh $env:CARGO_TARGET_DIR/release/fotonvoice-engine.exe
 
       - uses: actions/upload-artifact@v4
         with:

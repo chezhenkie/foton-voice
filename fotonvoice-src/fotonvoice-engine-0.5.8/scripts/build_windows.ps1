@@ -125,6 +125,24 @@ if (-not $SkipNodeInstall) {
 
 Write-Step "Building FotonVoice Engine"
 
+# Without this, a build machine whose CPU has AVX-512 (most modern Intel server
+# and desktop parts) produces an artifact that dies on the target with
+# 0xc000001d STATUS_ILLEGAL_INSTRUCTION the first time it loads a model. An
+# AVX-512 build was observed to contain 5092 EVEX instructions. Baseline
+# x86-64 keeps one binary usable everywhere, including Intel Lunar Lake.
+# Applies unless the caller already set RUSTFLAGS deliberately.
+$baselineFlags = @(
+    "-C", "target-feature=-avx512f,-avx512bw,-avx512cd,-avx512dq,-avx512vl",
+    "-avx512ifma,-avx512vbmi,-avx512vbmi2,-avx512vnni,-avx512bitalg,-avx512vpopcntdq"
+) -join " "
+
+if ($env:RUSTFLAGS) {
+    Write-Host "    RUSTFLAGS already set, leaving it alone: $env:RUSTFLAGS" -ForegroundColor DarkGray
+} else {
+    $env:RUSTFLAGS = $baselineFlags
+    Write-Host "    Baseline CPU target: $baselineFlags" -ForegroundColor DarkGray
+}
+
 $tauriArgs = @()
 
 if ($Debug) {
