@@ -8,90 +8,20 @@ on:
 permissions:
   contents: read
 
+# One job, not two. There used to be a WebGPU-only job alongside this Vulkan
+# one, but the Vulkan build is a strict superset: it carries
+# moonshine-webgpu,nemotron-streaming-webgpu and vulkan, so Moonshine and
+# Nemotron still use WebGPU while Whisper uses the ggml Vulkan backend. The
+# WebGPU-only exe was 11 MB against 27 MB for the Vulkan one and existed only
+# to prove the WebGPU path compiles, which this job already does. Folding it
+# halved CI time and left one artifact to test.
 jobs:
-  build:
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: fotonvoice-src/fotonvoice-engine-0.5.8
-    env:
-      # Baked into the binary and reported by `--version`, so any artifact from
-      # this workflow can say exactly which commit produced it.
-      FOTONVOICE_BUILD_SHA: ${{ github.sha }}
-      # THE fix for STATUS_ILLEGAL_INSTRUCTION (0xc000001d) on AVX-512-less
-      # CPUs such as the Intel Core Ultra 5 226V. ggml defaults
-      # GGML_NATIVE=ON, which passes -march=native, so on this AVX-512 runner
-      # it compiled AVX-512 into a binary bound for machines that cannot run it
-      # (5092 EVEX instructions, confirmed by disassembly). ggml's CMakeLists
-      # sets GGML_NATIVE_DEFAULT=OFF when SOURCE_DATE_EPOCH is defined, which
-      # is its own reproducible-build hook, so this needs no patched crate.
-      # Verified: GGML_NATIVE=ON and "-march=native" without it, OFF with it.
-      SOURCE_DATE_EPOCH: "1"
-      # The -p2 salt exists because whisper-rs-sys never declares
-      # rerun-if-env-changed for SOURCE_DATE_EPOCH, so a restored rust-cache
-      # would silently reuse objects configured with GGML_NATIVE=ON
-      # (-march=native) and the AVX-512 would survive the fix. Bump the salt
-      # whenever portability-affecting flags change.
-      CARGO_TARGET_DIR: D:\a\wt\tgt-p2
-      # Not the cause of the AVX-512 problem (rustc baseline x86-64 is sse2
-      # only, per `rustc --print cfg`), but kept as defence in depth so a
-      # future toolchain default cannot reintroduce it.
-      RUSTFLAGS: -C target-feature=-avx512f,-avx512bw,-avx512cd,-avx512dq,-avx512vl,-avx512ifma,-avx512vbmi,-avx512vbmi2,-avx512vnni,-avx512bitalg,-avx512vpopcntdq
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: fotonvoice-src/fotonvoice-engine-0.5.8
-
-      - name: Frontend (vite)
-        run: |
-          npm ci
-          npm run build
-
-      - name: Build (msvc, WebGPU features)
-        run: >
-          cargo rustc --release -p fotonvoice-app --bin fotonvoice-engine
-          --features moonshine-webgpu,nemotron-streaming-webgpu
-          -- -C link-arg=/MAP:D:\a\wt\avx-webgpu.map -C link-arg=/MAPINFO:EXPORTS
-
-      - name: Collect
-        run: |
-          New-Item -ItemType Directory -Force -Path publish | Out-Null
-          Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-engine.exe publish\
-          Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-llm-sidecar.exe publish\ -ErrorAction SilentlyContinue
-
-      # Upload BEFORE the gate. A failing gate must not cost us the binary: the
-      # exe is the only way to verify a suspicious gate verdict against real
-      # disassembly, which is how the previous byte-scanning gate went wrong.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fotonvoice-msvc-webgpu
-          path: fotonvoice-src/fotonvoice-engine-0.5.8/publish/
-          retention-days: 14
-
-      - name: Verify no AVX-512 (portability gate)
-        shell: bash
-        run: |
-          # github.workspace expands to a Windows path (D:\a\...), and bash eats
-          # the backslashes, so convert to forward slashes before using it.
-          script="${{ github.workspace }}/.github/scripts/check-avx512.py"
-          script="${script//\\//}"
-          python "$script" "$CARGO_TARGET_DIR/release/fotonvoice-engine.exe" --map "D:/a/wt/avx-webgpu.map"
-
-  # Vulkan lane, mirroring build-linux.yml's Vulkan approach: whisper.cpp
-  # compiles with the ggml Vulkan backend, so Whisper accelerates on
-  # NVIDIA, AMD and Intel GPUs. Nothing extra ships with the exe: the host
+  # whisper.cpp compiles with the ggml Vulkan backend, so Whisper accelerates
+  # on NVIDIA, AMD and Intel GPUs. Nothing extra ships with the exe: the host
   # GPU driver carries the vulkan-1.dll loader at runtime. glslc, which the
-  # ggml Vulkan backend needs at build time to compile its shaders, comes
-  # from the LunarG SDK installed here (the windows-latest runner image has
-  # CMake and MSVC but no Vulkan SDK).
+  # ggml Vulkan backend needs at build time to compile its shaders, comes from
+  # the LunarG SDK installed here (the windows-latest runner image has CMake
+  # and MSVC but no Vulkan SDK).
   build-vulkan:
     runs-on: windows-latest
     defaults:
@@ -99,6 +29,8 @@ jobs:
         working-directory: fotonvoice-src/fotonvoice-engine-0.5.8
     timeout-minutes: 90
     env:
+      # Baked into the binary and reported by `--version`, so any artifact from
+      # this workflow can say exactly which commit produced it.
       FOTONVOICE_BUILD_SHA: ${{ github.sha }}
       # ggml's vulkan-shaders-gen re-runs a bare cmake configure for its host
       # tool, and that fails compiler discovery under the runner's VS 2026
@@ -108,20 +40,28 @@ jobs:
       # runs default to it. The compiler then comes from PATH, which the
       # msvc-dev-cmd step below populates with cl.exe.
       CMAKE_GENERATOR: Ninja
+      # THE fix for STATUS_ILLEGAL_INSTRUCTION (0xc000001d) on AVX-512-less
+      # CPUs such as the Intel Core Ultra 5 226V. ggml defaults
+      # GGML_NATIVE=ON, which passes -march=native, so on this AVX-512 runner
+      # it compiled AVX-512 into a binary bound for machines that cannot run it
+      # (5092 EVEX instructions, confirmed by disassembly). ggml's CMakeLists
+      # sets GGML_NATIVE_DEFAULT=OFF when SOURCE_DATE_EPOCH is defined, which
+      # is its own reproducible-build hook, so this needs no patched crate.
+      # Verified: GGML_NATIVE=ON and "-march=native" without it, OFF with it.
+      SOURCE_DATE_EPOCH: "1"
       # The default target dir nests ~200 extra path chars; combined with the
       # workspace prefix the vulkan-shaders-gen ExternalProject configure
       # crosses the 260-char MAX_PATH wall and cl.exe dies with C1083 on the
       # TryCompile scratch file. A short root-level target dir stays under it.
       # The -p2 salt exists because whisper-rs-sys never declares
-      # rerun-if-env-changed for SOURCE_DATE_EPOCH, so a restored cache would
-      # silently reuse objects configured with GGML_NATIVE=ON (-march=native)
-      # and the AVX-512 would survive the fix. Bump the salt whenever
-      # portability-affecting flags change.
+      # rerun-if-env-changed for SOURCE_DATE_EPOCH, so a restored rust-cache
+      # would silently reuse objects configured with GGML_NATIVE=ON
+      # (-march=native) and the AVX-512 would survive the fix. Bump the salt
+      # whenever portability-affecting flags change.
       CARGO_TARGET_DIR: D:\a\wt\tgt-p2
-      # Same reason as the webgpu job: the runner has AVX-512, the target may
-      # not. ggml reads SOURCE_DATE_EPOCH to turn off GGML_NATIVE, which is
-      # what passes -march=native and emits the AVX-512 instructions.
-      SOURCE_DATE_EPOCH: "1"
+      # Not the cause of the AVX-512 problem (rustc baseline x86-64 is sse2
+      # only, per `rustc --print cfg`), but kept as defence in depth so a
+      # future toolchain default cannot reintroduce it.
       RUSTFLAGS: -C target-feature=-avx512f,-avx512bw,-avx512cd,-avx512dq,-avx512vl,-avx512ifma,-avx512vbmi,-avx512vbmi2,-avx512vnni,-avx512bitalg,-avx512vpopcntdq
     steps:
       - uses: actions/checkout@v4
@@ -154,11 +94,13 @@ jobs:
           npm ci
           npm run build
 
-      # cargo rustc (not cargo build) so the extra linker flags reach ONLY the final
-      # exe link. /MAP makes the linker write a symbol-by-address map, which is
-      # how the last 279 residual AVX-512 sites get attributed to a real symbol
-      # instead of guessed at. /MAP needs no debug info, so it also names C++
-      # symbols from ggml/whisper, which -C debuginfo alone would not.
+      # cargo rustc (not cargo build) so the extra linker flags reach ONLY the
+      # final exe link. /MAP makes the linker write a symbol-by-address map,
+      # which the portability gate needs to tell AVX-512 code apart from AVX-512
+      # bytes in data: ggml's PULP DSP descriptor tables and onigmo's encoding
+      # table decode as EVEX under a linear sweep but are never executed.
+      # /MAP needs no debug info, so it also names C++ symbols, which
+      # -C debuginfo alone would not.
       - name: Build (msvc, WebGPU + Vulkan features)
         run: >
           cargo rustc --release -p fotonvoice-app --bin fotonvoice-engine
@@ -171,88 +113,21 @@ jobs:
           Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-engine.exe publish-vulkan\
           Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-llm-sidecar.exe publish-vulkan\ -ErrorAction SilentlyContinue
 
-      # Attribute the residual AVX-512 sites to real symbols using the linker map.
-      # Informational only: it must never fail the job, or a gate failure would
-      # hide the very answer this step exists to produce.
-      - name: Attribute residual AVX-512 sites
-        shell: pwsh
-        run: |
-          $map = "D:\a\wt\avx.map"
-          $exe = Join-Path $env:CARGO_TARGET_DIR "release\fotonvoice-engine.exe"
-          Write-Host "exe exists : $(Test-Path $exe)  $exe"
-          if (-not (Test-Path $map)) {
-            Write-Host "no map at the requested path; searching for any .map under the target dir"
-            Get-ChildItem -Path $env:CARGO_TARGET_DIR -Recurse -Filter *.map -ErrorAction SilentlyContinue |
-              Select-Object -First 10 -ExpandProperty FullName
-          }
-          if (-not (Test-Path $map)) {
-            Write-Host "NO MAP - skipping attribution"
-            exit 0
-          }
-          Write-Host "map: $map ($((Get-Item $map).Length) bytes)"
-
-          # Copy into the workspace so the map can be uploaded as an artifact.
-          # Parsing it offline is far cheaper than guessing the format from one
-          # failed run at a time, and the previous heading-gated parser read 0
-          # symbols out of a 43 MB map because it keyed off section text.
-          $mapInWorkspace = Join-Path $env:GITHUB_WORKSPACE "fotonvoice-src\fotonvoice-engine-0.5.8\avx.map"
-          Copy-Item $map $mapInWorkspace -Force
-          Write-Host "map copied to $mapInWorkspace"
-
-          Write-Host "--- first 25 lines of the map, to show the real format ---"
-          Get-Content $map -TotalCount 25 | ForEach-Object { Write-Host "  | $_" }
-
-          Write-Host "--- first 10 lines mentioning ggml ---"
-          Select-String -Path $map -Pattern 'ggml' -SimpleMatch | Select-Object -First 10 |
-            ForEach-Object { Write-Host "  | $($_.Line)" }
-
-          # Entry lines look like:  0001:00001058  name. Match them anywhere in
-          # the file rather than inside a named section.
-          $entries = @()
-          foreach ($line in Get-Content $map) {
-            if ($line -match '^\s*([0-9A-Fa-f]{4}):([0-9A-Fa-f]{1,8})\s+(\S+)') {
-              $seg = [Convert]::ToInt32($Matches[1], 16)
-              $off = [Convert]::ToInt32($Matches[2], 16)
-              $entries += [pscustomobject]@{
-                Seg = $seg; Off = $off
-                AsOff = $off
-                AsRva = ($seg * 0x1000) + $off
-                Name = $Matches[3]
-              }
-            }
-          }
-          Write-Host "parsed $($entries.Count) entries"
-          Write-Host "ggml/whisper symbols in map: $(($entries | Where-Object { $_.Name -match 'ggml|whisper' }).Count)"
-
-          # The 279 residual sites: 278 clustered at the head of .text plus one
-          # deep masked instruction. Report the nearest preceding symbol under
-          # both interpretations of the map address, since which one is the RVA
-          # depends on how the linker recorded the contribution.
-          $sites = 0x158f, 0x1598, 0x1c7, 0x2bc5, 0x2fbc, 0x16166d5
-          foreach ($rva in $sites) {
-            $byOff = $entries | Where-Object { $_.AsOff -le $rva } | Sort-Object AsOff -Descending | Select-Object -First 1
-            $byRva = $entries | Where-Object { $_.AsRva -le $rva } | Sort-Object AsRva -Descending | Select-Object -First 1
-            Write-Host ("RVA 0x{0:x}" -f $rva)
-            if ($byOff) { Write-Host ("   as-offset : {0} (delta 0x{1:x})" -f $byOff.Name, ($rva - $byOff.AsOff)) }
-            else        { Write-Host "   as-offset : (no symbol at or below)" }
-            if ($byRva) { Write-Host ("   as-rva     : {0} (delta 0x{1:x})" -f $byRva.Name, ($rva - $byRva.AsRva)) }
-            else        { Write-Host "   as-rva     : (no symbol at or below)" }
-          }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fotonvoice-linkmap
-          path: fotonvoice-src/fotonvoice-engine-0.5.8/avx.map
-          retention-days: 3
-
+      # Upload BEFORE the gate. A failing gate must not cost us the binary: the
+      # exe is the only way to verify a suspicious gate verdict against real
+      # disassembly, which is how the earlier byte-scanning gate went wrong.
       - uses: actions/upload-artifact@v4
         with:
           name: fotonvoice-msvc-vulkan
           path: fotonvoice-src/fotonvoice-engine-0.5.8/publish-vulkan/
+          # 500 MB account quota: two weeks is enough for a manual download.
           retention-days: 14
 
       - name: Verify no AVX-512 (portability gate)
         shell: bash
         run: |
+          # github.workspace expands to a Windows path (D:\a\...), and bash eats
+          # the backslashes, so convert to forward slashes before using it.
           script="${{ github.workspace }}/.github/scripts/check-avx512.py"
           script="${script//\\//}"
           python "$script" "$CARGO_TARGET_DIR/release/fotonvoice-engine.exe" --map "D:/a/wt/avx.map"
