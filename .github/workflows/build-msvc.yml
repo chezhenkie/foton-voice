@@ -160,7 +160,7 @@ jobs:
         run: >
           cargo rustc --release -p fotonvoice-app --bin fotonvoice-engine
           --features moonshine-webgpu,nemotron-streaming-webgpu,vulkan
-          -- -C link-arg=/MAP -C link-arg=/MAPINFO:EXPORTS
+          -- -C link-arg=/MAP:D:\a\wt\avx.map -C link-arg=/MAPINFO:EXPORTS
 
       - name: Collect
         run: |
@@ -174,9 +174,16 @@ jobs:
       - name: Attribute residual AVX-512 sites
         shell: pwsh
         run: |
-          $map = Join-Path $env:CARGO_TARGET_DIR "release\fotonvoice-engine.map"
+          $map = "D:\a\wt\avx.map"
+          $exe = Join-Path $env:CARGO_TARGET_DIR "release\fotonvoice-engine.exe"
+          Write-Host "exe exists : $(Test-Path $exe)  $exe"
           if (-not (Test-Path $map)) {
-            Write-Host "NO MAP at $map - skipping attribution"
+            Write-Host "no map at the requested path; searching for any .map under the target dir"
+            Get-ChildItem -Path $env:CARGO_TARGET_DIR -Recurse -Filter *.map -ErrorAction SilentlyContinue |
+              Select-Object -First 10 -ExpandProperty FullName
+          }
+          if (-not (Test-Path $map)) {
+            Write-Host "NO MAP - skipping attribution"
             exit 0
           }
           Write-Host "map: $map ($((Get-Item $map).Length) bytes)"
