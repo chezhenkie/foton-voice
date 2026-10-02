@@ -56,7 +56,10 @@ jobs:
           npm run build
 
       - name: Build (msvc, WebGPU features)
-        run: cargo build --release -p fotonvoice-app --features moonshine-webgpu,nemotron-streaming-webgpu
+        run: >
+          cargo rustc --release -p fotonvoice-app --bin fotonvoice-engine
+          --features moonshine-webgpu,nemotron-streaming-webgpu
+          -- -C link-arg=/MAP:D:\a\wt\avx-webgpu.map -C link-arg=/MAPINFO:EXPORTS
 
       - name: Collect
         run: |
@@ -80,7 +83,7 @@ jobs:
           # the backslashes, so convert to forward slashes before using it.
           script="${{ github.workspace }}/.github/scripts/check-avx512.py"
           script="${script//\\//}"
-          python "$script" "$CARGO_TARGET_DIR/release/fotonvoice-engine.exe"
+          python "$script" "$CARGO_TARGET_DIR/release/fotonvoice-engine.exe" --map "D:/a/wt/avx-webgpu.map"
 
   # Vulkan lane, mirroring build-linux.yml's Vulkan approach: whisper.cpp
   # compiles with the ggml Vulkan backend, so Whisper accelerates on
@@ -252,4 +255,4 @@ jobs:
         run: |
           script="${{ github.workspace }}/.github/scripts/check-avx512.py"
           script="${script//\\//}"
-          python "$script" "$CARGO_TARGET_DIR/release/fotonvoice-engine.exe"
+          python "$script" "$CARGO_TARGET_DIR/release/fotonvoice-engine.exe" --map "D:/a/wt/avx.map"
