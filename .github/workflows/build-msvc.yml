@@ -27,6 +27,12 @@ jobs:
       # is its own reproducible-build hook, so this needs no patched crate.
       # Verified: GGML_NATIVE=ON and "-march=native" without it, OFF with it.
       SOURCE_DATE_EPOCH: "1"
+      # The -p2 salt exists because whisper-rs-sys never declares
+      # rerun-if-env-changed for SOURCE_DATE_EPOCH, so a restored rust-cache
+      # would silently reuse objects configured with GGML_NATIVE=ON
+      # (-march=native) and the AVX-512 would survive the fix. Bump the salt
+      # whenever portability-affecting flags change.
+      CARGO_TARGET_DIR: D:\a\wt\tgt-p2
       # Not the cause of the AVX-512 problem (rustc baseline x86-64 is sse2
       # only, per `rustc --print cfg`), but kept as defence in depth so a
       # future toolchain default cannot reintroduce it.
@@ -55,8 +61,17 @@ jobs:
       - name: Collect
         run: |
           New-Item -ItemType Directory -Force -Path publish | Out-Null
-          Copy-Item target\release\fotonvoice-engine.exe publish\
-          Copy-Item target\release\fotonvoice-llm-sidecar.exe publish\ -ErrorAction SilentlyContinue
+          Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-engine.exe publish\
+          Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-llm-sidecar.exe publish\ -ErrorAction SilentlyContinue
+
+      # Upload BEFORE the gate. A failing gate must not cost us the binary: the
+      # exe is the only way to verify a suspicious gate verdict against real
+      # disassembly, which is how the previous byte-scanning gate went wrong.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fotonvoice-msvc-webgpu
+          path: fotonvoice-src/fotonvoice-engine-0.5.8/publish/
+          retention-days: 14
 
       - name: Verify no AVX-512 (portability gate)
         shell: bash
@@ -65,14 +80,7 @@ jobs:
           # the backslashes, so convert to forward slashes before using it.
           script="${{ github.workspace }}/.github/scripts/check-avx512.py"
           script="${script//\\//}"
-          python "$script" target/release/fotonvoice-engine.exe
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fotonvoice-msvc-webgpu
-          path: fotonvoice-src/fotonvoice-engine-0.5.8/publish/
-          # 500 MB account quota: two weeks is enough for a manual download.
-          retention-days: 14
+          python "$script" "$CARGO_TARGET_DIR/release/fotonvoice-engine.exe"
 
   # Vulkan lane, mirroring build-linux.yml's Vulkan approach: whisper.cpp
   # compiles with the ggml Vulkan backend, so Whisper accelerates on
@@ -101,7 +109,12 @@ jobs:
       # workspace prefix the vulkan-shaders-gen ExternalProject configure
       # crosses the 260-char MAX_PATH wall and cl.exe dies with C1083 on the
       # TryCompile scratch file. A short root-level target dir stays under it.
-      CARGO_TARGET_DIR: D:\a\wt\tgt
+      # The -p2 salt exists because whisper-rs-sys never declares
+      # rerun-if-env-changed for SOURCE_DATE_EPOCH, so a restored cache would
+      # silently reuse objects configured with GGML_NATIVE=ON (-march=native)
+      # and the AVX-512 would survive the fix. Bump the salt whenever
+      # portability-affecting flags change.
+      CARGO_TARGET_DIR: D:\a\wt\tgt-p2
       # Same reason as the webgpu job: the runner has AVX-512, the target may
       # not. ggml reads SOURCE_DATE_EPOCH to turn off GGML_NATIVE, which is
       # what passes -march=native and emits the AVX-512 instructions.
@@ -147,16 +160,17 @@ jobs:
           Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-engine.exe publish-vulkan\
           Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-llm-sidecar.exe publish-vulkan\ -ErrorAction SilentlyContinue
 
+      # Upload BEFORE the gate, for the same reason as the webgpu job: a failing
+      # gate must not cost us the binary.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fotonvoice-msvc-vulkan
+          path: fotonvoice-src/fotonvoice-engine-0.5.8/publish-vulkan/
+          retention-days: 14
+
       - name: Verify no AVX-512 (portability gate)
         shell: bash
         run: |
           script="${{ github.workspace }}/.github/scripts/check-avx512.py"
           script="${script//\\//}"
           python "$script" "$CARGO_TARGET_DIR/release/fotonvoice-engine.exe"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fotonvoice-msvc-vulkan
-          path: fotonvoice-src/fotonvoice-engine-0.5.8/publish-vulkan/
-          # 500 MB account quota: two weeks is enough for a manual download.
-          retention-days: 14
