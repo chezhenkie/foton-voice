@@ -151,8 +151,16 @@ jobs:
           npm ci
           npm run build
 
+      # cargo rustc (not cargo build) so the extra linker flags reach ONLY the final
+      # exe link. /MAP makes the linker write a symbol-by-address map, which is
+      # how the last 279 residual AVX-512 sites get attributed to a real symbol
+      # instead of guessed at. /MAP needs no debug info, so it also names C++
+      # symbols from ggml/whisper, which -C debuginfo alone would not.
       - name: Build (msvc, WebGPU + Vulkan features)
-        run: cargo build --release -p fotonvoice-app --features moonshine-webgpu,nemotron-streaming-webgpu,vulkan
+        run: >
+          cargo rustc --release -p fotonvoice-app --bin fotonvoice-engine
+          --features moonshine-webgpu,nemotron-streaming-webgpu,vulkan
+          -- -C link-arg=/MAP -C link-arg=/MAPINFO:EXPORTS
 
       - name: Collect
         run: |
@@ -160,8 +168,53 @@ jobs:
           Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-engine.exe publish-vulkan\
           Copy-Item $env:CARGO_TARGET_DIR\release\fotonvoice-llm-sidecar.exe publish-vulkan\ -ErrorAction SilentlyContinue
 
-      # Upload BEFORE the gate, for the same reason as the webgpu job: a failing
-      # gate must not cost us the binary.
+      # Attribute the residual AVX-512 sites to real symbols using the linker map.
+      # Informational only: it must never fail the job, or a gate failure would
+      # hide the very answer this step exists to produce.
+      - name: Attribute residual AVX-512 sites
+        shell: pwsh
+        run: |
+          $map = Join-Path $env:CARGO_TARGET_DIR "release\fotonvoice-engine.map"
+          if (-not (Test-Path $map)) {
+            Write-Host "NO MAP at $map - skipping attribution"
+            exit 0
+          }
+          Write-Host "map: $map ($((Get-Item $map).Length) bytes)"
+
+          # "Public symbols by address" lines look like:  0001:00001058  _name
+          $entries = @()
+          $inSection = $false
+          foreach ($line in Get-Content $map) {
+            if ($line -match 'Public symbols by address') { $inSection = $true; continue }
+            if ($inSection -and $line -match '^\s*\S')  { if ($line -notmatch '^\s*[0-9A-Fa-f]{4}:') { $inSection = $false } }
+            if ($inSection -and $line -match '^\s*([0-9A-Fa-f]{4}):([0-9A-Fa-f]{8})\s+(\S+)') {
+              $seg = [Convert]::ToInt32($Matches[1], 16)
+              $off = [Convert]::ToInt32($Matches[2], 16)
+              $entries += [pscustomobject]@{
+                Seg = $seg; Off = $off
+                AsOff = $off
+                AsRva = ($seg * 0x1000) + $off
+                Name = $Matches[3]
+              }
+            }
+          }
+          Write-Host "parsed $($entries.Count) public symbols"
+          Write-Host "ggml/whisper symbols in map: $(($entries | Where-Object { $_.Name -match 'ggml|whisper' }).Count)"
+
+          # The 279 residual sites: 278 clustered at the head of .text plus one
+          # deep masked instruction. Report the nearest preceding symbol under
+          # both interpretations of the map address, since which one is the RVA
+          # depends on how the linker recorded the contribution.
+          $sites = 0x158f, 0x1598, 0x1c7, 0x2bc5, 0x2fbc, 0x16166d5
+          foreach ($rva in $sites) {
+            $byOff = $entries | Where-Object { $_.AsOff -le $rva } | Sort-Object AsOff -Descending | Select-Object -First 1
+            $byRva = $entries | Where-Object { $_.AsRva -le $rva } | Sort-Object AsRva -Descending | Select-Object -First 1
+            Write-Host ("RVA 0x{0:x}" -f $rva)
+            if ($byOff) { Write-Host ("   as-offset : {0} (delta 0x{1:x})" -f $byOff.Name, ($rva - $byOff.AsOff)) }
+            else        { Write-Host "   as-offset : (no symbol at or below)" }
+            if ($byRva) { Write-Host ("   as-rva     : {0} (delta 0x{1:x})" -f $byRva.Name, ($rva - $byRva.AsRva)) }
+            else        { Write-Host "   as-rva     : (no symbol at or below)" }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: fotonvoice-msvc-vulkan
