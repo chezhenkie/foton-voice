@@ -125,11 +125,22 @@ if (-not $SkipNodeInstall) {
 
 Write-Step "Building FotonVoice Engine"
 
-# Without this, a build machine whose CPU has AVX-512 (most modern Intel server
-# and desktop parts) produces an artifact that dies on the target with
-# 0xc000001d STATUS_ILLEGAL_INSTRUCTION the first time it loads a model. An
-# AVX-512 build was observed to contain 5092 EVEX instructions. Baseline
-# x86-64 keeps one binary usable everywhere, including Intel Lunar Lake.
+# THE fix for STATUS_ILLEGAL_INSTRUCTION (0xc000001d) on AVX-512-less CPUs
+# such as Intel Lunar Lake. ggml defaults GGML_NATIVE=ON, which passes
+# -march=native; building on a machine with AVX-512 then bakes AVX-512 into an
+# artifact bound for machines that cannot execute it (5092 EVEX instructions
+# were measured). ggml's own CMakeLists sets GGML_NATIVE_DEFAULT=OFF when
+# SOURCE_DATE_EPOCH is defined, so this needs no patched crate.
+if ($env:SOURCE_DATE_EPOCH) {
+    Write-Host "    SOURCE_DATE_EPOCH already set ($($env:SOURCE_DATE_EPOCH)), leaving it" -ForegroundColor DarkGray
+} else {
+    $env:SOURCE_DATE_EPOCH = "1"
+    Write-Host "    SOURCE_DATE_EPOCH=1 (disables ggml GGML_NATIVE / -march=native)" -ForegroundColor DarkGray
+}
+
+# Defence in depth only: rustc's baseline x86-64 is sse2 and never emitted
+# AVX-512, so this is not what caused the crash. Kept so a future toolchain
+# default cannot reintroduce it.
 # Applies unless the caller already set RUSTFLAGS deliberately.
 $baselineFlags = @(
     "-C", "target-feature=-avx512f,-avx512bw,-avx512cd,-avx512dq,-avx512vl",
