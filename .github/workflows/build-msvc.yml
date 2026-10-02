@@ -188,13 +188,26 @@ jobs:
           }
           Write-Host "map: $map ($((Get-Item $map).Length) bytes)"
 
-          # "Public symbols by address" lines look like:  0001:00001058  _name
+          # Copy into the workspace so the map can be uploaded as an artifact.
+          # Parsing it offline is far cheaper than guessing the format from one
+          # failed run at a time, and the previous heading-gated parser read 0
+          # symbols out of a 43 MB map because it keyed off section text.
+          $mapInWorkspace = Join-Path $env:GITHUB_WORKSPACE "fotonvoice-src\fotonvoice-engine-0.5.8\avx.map"
+          Copy-Item $map $mapInWorkspace -Force
+          Write-Host "map copied to $mapInWorkspace"
+
+          Write-Host "--- first 25 lines of the map, to show the real format ---"
+          Get-Content $map -TotalCount 25 | ForEach-Object { Write-Host "  | $_" }
+
+          Write-Host "--- first 10 lines mentioning ggml ---"
+          Select-String -Path $map -Pattern 'ggml' -SimpleMatch | Select-Object -First 10 |
+            ForEach-Object { Write-Host "  | $($_.Line)" }
+
+          # Entry lines look like:  0001:00001058  name. Match them anywhere in
+          # the file rather than inside a named section.
           $entries = @()
-          $inSection = $false
           foreach ($line in Get-Content $map) {
-            if ($line -match 'Public symbols by address') { $inSection = $true; continue }
-            if ($inSection -and $line -match '^\s*\S')  { if ($line -notmatch '^\s*[0-9A-Fa-f]{4}:') { $inSection = $false } }
-            if ($inSection -and $line -match '^\s*([0-9A-Fa-f]{4}):([0-9A-Fa-f]{8})\s+(\S+)') {
+            if ($line -match '^\s*([0-9A-Fa-f]{4}):([0-9A-Fa-f]{1,8})\s+(\S+)') {
               $seg = [Convert]::ToInt32($Matches[1], 16)
               $off = [Convert]::ToInt32($Matches[2], 16)
               $entries += [pscustomobject]@{
@@ -205,7 +218,7 @@ jobs:
               }
             }
           }
-          Write-Host "parsed $($entries.Count) public symbols"
+          Write-Host "parsed $($entries.Count) entries"
           Write-Host "ggml/whisper symbols in map: $(($entries | Where-Object { $_.Name -match 'ggml|whisper' }).Count)"
 
           # The 279 residual sites: 278 clustered at the head of .text plus one
@@ -222,6 +235,12 @@ jobs:
             if ($byRva) { Write-Host ("   as-rva     : {0} (delta 0x{1:x})" -f $byRva.Name, ($rva - $byRva.AsRva)) }
             else        { Write-Host "   as-rva     : (no symbol at or below)" }
           }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fotonvoice-linkmap
+          path: fotonvoice-src/fotonvoice-engine-0.5.8/avx.map
+          retention-days: 3
+
       - uses: actions/upload-artifact@v4
         with:
           name: fotonvoice-msvc-vulkan
