@@ -41,24 +41,36 @@ jobs:
       # msvc-dev-cmd step below populates with cl.exe.
       CMAKE_GENERATOR: Ninja
       # THE fix for STATUS_ILLEGAL_INSTRUCTION (0xc000001d) on AVX-512-less
-      # CPUs such as the Intel Core Ultra 5 226V. ggml defaults
-      # GGML_NATIVE=ON, which passes -march=native, so on this AVX-512 runner
-      # it compiled AVX-512 into a binary bound for machines that cannot run it
-      # (5092 EVEX instructions, confirmed by disassembly). ggml's CMakeLists
-      # sets GGML_NATIVE_DEFAULT=OFF when SOURCE_DATE_EPOCH is defined, which
-      # is its own reproducible-build hook, so this needs no patched crate.
-      # Verified: GGML_NATIVE=ON and "-march=native" without it, OFF with it.
-      SOURCE_DATE_EPOCH: "1"
-      # The default target dir nests ~200 extra path chars; combined with the
-      # workspace prefix the vulkan-shaders-gen ExternalProject configure
-      # crosses the 260-char MAX_PATH wall and cl.exe dies with C1083 on the
-      # TryCompile scratch file. A short root-level target dir stays under it.
-      # The -p2 salt exists because whisper-rs-sys never declares
-      # rerun-if-env-changed for SOURCE_DATE_EPOCH, so a restored rust-cache
-      # would silently reuse objects configured with GGML_NATIVE=ON
-      # (-march=native) and the AVX-512 would survive the fix. Bump the salt
-      # whenever portability-affecting flags change.
-      CARGO_TARGET_DIR: D:\a\wt\tgt-p2
+      # CPUs such as the Intel Core Ultra 5 226V, done WITHOUT giving up CPU
+      # speed. ggml picks its x86 kernel set from two variables:
+      #     if (GGML_NATIVE OR NOT GGML_NATIVE_DEFAULT) -> INS_ENB OFF else ON
+      # and GGML_SSE42, GGML_AVX, GGML_AVX2, GGML_BMI2, GGML_FMA and GGML_F16C
+      # all default to INS_ENB. Only GGML_NATIVE=ON passes -march=native, which
+      # on this AVX-512 runner baked 5092 EVEX instructions into an artifact
+      # bound for CPUs that cannot execute them.
+      #
+      # Do NOT "fix" this with SOURCE_DATE_EPOCH. That makes
+      # GGML_NATIVE_DEFAULT=OFF, which lands on the INS_ENB OFF branch as well,
+      # and the CPU backend is then compiled with no SIMD at all. That was
+      # measured on the target: 3630 ms of audio took 128235 ms to transcribe,
+      # real-time factor 0.028, machine stalled under full load.
+      #
+      # The toolchain file forces GGML_NATIVE=OFF in the cache and leaves
+      # GGML_NATIVE_DEFAULT alone, so INS_ENB stays ON and the backend gets
+      # SSE4.2, F16C, FMA, BMI2, AVX and AVX2 with nothing above AVX2. On MSVC
+      # GGML_AVX2 maps to /arch:AVX2 and GGML_AVX512 is a separate mutually
+      # exclusive branch. Verified against the real ggml CMakeLists by
+      # configuring it three ways and reading the compiler command lines:
+      #   toolchain  -> -msse4.2 -mf16c -mfma -mbmi2 -mavx -mavx2
+      #   default    -> -march=native
+      #   this fix   -> (none, the stall)
+      CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}\.github\cmake\portable-x86.cmake
+      # The -p3 salt exists because whisper-rs-sys never declares
+      # rerun-if-env-changed for CMAKE_TOOLCHAIN_FILE or SOURCE_DATE_EPOCH, so
+      # a restored rust-cache would silently reuse objects configured with
+      # -march=native (AVX-512) or with no SIMD at all. Bump the salt whenever
+      # portability-affecting flags change.
+      CARGO_TARGET_DIR: D:\a\wt\tgt-p3
       # Not the cause of the AVX-512 problem (rustc baseline x86-64 is sse2
       # only, per `rustc --print cfg`), but kept as defence in depth so a
       # future toolchain default cannot reintroduce it.

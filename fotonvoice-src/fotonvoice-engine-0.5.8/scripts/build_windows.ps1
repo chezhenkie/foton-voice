@@ -125,17 +125,40 @@ if (-not $SkipNodeInstall) {
 
 Write-Step "Building FotonVoice Engine"
 
-# THE fix for STATUS_ILLEGAL_INSTRUCTION (0xc000001d) on AVX-512-less CPUs
-# such as Intel Lunar Lake. ggml defaults GGML_NATIVE=ON, which passes
-# -march=native; building on a machine with AVX-512 then bakes AVX-512 into an
-# artifact bound for machines that cannot execute it (5092 EVEX instructions
-# were measured). ggml's own CMakeLists sets GGML_NATIVE_DEFAULT=OFF when
-# SOURCE_DATE_EPOCH is defined, so this needs no patched crate.
+# THE fix for STATUS_ILLEGAL_INSTRUCTION (0xc000001d) on AVX-512-less CPUs such
+# as Intel Lunar Lake, done WITHOUT giving up CPU speed.
+#
+# ggml picks its x86 kernel set from two variables (ggml/CMakeLists.txt):
+#     if (GGML_NATIVE OR NOT GGML_NATIVE_DEFAULT) -> INS_ENB OFF else INS_ENB ON
+# and GGML_SSE42, GGML_AVX, GGML_AVX2, GGML_BMI2, GGML_FMA, GGML_F16C all
+# default to INS_ENB. Only GGML_NATIVE=ON passes -march=native, which on an
+# AVX-512 build host bakes EVEX into an artifact bound for machines that cannot
+# execute it (5092 EVEX instructions were measured).
+#
+# The earlier attempt set SOURCE_DATE_EPOCH, which makes GGML_NATIVE_DEFAULT=OFF,
+# and that lands on the INS_ENB OFF branch too. The CPU backend was then built
+# with NO SIMD AT ALL. Measured on an Intel Core Ultra 5 226V with
+# large-v3-turbo Q5_0 and 8 threads: 3630 ms of audio took 128235 ms to
+# transcribe, real-time factor 0.028, and the machine stalled under full load.
+#
+# A CMake toolchain file forces GGML_NATIVE=OFF in the cache while leaving
+# GGML_NATIVE_DEFAULT alone, so INS_ENB stays ON and the backend is compiled
+# with SSE4.2, F16C, FMA, BMI2, AVX and AVX2, and nothing above AVX2. CMake
+# reads CMAKE_TOOLCHAIN_FILE from the environment and runs it before the
+# project, early enough that option() will not override it. No patched crate.
+$toolchain = Join-Path $PSScriptRoot "..\..\..\.github\cmake\portable-x86.cmake"
+if (-not (Test-Path -LiteralPath $toolchain)) {
+    throw "toolchain file not found: $toolchain"
+}
+$env:CMAKE_TOOLCHAIN_FILE = (Resolve-Path -LiteralPath $toolchain).Path
+Write-Host "    CMAKE_TOOLCHAIN_FILE=$($env:CMAKE_TOOLCHAIN_FILE)" -ForegroundColor DarkGray
+Write-Host "    (ggml GGML_NATIVE=OFF, AVX2 on, no AVX-512, no -march=native)" -ForegroundColor DarkGray
+
+# Guard against the regression that caused the stall: if SOURCE_DATE_EPOCH is
+# set anywhere, GGML_NATIVE_DEFAULT flips to OFF and INS_ENB goes back to OFF.
 if ($env:SOURCE_DATE_EPOCH) {
-    Write-Host "    SOURCE_DATE_EPOCH already set ($($env:SOURCE_DATE_EPOCH)), leaving it" -ForegroundColor DarkGray
-} else {
-    $env:SOURCE_DATE_EPOCH = "1"
-    Write-Host "    SOURCE_DATE_EPOCH=1 (disables ggml GGML_NATIVE / -march=native)" -ForegroundColor DarkGray
+    Write-Host "    clearing SOURCE_DATE_EPOCH ($($env:SOURCE_DATE_EPOCH)): it would disable ggml's AVX2 kernels" -ForegroundColor Yellow
+    Remove-Item Env:\SOURCE_DATE_EPOCH -ErrorAction SilentlyContinue
 }
 
 # Defence in depth only: rustc's baseline x86-64 is sse2 and never emitted
