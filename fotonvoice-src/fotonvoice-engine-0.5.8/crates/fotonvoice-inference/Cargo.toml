@@ -21,7 +21,10 @@ dirs = { workspace = true }
 reqwest = { workspace = true }
 bytes = { workspace = true }
 futures-util = { workspace = true }
-whisper-rs = { version = "0.16" }
+# tracing_backend routes whisper.cpp/ggml native logs into tracing. Without it
+# (it is not a default feature) those log hooks expand to nothing and GPU
+# backend failures are discarded, leaving crashes with no explanation.
+whisper-rs = { version = "0.16", features = ["tracing_backend"] }
 ndarray = { workspace = true }
 # Physical-core count for the backend thread pools (already in the graph).
 num_cpus = "1"

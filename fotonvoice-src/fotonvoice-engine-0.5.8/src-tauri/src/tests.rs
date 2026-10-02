@@ -70,6 +70,7 @@ fn test_default_log_filter_enables_real_crate_targets() {
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!(target: "fotonvoice_app_lib", "=== System Startup Config ===");
         tracing::info!(target: "fotonvoice_inference::whisper_cpp", "Whisper acceleration: vulkan");
+        tracing::info!(target: "whisper_rs::ggml_logging_hook", "ggml_vulkan: device creation failed");
         tracing::info!(target: "fotonvoice-engine", "hyphenated target must stay filtered out");
     });
 
@@ -79,7 +80,35 @@ fn test_default_log_filter_enables_real_crate_targets() {
 
     assert!(content.contains("=== System Startup Config ==="), "app lib target must be enabled: {content:?}");
     assert!(content.contains("Whisper acceleration: vulkan"), "inference target must be enabled: {content:?}");
+    assert!(content.contains("ggml_vulkan: device creation failed"), "whisper_rs target must be enabled: {content:?}");
     assert!(!content.contains("hyphenated target must stay filtered out"), "hyphenated target must not match: {content:?}");
+}
+
+#[test]
+fn test_native_backend_log_bypasses_privacy_filter() {
+    use tracing_subscriber::prelude::*;
+    use std::io::Read;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let log_path = temp_dir.path().join("test_native_log.log");
+
+    let layer = crate::startup_log::StartupErrorLayer::new(log_path.clone()).unwrap();
+    let subscriber = tracing_subscriber::registry().with(layer);
+
+    // After startup, so only the whisper/native exemptions can admit these.
+    crate::startup_log::STARTUP_COMPLETE.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(target: "whisper_rs::ggml_logging_hook", "transcribe: buffer size 0, payload empty");
+        tracing::info!(target: "fotonvoice_inference::whisper_cpp", "transcribe: payload leaked");
+    });
+
+    let mut file = std::fs::File::open(log_path).unwrap();
+    let mut content = String::new();
+    file.read_to_string(&mut content).unwrap();
+
+    assert!(content.contains("ggml_logging_hook"), "native backend log must be captured despite keywords: {content:?}");
+    assert!(!content.contains("payload leaked"), "app crate log must still respect the privacy filter: {content:?}");
 }
 
 fn make_test_state() -> AppState {

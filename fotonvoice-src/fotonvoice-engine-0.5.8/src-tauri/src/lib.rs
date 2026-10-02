@@ -27,7 +27,11 @@ mod window;
 #[cfg(test)]
 mod tests;
 
-pub const DEFAULT_LOG_FILTER: &str = "fotonvoice_app_lib=info,fotonvoice_inference=info";
+/// Targets are module paths, so crate dashes appear as underscores.
+/// `whisper_rs` is whisper.cpp/ggml's own native log output, which is the only
+/// place a Vulkan backend failure is described.
+pub const DEFAULT_LOG_FILTER: &str =
+    "fotonvoice_app_lib=info,fotonvoice_inference=info,whisper_rs=info";
 
 pub use window::{
     get_app_handle, set_app_handle, setup_blocker, show_and_focus_window, show_setup_window,
@@ -115,6 +119,8 @@ pub fn run() {
 
     #[cfg(target_os = "windows")]
     webview2::ensure_fixed_runtime(&local_dir);
+
+    startup_log::install_panic_hook(local_dir.join("crash.log"));
 
     let log_path = local_dir.join("startup_errors.log");
 

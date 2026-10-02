@@ -8,6 +8,49 @@ use tracing_subscriber::Layer;
 
 pub static STARTUP_COMPLETE: AtomicBool = AtomicBool::new(false);
 
+/// Record panics to `<app_root>/crash.log`.
+///
+/// The release binary is a Windows GUI subsystem app, so there is no stderr to
+/// read and `tracing` never sees a panic. Without this a crash leaves no trace
+/// at all beyond whatever happened to be logged before it.
+pub fn install_panic_hook(crash_path: std::path::PathBuf) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>").to_string();
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+
+        let report = format!(
+            "{}\n--- PANIC ---\nthread: {}\nlocation: {}\npayload: {}\n",
+            chrono::Utc::now().to_rfc3339(),
+            name,
+            location,
+            payload
+        );
+
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&crash_path)
+        {
+            let _ = file.write_all(report.as_bytes());
+            let _ = file.flush();
+        }
+
+        previous(info);
+    }));
+}
+
 struct MessageVisitor {
     message: String,
 }
@@ -52,25 +95,38 @@ impl<S: Subscriber> Layer<S> for StartupErrorLayer {
 
         let msg = visitor.message;
 
+        // whisper.cpp/ggml log about the compute backend, not about user speech,
+        // and its wording ("transcribe", "payload") collides with the privacy
+        // keywords below. Filtering it would discard GPU failure diagnostics,
+        // so it is exempt.
+        let is_native_backend_log = metadata.target().starts_with("whisper_rs");
+
         let lower_msg = msg.to_lowercase();
-        if lower_msg.contains("received transcription")
-            || lower_msg.contains("delivered target_id")
-            || lower_msg.contains("transcribe")
-            || lower_msg.contains("transcription")
-            || lower_msg.contains("speaking")
-            || lower_msg.contains("speak")
-            || lower_msg.contains("openai")
-            || lower_msg.contains("payload")
-            || lower_msg.contains("status-tick")
+        if !is_native_backend_log
+            && (lower_msg.contains("received transcription")
+                || lower_msg.contains("delivered target_id")
+                || lower_msg.contains("transcribe")
+                || lower_msg.contains("transcription")
+                || lower_msg.contains("speaking")
+                || lower_msg.contains("speak")
+                || lower_msg.contains("openai")
+                || lower_msg.contains("payload")
+                || lower_msg.contains("status-tick"))
         {
             return;
         }
 
         let is_error_or_warn = *level == tracing::Level::ERROR || *level == tracing::Level::WARN;
         let is_startup = !STARTUP_COMPLETE.load(Ordering::SeqCst);
-        let is_whisper_diagnostic = msg.starts_with("Whisper acceleration:") || msg.starts_with("Whisper run:");
-
-        if is_error_or_warn || ((is_startup || is_whisper_diagnostic) && *level == tracing::Level::INFO) {
+        let is_whisper_diagnostic =
+            msg.starts_with("Whisper acceleration:") || msg.starts_with("Whisper run:");
+        // whisper.cpp initialises the GPU backend during the lazy model load,
+        // which happens after STARTUP_COMPLETE, so its INFO lines must not be
+        // dropped by the startup gate.
+        if is_error_or_warn
+            || ((is_startup || is_whisper_diagnostic || is_native_backend_log)
+                && *level == tracing::Level::INFO)
+        {
             let timestamp = chrono::Utc::now().to_rfc3339();
             let log_line = format!(
                 "{} [{}] {}: {}\n",
