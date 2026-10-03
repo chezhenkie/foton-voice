@@ -330,6 +330,40 @@ pub fn validate(cfg: &AppConfig) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::structs::*;
+
+    #[test]
+    fn moonshine_gpu_defaults_on_for_a_config_written_before_the_field() {
+        // An existing config.json has no `gpu` key. It must still load with the
+        // GPU path enabled, not silently default to CPU.
+        let cfg: MoonshineConfig =
+            serde_json::from_str(r#"{"model_size":"base","language":"en"}"#).unwrap();
+        assert!(cfg.gpu, "a config without `gpu` must keep GPU enabled");
+        assert_eq!(cfg.model_size, "base");
+    }
+
+    #[test]
+    fn moonshine_gpu_is_honoured_when_present() {
+        let off: MoonshineConfig =
+            serde_json::from_str(r#"{"model_size":"tiny","language":"en","gpu":false}"#)
+                .unwrap();
+        assert!(!off.gpu);
+        let on: MoonshineConfig =
+            serde_json::from_str(r#"{"model_size":"tiny","language":"en","gpu":true}"#).unwrap();
+        assert!(on.gpu);
+    }
+
+    #[test]
+    fn moonshine_quantized_variant_survives_a_round_trip() {
+        let cfg = MoonshineConfig {
+            model_size: "base-quantized".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("base-quantized"), "{json}");
+        let back: MoonshineConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.model_size, "base-quantized");
+        assert!(back.gpu);
+    }
     #[test]
     fn a_name_on_path_is_found() {
         let dir = tempfile::tempdir().unwrap();

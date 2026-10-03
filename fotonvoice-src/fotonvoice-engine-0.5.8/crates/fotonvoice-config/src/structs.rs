@@ -33,10 +33,19 @@ impl Default for WhisperCppConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MoonshineConfig {
-    /// "base" or "tiny"
+    /// "base" or "tiny", optionally with a `-quantized` precision suffix
     pub model_size: String,
     /// BCP-47 language code, e.g. "en"
     pub language: String,
+    /// Attach the GPU execution provider (WebGPU/CUDA/CoreML per platform).
+    /// Defaults to true, so a config written before this field keeps loading the
+    /// model the same way.
+    #[serde(default = "default_moonshine_gpu")]
+    pub gpu: bool,
+}
+
+fn default_moonshine_gpu() -> bool {
+    true
 }
 
 impl Default for MoonshineConfig {
@@ -44,6 +53,7 @@ impl Default for MoonshineConfig {
         Self {
             model_size: "base".into(),
             language: "en".into(),
+            gpu: default_moonshine_gpu(),
         }
     }
 }

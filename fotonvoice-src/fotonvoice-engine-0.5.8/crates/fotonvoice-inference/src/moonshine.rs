@@ -31,6 +31,15 @@ const SAMPLE_RATE: usize = 16_000;
 /// Upper bound on decoded tokens per call. Matches upstream; end-of-transcript
 const MAX_TOKENS: usize = 192;
 
+/// "CPU" or the build's GPU backend name, for the acceleration log line.
+fn graph_label(on_gpu: bool) -> &'static str {
+    if on_gpu {
+        "GPU"
+    } else {
+        "CPU"
+    }
+}
+
 /// The two ONNX graph files that make up a Moonshine model.
 const ENCODER_FILE: &str = "encoder_model.onnx";
 const DECODER_FILE: &str = "decoder_model_merged.onnx";
@@ -250,8 +259,8 @@ impl MoonshineBackend {
     /// graph, the `?` in load() killed the whole engine and every request
     /// returned empty text. That is the observed failure on this machine:
     /// onnxruntime::webgpu::Conv GetFusedActivationAttr() was false.
-    fn load_session(path: &Path) -> Result<(Session, bool)> {
-        if crate::moonshine_gpu_backend().is_none() {
+    fn load_session(path: &Path, use_gpu: bool) -> Result<(Session, bool)> {
+        if !use_gpu || crate::moonshine_gpu_backend().is_none() {
             return Self::build_session(path, false).map(|s| (s, false));
         }
 
@@ -368,33 +377,23 @@ impl TranscriptionBackend for MoonshineBackend {
         // is the only way to tell which graph is responsible.
         let t_all = std::time::Instant::now();
         let t = std::time::Instant::now();
-        let (encoder, enc_gpu) = Self::load_session(&dir.join(ENCODER_FILE))?;
+        let (encoder, enc_gpu) = Self::load_session(&dir.join(ENCODER_FILE), self.cfg.gpu)?;
         info!(
             "Moonshine load: encoder {} ms (gpu={enc_gpu})",
             t.elapsed().as_millis()
         );
         let t = std::time::Instant::now();
-        let (decoder, dec_gpu) = Self::load_session(&dir.join(DECODER_FILE))?;
+        let (decoder, dec_gpu) = Self::load_session(&dir.join(DECODER_FILE), self.cfg.gpu)?;
         info!(
             "Moonshine load: decoder {} ms (gpu={dec_gpu})",
             t.elapsed().as_millis()
         );
-        let on_gpu = enc_gpu && dec_gpu;
-
-        // Logged after loading, because before this the answer came from a
-        // compile-time cfg! and claimed "webgpu" even when the provider dll was
-        // absent and the session had silently fallen back to the CPU.
-        if on_gpu {
-            info!(
-                "Moonshine acceleration: {}",
-                crate::moonshine_gpu_backend().unwrap_or("gpu")
-            );
-        } else {
-            info!(
-                "Moonshine acceleration: none (CPU); the fp32 weights stay in RAM and \
-                 run far slower than the GPU path"
-            );
-        }
+        // Reported per graph, not as a single verdict. The two graphs can land
+        // on different execution providers: on this machine the decoder attaches
+        // WebGPU while the encoder's Conv<1,1> fails and falls back, and a single
+        // "none (CPU)" hid that the GPU was in use at all.
+        let backend = crate::moonshine_gpu_backend().unwrap_or("gpu");
+        info!("Moonshine acceleration: encoder={}, decoder={backend}", graph_label(enc_gpu));
 
         let tokenizer = Tokenizer::from_bytes(TOKENIZER_JSON)
             .map_err(|e| anyhow!("load bundled Moonshine tokenizer: {e}"))?;
@@ -859,7 +858,7 @@ fn test_quantized_variants_do_not_collide_on_disk() {
 
     #[test]
     fn test_new_backend_reports_name_and_unloaded() {
-        let cfg = MoonshineConfig { model_size: "base".into(), language: "en".into() };
+        let cfg = MoonshineConfig { model_size: "base".into(), language: "en".into(), gpu: true };
         let b = MoonshineBackend::new(cfg);
         assert_eq!(b.name(), "moonshine");
         assert!(!b.is_loaded());
@@ -867,7 +866,7 @@ fn test_quantized_variants_do_not_collide_on_disk() {
 
     #[test]
     fn test_transcribe_before_load_errors() {
-        let cfg = MoonshineConfig { model_size: "base".into(), language: "en".into() };
+        let cfg = MoonshineConfig { model_size: "base".into(), language: "en".into(), gpu: true };
         let b = MoonshineBackend::new(cfg);
         let req = TranscribeRequest {
             audio: vec![0.0; 1600],

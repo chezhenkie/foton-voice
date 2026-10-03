@@ -68,16 +68,17 @@
       }),
   });
 
-  // Precision names mirror the upstream folder names (float / quantized /
-  // quantized_4bit) so the label cannot drift from what is actually fetched.
-  // Sizes are encoder + decoder, decimal MB, from the upstream file sizes.
+  // Precision names mirror the upstream folder names (float / quantized) so the
+  // label cannot drift from what is actually fetched. Sizes are encoder +
+  // decoder, decimal MB, from the upstream file sizes. The upstream 4-bit tier
+  // is deliberately not offered: its encoder is larger than the quantized one
+  // (31.0 MB vs 20.5 MB) and its decoder is byte-identical, so it is bigger for
+  // no benefit.
   const moonshineModelSizeOptions = [
     { value: "base", label: "Base - float - 247 MB" },
     { value: "base-quantized", label: "Base - quantized - 63 MB" },
-    { value: "base-quantized_4bit", label: "Base - quantized 4-bit - 73 MB" },
     { value: "tiny", label: "Tiny - float - 109 MB" },
-    { value: "tiny-quantized", label: "Tiny - quantized - 28 MB" },
-    { value: "tiny-quantized_4bit", label: "Tiny - quantized 4-bit - 33 MB" }
+    { value: "tiny-quantized", label: "Tiny - quantized - 28 MB" }
   ];
 
   const nemotronModelSizeOptions = [
@@ -306,14 +307,36 @@
               >Moonshine runs on the CPU in this build</strong
             >
             <p class="m-0 text-slate-200 text-xs leading-relaxed">
-              ONNX Runtime, which Moonshine uses, has no Vulkan backend, so
-              Moonshine runs on the CPU in Vulkan builds. It holds its weights
-              in RAM as fp32 - roughly <code>530&nbsp;MB</code> for
-              <code>base</code>, <code>240&nbsp;MB</code> for <code>tiny</code>.
+              Moonshine uses ONNX Runtime, which has no Vulkan backend in this
+              build. Weights stay in RAM, so the quantized variants below are much
+              lighter than the float ones.
             </p>
           </div>
         </div>
       {/if}
+
+      <label class="field">
+        <span>GPU acceleration</span>
+        <input
+          type="checkbox"
+          bind:checked={cfg.engine.moonshine.gpu}
+          onchange={markDirty}
+          disabled={!moonshineGpu}
+        />
+      </label>
+      <p class="hint">
+        {#if moonshineGpu}
+          Attach the GPU execution provider ({gpuLabel(moonshineGpu)}) when one is
+          available. Off keeps the GPU free for other processes and skips the
+          provider entirely, so no WebGPU device is created. Note that the encoder
+          and decoder graphs can end up on different providers: the Moonshine
+          encoder uses an op the WebGPU backend rejects, so it falls back to the
+          CPU while the decoder runs on the GPU. Changing this reloads the model.
+        {:else}
+          No GPU acceleration is available in this build or on this machine, so the
+          toggle is disabled and the engine runs on the CPU.
+        {/if}
+      </p>
 
       <label class="field">
         <span>Model size</span>
