@@ -185,7 +185,7 @@ pub fn spawn_status_ticker(
         let mut frame_idx = 0;
         let mut last_pos: Option<(String, String)> = None;
         let mut startup_tick_count: u32 = 0;
-        let mut last_flags: Option<(bool, bool, bool, bool, bool, u32, bool)> = None;
+        let mut last_flags: Option<(bool, bool, bool, bool, bool, u32, bool, fotonvoice_inference::LoadState)> = None;
         let mut last_emit = tokio::time::Instant::now() - HEARTBEAT;
         let mut label_inputs: Option<(String, String, bool, u64)> = None;
         let mut cached_label = String::new();
@@ -354,6 +354,10 @@ pub fn spawn_status_ticker(
                 state_for_ticker.is_audio_ready(),
                 state_for_ticker.total_words(),
                 state_for_ticker.hotkey_health.is_active(),
+                // Part of the change-detection tuple on purpose: a load that
+                // finishes must emit immediately, otherwise the UI keeps
+                // showing "loading" until the next heartbeat.
+                state_for_ticker.stt_load_state(),
             );
             let now = tokio::time::Instant::now();
             let unchanged = last_flags == Some(flags) && !label_changed;
@@ -371,6 +375,8 @@ pub fn spawn_status_ticker(
                 "audio_ready": flags.4,
                 "word_count": flags.5,
                 "hotkeys_active": flags.6,
+                "stt_load": flags.7.as_str(),
+                "stt_load_error": state_for_ticker.stt_load.error(),
                 "active_target_id": &active_target_id,
                 "active_target_label": &cached_label,
             });

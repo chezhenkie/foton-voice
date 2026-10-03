@@ -78,6 +78,14 @@ pub struct AppState {
     pub inference_config_tx:
         crossbeam_channel::Sender<Arc<fotonvoice_inference::InferenceRuntimeInput>>,
 
+    /// Load state of the STT worker thread.
+    ///
+    /// Read this instead of the request channel when deciding whether a
+    /// recording can be handed over: the worker blocks inside `load()` and
+    /// cannot answer anything until it finishes, which during a cold ONNX load
+    /// is minutes.
+    pub stt_load: fotonvoice_inference::LoadStatus,
+
     /// Playback engine handle
     pub tts_handle: Arc<Mutex<Option<fotonvoice_tts::TtsEngineHandle>>>,
 
@@ -130,6 +138,15 @@ impl AppState {
 
     pub fn is_audio_ready(&self) -> bool {
         self.audio_ready.load(Ordering::SeqCst)
+    }
+
+    /// True when the STT engine is loaded and can transcribe.
+    pub fn is_stt_ready(&self) -> bool {
+        self.stt_load.is_ready()
+    }
+
+    pub fn stt_load_state(&self) -> fotonvoice_inference::LoadState {
+        self.stt_load.state()
     }
 
     pub fn set_dynamic_stream(&self, v: bool) {

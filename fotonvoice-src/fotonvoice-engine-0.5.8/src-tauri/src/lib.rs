@@ -214,6 +214,7 @@ pub fn run() {
     let (audio_wake_tx, audio_wake_rx) = crossbeam_channel::bounded::<()>(1);
 
     let hotkey_health = Arc::new(fotonvoice_hotkeys::ListenerHealth::default());
+    let stt_load = fotonvoice_inference::LoadStatus::new();
 
     let app_state = Arc::new(AppState {
         config: config.clone(),
@@ -245,6 +246,7 @@ pub fn run() {
         audio_tx: audio_tx.clone(),
         audio_wake: audio_wake_tx,
         inference_config_tx: inference_cfg_tx,
+        stt_load: stt_load.clone(),
         tts_handle: Arc::new(Mutex::new(None)),
         active_fifos: Arc::new(Mutex::new(std::collections::HashSet::new())),
         stop_key_held: Arc::new(AtomicBool::new(false)),
@@ -290,6 +292,7 @@ pub fn run() {
         inference_rx,
         text_tx.clone(),
         inference_cfg_rx,
+        stt_load,
     );
 
     #[cfg(target_os = "linux")]

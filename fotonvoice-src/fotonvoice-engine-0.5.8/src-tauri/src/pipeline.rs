@@ -291,13 +291,53 @@ pub fn spawn_audio_coordinator(
                         }
                     } else {
                         if !accumulated_audio.is_empty() {
-                            let req = fotonvoice_inference::InferenceRequest {
-                                audio: std::mem::take(&mut accumulated_audio),
-                                target_id: target_id.clone(),
-                                binding_id: Some(binding_id.clone()),
-                            };
-                            state_for_audio.set_processing(true);
-                            let _ = inference_tx.send(req);
+                            let samples = accumulated_audio.len();
+                            if state_for_audio.is_stt_ready() {
+                                let req = fotonvoice_inference::InferenceRequest {
+                                    audio: std::mem::take(&mut accumulated_audio),
+                                    target_id: target_id.clone(),
+                                    binding_id: Some(binding_id.clone()),
+                                };
+                                state_for_audio.set_processing(true);
+                                if let Err(e) = inference_tx.send(req) {
+                                    tracing::error!(
+                                        "Failed to queue {samples} samples ({:.1}s) for transcription: {e}",
+                                        samples as f64 / 16000.0
+                                    );
+                                    state_for_audio.set_processing(false);
+                                    fotonvoice_inject::show_notification(
+                                        "FotonVoice Engine - transcription unavailable",
+                                        "The speech engine is not running. Please restart the app.",
+                                    );
+                                }
+                            } else {
+                                // The worker loads its backend before it reads
+                                // any request, and that load blocks the only
+                                // thread draining this channel. Queueing here
+                                // used to wedge the pipeline behind the
+                                // bounded(4) channel, leave `processing` stuck
+                                // on, and swallow the recording with no message.
+                                // The audio is stale by the time the load ends
+                                // anyway, so drop it and say what happened.
+                                let secs = samples as f64 / 16000.0;
+                                if state_for_audio.stt_load_state()
+                                    == fotonvoice_inference::LoadState::Failed
+                                {
+                                    let err = state_for_audio.stt_load.error();
+                                    tracing::error!(
+                                        "Dropping {samples} samples ({secs:.1}s): STT model failed to load: {err}"
+                                    );
+                                    fotonvoice_inject::show_notification(
+                                        "FotonVoice Engine - model failed to load",
+                                        &err,
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        "Dropping {samples} samples ({secs:.1}s): STT model is still loading, nothing queued"
+                                    );
+                                }
+                                state_for_audio.set_processing(false);
+                            }
                         }
                     }
                     was_recording = false;
@@ -321,6 +361,13 @@ pub fn spawn_text_delivery_worker(
                 continue;
             }
             if output.text.trim().is_empty() {
+                // Not an error: silence legitimately produces no text. Logged so
+                // an empty result is traceable instead of vanishing.
+                tracing::info!(
+                    "Transcription produced no text ({} ms, language {:?})",
+                    output.inference_ms,
+                    output.language
+                );
                 continue;
             }
 

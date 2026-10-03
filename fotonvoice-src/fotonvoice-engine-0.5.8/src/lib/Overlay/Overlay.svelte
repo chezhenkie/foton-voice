@@ -16,6 +16,27 @@
   let commandTimerId: any = null;
   let unlistenCommandExecuted: (() => void) | null = null;
 
+  // The STT worker cannot accept audio while it is loading its model, so a
+  // recording taken in that window produces nothing. Say so in the overlay
+  // instead of showing a live recording visualizer for audio that is dropped.
+  const sttLoading = $derived($status.stt_load === "loading");
+  const sttFailed = $derived($status.stt_load === "failed");
+  const sttNotReady = $derived(sttLoading || sttFailed);
+  const sttTitle = $derived(sttFailed ? "MODEL LOAD FAILED" : "LOADING MODEL");
+
+  let sttElapsed = $state(0);
+  $effect(() => {
+    if (!sttLoading) {
+      sttElapsed = 0;
+      return;
+    }
+    const started = Date.now();
+    const id = setInterval(() => {
+      sttElapsed = Math.floor((Date.now() - started) / 1000);
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
   // Recording wins: starting to dictate interrupts playback (begin_recording
   // stops TTS), and until the speaking flag catches up the user must still
   // see that they are being recorded rather than a stale SYSTEM RESPONDING.
@@ -160,10 +181,10 @@
   });
 </script>
 
-<div class="overlay-root" data-recording={$recording} data-speaking={$speaking} data-processing={$status.processing}>
+<div class="overlay-root" data-recording={$recording} data-speaking={$speaking} data-processing={$status.processing} data-stt-load={$status.stt_load}>
   {#if renderOverlay && visible}
     <!-- The target visualizer belongs to recording; it never shows over SYSTEM RESPONDING. -->
-    {#if !isSystemResponding}
+    {#if !isSystemResponding && !sttNotReady}
       <Terminal recording={$recording} active={animateActive} />
     {/if}
 
@@ -177,6 +198,20 @@
         <span class="pill-text">
           <span class="pill-title">SYSTEM RESPONDING</span>
           <span class="pill-target">> {targetLabel}</span>
+        </span>
+      </div>
+    {:else if sttNotReady}
+      <div class="system-response-box mcp" class:on={animateActive}>
+        <span class="pulse-dot"></span>
+        <span class="pill-text">
+          <span class="pill-title">{sttTitle}</span>
+          <span class="pill-target">
+            {#if sttFailed}
+              > {$status.stt_load_error || "see the log for details"}
+            {:else}
+              > {sttElapsed}s, first run only - recording will not transcribe yet
+            {/if}
+          </span>
         </span>
       </div>
     {:else if commandOverlayActive}

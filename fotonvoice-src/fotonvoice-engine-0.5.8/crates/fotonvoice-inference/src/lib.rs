@@ -185,6 +185,99 @@ use postprocess::{run_pipeline, PostProcessConfig, is_silence_hallucination};
 
 pub type AudioChunk = Vec<f32>;
 
+/// Whether the inference engine can accept audio right now.
+///
+/// The worker thread loads its backend before it starts reading requests, and a
+/// cold ONNX load of the fp32 Moonshine graphs takes minutes. Everything that
+/// needs to know "can I hand this recording over?" reads this, because the
+/// request channel cannot answer while the worker is blocked loading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadState {
+    /// No load has been attempted yet.
+    NotStarted,
+    /// A load is in flight. Requests must not be queued.
+    Loading,
+    /// Loaded and able to transcribe.
+    Ready,
+    /// The last load failed; `LoadStatus::error` says why.
+    Failed,
+}
+
+impl LoadState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LoadState::NotStarted => "not_started",
+            LoadState::Loading => "loading",
+            LoadState::Ready => "ready",
+            LoadState::Failed => "failed",
+        }
+    }
+
+    fn from_u8(v: u8) -> LoadState {
+        match v {
+            1 => LoadState::Loading,
+            2 => LoadState::Ready,
+            3 => LoadState::Failed,
+            _ => LoadState::NotStarted,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            LoadState::NotStarted => 0,
+            LoadState::Loading => 1,
+            LoadState::Ready => 2,
+            LoadState::Failed => 3,
+        }
+    }
+}
+
+/// Shared, cloneable view of the worker thread's load state.
+///
+/// The worker owns the engine, so nothing else can ask it directly while it is
+/// busy loading. This is the side channel that answers instead. Cloning is cheap
+/// and shares one atomic.
+#[derive(Debug, Clone, Default)]
+pub struct LoadStatus {
+    state: Arc<std::sync::atomic::AtomicU8>,
+    error: Arc<std::sync::Mutex<String>>,
+}
+
+impl LoadStatus {
+    pub fn new() -> LoadStatus {
+        LoadStatus::default()
+    }
+
+    pub fn state(&self) -> LoadState {
+        LoadState::from_u8(self.state.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// Record a state transition. `error` is only kept for `Failed`.
+    pub fn set(&self, state: LoadState, error: &str) {
+        if state == LoadState::Failed {
+            *self.error.lock().unwrap_or_else(|e| e.into_inner()) = error.to_string();
+        } else if self.state() == LoadState::Failed {
+            let mut guard = self.error.lock().unwrap_or_else(|e| e.into_inner());
+            guard.clear();
+        }
+        self.state.store(state.to_u8(), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The last load error, or an empty string when there is not one.
+    pub fn error(&self) -> String {
+        self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// True when a load is in flight, i.e. queueing work would block.
+    pub fn is_loading(&self) -> bool {
+        self.state() == LoadState::Loading
+    }
+
+    /// True when the engine can transcribe.
+    pub fn is_ready(&self) -> bool {
+        self.state() == LoadState::Ready
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct InferenceRequest {
@@ -589,28 +682,36 @@ pub fn run_worker(
     tx: Sender<InferenceOutput>,
 ) {
     let (_dummy_tx, dummy_rx) = crossbeam_channel::unbounded();
-    run_worker_with_config(runtime, rx, tx, dummy_rx);
+    run_worker_with_config(runtime, rx, tx, dummy_rx, LoadStatus::new());
 }
 
 /// Run the inference engine on a dedicated OS thread with pushed runtime
 /// snapshots (app config, targets, bindings).
+///
+/// `status` is where the thread publishes its load state. It is a parameter
+/// rather than a return value because the caller needs to read it while this
+/// thread is busy, which is exactly when it matters.
 pub fn run_worker_with_config(
     runtime: Arc<InferenceRuntimeInput>,
     rx: Receiver<InferenceRequest>,
     tx: Sender<InferenceOutput>,
     config_rx: Receiver<Arc<InferenceRuntimeInput>>,
+    status: LoadStatus,
 ) {
     std::thread::Builder::new()
         .name("fotonvoice-inference".into())
         .spawn(move || {
             let mut engine = InferenceEngine::new(runtime);
+            status.set(LoadState::Loading, "");
             let mut loaded = match engine.load() {
                 Ok(()) => {
                     info!("Inference engine ready");
+                    status.set(LoadState::Ready, "");
                     true
                 }
                 Err(e) => {
                     error!("Failed to load inference backend: {e:#}");
+                    status.set(LoadState::Failed, &format!("{e:#}"));
                     false
                 }
             };
@@ -624,9 +725,11 @@ pub fn run_worker_with_config(
                         };
 
                         if !loaded {
+                            status.set(LoadState::Loading, "");
                             match engine.load() {
                                 Ok(()) => {
                                     info!("Inference engine ready (loaded on demand)");
+                                    status.set(LoadState::Ready, "");
                                     loaded = true;
                                 }
                                 Err(e) => {
@@ -670,13 +773,16 @@ pub fn run_worker_with_config(
                         };
                         let needs_reload = engine.update_runtime(new_rt);
                         if needs_reload {
+                            status.set(LoadState::Loading, "");
                             loaded = match engine.load() {
                                 Ok(()) => {
                                     info!("Inference engine ready with new backend");
+                                    status.set(LoadState::Ready, "");
                                     true
                                 }
                                 Err(e) => {
                                     error!("Failed to load new inference backend: {e:#}");
+                                    status.set(LoadState::Failed, &format!("{e:#}"));
                                     false
                                 }
                             };
@@ -702,6 +808,60 @@ mod tests {
             targets: Arc::new(Vec::new()),
             bindings: Arc::new(Vec::new()),
         })
+    }
+
+    #[test]
+    fn a_fresh_load_status_is_not_started_and_not_ready() {
+        let status = LoadStatus::new();
+        assert_eq!(status.state(), LoadState::NotStarted);
+        assert!(!status.is_ready());
+        assert!(!status.is_loading());
+        assert_eq!(status.error(), "");
+    }
+
+    #[test]
+    fn loading_is_neither_ready_nor_an_error() {
+        let status = LoadStatus::new();
+        status.set(LoadState::Loading, "");
+        assert!(status.is_loading());
+        assert!(!status.is_ready());
+        assert_eq!(status.error(), "");
+    }
+
+    #[test]
+    fn failure_records_the_reason_and_blocks_readiness() {
+        let status = LoadStatus::new();
+        status.set(LoadState::Failed, "model missing");
+        assert_eq!(status.state(), LoadState::Failed);
+        assert!(!status.is_ready());
+        assert_eq!(status.error(), "model missing");
+    }
+
+    #[test]
+    fn a_later_success_clears_an_earlier_failure() {
+        let status = LoadStatus::new();
+        status.set(LoadState::Failed, "transient");
+        status.set(LoadState::Ready, "");
+        assert!(status.is_ready());
+        assert_eq!(status.error(), "");
+    }
+
+    #[test]
+    fn clones_observe_the_same_state() {
+        let status = LoadStatus::new();
+        let clone = status.clone();
+        status.set(LoadState::Loading, "");
+        assert!(clone.is_loading());
+        clone.set(LoadState::Ready, "");
+        assert!(status.is_ready());
+    }
+
+    #[test]
+    fn load_state_names_are_stable() {
+        assert_eq!(LoadState::NotStarted.as_str(), "not_started");
+        assert_eq!(LoadState::Loading.as_str(), "loading");
+        assert_eq!(LoadState::Ready.as_str(), "ready");
+        assert_eq!(LoadState::Failed.as_str(), "failed");
     }
 
     #[test]

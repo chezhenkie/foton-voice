@@ -8,6 +8,15 @@ export interface AppStatus {
   speaking: boolean;
   mcp_recording: boolean;
   audio_ready?: boolean;
+  /**
+   * STT worker load state: `not_started` | `loading` | `ready` | `failed`.
+   * `loading` is the one that matters: the worker cannot accept audio while a
+   * cold model load is in flight, so the UI must say so instead of looking
+   * ready and silently swallowing recordings.
+   */
+  stt_load?: string;
+  /** Why the last load failed. Empty unless `stt_load` is `failed`. */
+  stt_load_error?: string;
   word_count: number;
   active_target_id?: string;
   active_target_label?: string;
@@ -20,11 +29,16 @@ export const status = writable<AppStatus>({
   speaking: false,
   mcp_recording: false,
   audio_ready: true,
+  stt_load: "not_started",
+  stt_load_error: "",
   word_count: 0,
   active_target_id: "default",
   active_target_label: "Focused Window",
   hotkeys_active: true,
 });
+
+export const sttLoading = derived(status, ($s) => $s.stt_load === "loading");
+export const sttFailed = derived(status, ($s) => $s.stt_load === "failed");
 
 export const recording = derived(status, ($s) => $s.recording);
 export const speaking = derived(status, ($s) => $s.speaking);

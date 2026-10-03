@@ -25,6 +25,8 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusPayload
         speaking: state.is_speaking(),
         mcp_recording: state.is_mcp_recording(),
         audio_ready: state.is_audio_ready(),
+        stt_load: state.stt_load_state().as_str().to_string(),
+        stt_load_error: state.stt_load.error(),
         word_count: state.total_words(),
         active_target_id,
         active_target_label: target_label,
@@ -39,6 +41,10 @@ pub struct StatusPayload {
     pub speaking: bool,
     pub mcp_recording: bool,
     pub audio_ready: bool,
+    /// STT worker load state: `not_started`, `loading`, `ready` or `failed`.
+    pub stt_load: String,
+    /// Why the last load failed, empty otherwise.
+    pub stt_load_error: String,
     pub word_count: u32,
     pub active_target_id: String,
     pub active_target_label: String,
