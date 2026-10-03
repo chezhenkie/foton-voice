@@ -50,15 +50,42 @@ function Assert-AppClosed {
   }
 }
 
+function Get-LogIdentity {
+  param([string]$Path)
+
+  # Label a log by what it SAYS, never by what was requested. The log archived
+  # here is the previous run, so naming it after the run being started produced
+  # a file called "nemotron-gpu" that actually held the moonshine-cpu result.
+  $label = 'unknown'
+  $mode = 'unknown'
+
+  try {
+    $lines = [System.IO.File]::ReadAllLines($Path)
+    $text = $lines -join "`n"
+
+    if ($text -match 'Backend choice:\s*(\S+)') { $label = $Matches[1] }
+    if ($text -match 'Whisper acceleration:\s*vulkan') { $label = 'Whisper'; $mode = 'vulkan' }
+    elseif ($text -match 'not found beside the runtime') { $mode = 'cpu' }
+    elseif ($text -match 'plugin EP registered') { $mode = 'gpu' }
+    elseif ($text -match 'Whisper acceleration:\s*none') { $mode = 'cpu' }
+  } catch {
+    # a missing or unreadable log still gets archived, just unlabelled
+  }
+
+  return ('{0}-{1}' -f $label, $mode)
+}
+
 function Invoke-Start {
   Assert-AppClosed
   $scenario = $Engine + $(if ($Cpu) { '-cpu' } else { '-gpu' })
 
   if (Test-Path -LiteralPath $Log) {
     New-Item -ItemType Directory -Force -Path $ArchiveDir | Out-Null
-    $dest = Join-Path $ArchiveDir ((Get-Date -Format 'yyyyMMdd-HHmmss') + "-$scenario.log")
+    $who = Get-LogIdentity -Path $Log
+    $dest = Join-Path $ArchiveDir ((Get-Date -Format 'yyyyMMdd-HHmmss') + "-$who.log")
     Move-Item -LiteralPath $Log -Destination $dest -Force
-    Write-Host "archived previous log -> $dest" -ForegroundColor DarkGray
+    Write-Host "archived the PREVIOUS run as $who" -ForegroundColor DarkGray
+    Write-Host "  -> $dest" -ForegroundColor DarkGray
   }
 
   $dll = Join-Path $InstallDir 'onnxruntime_providers_webgpu.dll'
@@ -84,16 +111,22 @@ function Invoke-Start {
     }
   }
 
-  Write-Host ""
-  Write-Host "scenario $scenario ready." -ForegroundColor Green
-  if ($Engine -eq 'nemotron' -or $Engine -eq 'moonshine') {
-    Write-Host "1. set the engine to $Engine in Settings" -ForegroundColor Yellow
+Write-Host ""
+  Write-Host "NOW RECORDING SCENARIO: $scenario (dll set for $scenario)" -ForegroundColor Green
+  if ($Engine -ne 'whisper') {
+    Write-Host "confirm the engine in Settings is set to $Engine" -ForegroundColor Yellow
   }
   if ($Engine -eq 'nemotron') {
-    Write-Host "2. set Nemotron GPU to $(if ($Cpu) { 'off' } else { 'ON' }) in Settings" -ForegroundColor Yellow
+    Write-Host "confirm Nemotron GPU is $(if ($Cpu) { 'OFF' } else { 'ON' }) in Settings" -ForegroundColor Yellow
   }
-  Write-Host "3. start fotonvoice-engine, record ONE clip, then quit" -ForegroundColor Yellow
-  Write-Host "4. run: .\stt_test.ps1 -Report" -ForegroundColor Yellow
+  Write-Host ""
+  Write-Host "Then: start fotonvoice-engine and WAIT for the engine to finish loading." -ForegroundColor Yellow
+  Write-Host "Moonshine base and Nemotron int8 load hundreds of MB on the CPU, so give it" -ForegroundColor Yellow
+  Write-Host "time. Recording before it is ready produces a log with no outcome, which is" -ForegroundColor Yellow
+  Write-Host "what made the last attempt unusable." -ForegroundColor Yellow
+  Write-Host "Record ONE clip only after it is ready, then quit." -ForegroundColor Yellow
+  Write-Host ""
+  Write-Host "Check it with: .\stt_test.ps1 -Report" -ForegroundColor DarkGray
 }
 
 function Show-Results {

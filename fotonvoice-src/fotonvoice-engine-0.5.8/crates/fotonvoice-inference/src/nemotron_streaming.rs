@@ -433,9 +433,18 @@ impl NemotronStreamingBackend {
     }
 
     fn build_session(path: &Path, use_gpu: bool) -> Result<Session> {
+        // Level3 is ORT_ENABLE_ALL and costs minutes on the 837 MB int8 encoder
+        // graph, every app start. The CPU path is a fallback, so it uses Level1
+        // and becomes usable quickly; the GPU path keeps full optimisation.
+        let level = if use_gpu {
+            GraphOptimizationLevel::Level3
+        } else {
+            GraphOptimizationLevel::Level1
+        };
+
         let builder = Session::builder()
             .map_err(|e| anyhow!("ort session builder: {e}"))?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .with_optimization_level(level)
             .map_err(|e| anyhow!("set optimization level: {e}"))?
             .with_intra_threads(crate::util::inference_threads())
             .map_err(|e| anyhow!("set intra threads: {e}"))?;
@@ -445,6 +454,29 @@ impl NemotronStreamingBackend {
         builder
             .commit_from_file(path)
             .with_context(|| format!("load ONNX graph {}", path.display()))
+    }
+
+    /// Build one session, falling back to the CPU if the GPU path fails.
+    ///
+    /// Previously the GPU session was built with `?`, so a provider that
+    /// registered successfully but then failed to load the graph took the whole
+    /// engine down, exactly like Moonshine. Moonshine's own failure was
+    /// onnxruntime::webgpu::Conv GetFusedActivationAttr() was false.
+    fn load_session(path: &Path, use_gpu: bool) -> Result<(Session, bool)> {
+        if !use_gpu || crate::nemotron_gpu_backend().is_none() {
+            return Self::build_session(path, false).map(|s| (s, false));
+        }
+
+        match Self::build_session(path, true) {
+            Ok(session) => Ok((session, true)),
+            Err(e) => {
+                tracing::warn!(
+                    "Nemotron streaming: GPU session failed for {} ({e:#}); retrying on the CPU",
+                    path.display()
+                );
+                Self::build_session(path, false).map(|s| (s, false))
+            }
+        }
     }
 
     fn with_gpu(builder: SessionBuilder) -> SessionBuilder {
@@ -539,8 +571,17 @@ impl NemotronStreamingBackend {
             self.cfg.gpu
         );
 
-        let encoder = Self::build_session(&dir.join(ENCODER_FILE), self.cfg.gpu)?;
-        let decoder = Self::build_session(&dir.join(DECODER_FILE), self.cfg.gpu)?;
+        let (encoder, enc_gpu) = Self::load_session(&dir.join(ENCODER_FILE), self.cfg.gpu)?;
+        let (decoder, dec_gpu) = Self::load_session(&dir.join(DECODER_FILE), self.cfg.gpu)?;
+
+        if enc_gpu && dec_gpu {
+            info!(
+                "Nemotron streaming acceleration: {}",
+                crate::nemotron_gpu_backend().unwrap_or("gpu")
+            );
+        } else {
+            info!("Nemotron streaming acceleration: none (CPU)");
+        }
 
         for name in ["audio_signal", "length", "cache_last_channel", "cache_last_time", "cache_last_channel_len"] {
             if !encoder.inputs().iter().any(|i| i.name() == name) {

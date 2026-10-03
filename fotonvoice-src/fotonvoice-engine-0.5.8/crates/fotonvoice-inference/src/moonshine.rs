@@ -178,19 +178,54 @@ impl MoonshineBackend {
         }
     }
 
-    fn build_session(path: &Path) -> Result<Session> {
+    fn build_session(path: &Path, use_gpu: bool) -> Result<Session> {
+        // Level3 is ORT_ENABLE_ALL, and on a 247 MB fp32 Moonshine graph it
+        // costs minutes of graph optimisation on every app start, which reads as
+        // a hang. The CPU path is a fallback, so it trades a little steady-state
+        // speed for a session that actually becomes usable; the GPU path keeps
+        // full optimisation because there the load cost is dwarfed by inference.
+        let level = if use_gpu {
+            GraphOptimizationLevel::Level3
+        } else {
+            GraphOptimizationLevel::Level1
+        };
+
         let builder = Session::builder()
             .map_err(|e| anyhow!("ort session builder: {e}"))?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .with_optimization_level(level)
             .map_err(|e| anyhow!("set optimization level: {e}"))?
             .with_intra_threads(crate::util::inference_threads())
             .map_err(|e| anyhow!("set intra threads: {e}"))?;
 
-        let mut builder = Self::with_gpu(builder);
+        let mut builder = if use_gpu { Self::with_gpu(builder) } else { builder };
 
         builder
             .commit_from_file(path)
             .with_context(|| format!("load ONNX graph {}", path.display()))
+    }
+
+    /// Build one session, falling back to the CPU if the GPU path fails.
+    ///
+    /// The previous code only recovered when the execution provider failed to
+    /// register. When the provider registered fine but then failed to load the
+    /// graph, the `?` in load() killed the whole engine and every request
+    /// returned empty text. That is the observed failure on this machine:
+    /// onnxruntime::webgpu::Conv GetFusedActivationAttr() was false.
+    fn load_session(path: &Path) -> Result<(Session, bool)> {
+        if crate::moonshine_gpu_backend().is_none() {
+            return Self::build_session(path, false).map(|s| (s, false));
+        }
+
+        match Self::build_session(path, true) {
+            Ok(session) => Ok((session, true)),
+            Err(e) => {
+                tracing::warn!(
+                    "Moonshine: GPU session failed for {} ({e:#}); retrying on the CPU",
+                    path.display()
+                );
+                Self::build_session(path, false).map(|s| (s, false))
+            }
+        }
     }
 
     /// Register this build's GPU execution provider, if it has one.
@@ -287,16 +322,25 @@ impl TranscriptionBackend for MoonshineBackend {
         }
 
         info!("Loading Moonshine '{size}' model from {}", dir.display());
-        match crate::moonshine_gpu_backend() {
-            Some(backend) => info!("Moonshine acceleration: {backend}"),
-            None => info!(
-                "Moonshine acceleration: none (CPU); this build has no ONNX Runtime \
-                 GPU provider, so the fp32 weights stay in RAM"
-            ),
-        }
 
-        let encoder = Self::build_session(&dir.join(ENCODER_FILE))?;
-        let decoder = Self::build_session(&dir.join(DECODER_FILE))?;
+        let (encoder, enc_gpu) = Self::load_session(&dir.join(ENCODER_FILE))?;
+        let (decoder, dec_gpu) = Self::load_session(&dir.join(DECODER_FILE))?;
+        let on_gpu = enc_gpu && dec_gpu;
+
+        // Logged after loading, because before this the answer came from a
+        // compile-time cfg! and claimed "webgpu" even when the provider dll was
+        // absent and the session had silently fallen back to the CPU.
+        if on_gpu {
+            info!(
+                "Moonshine acceleration: {}",
+                crate::moonshine_gpu_backend().unwrap_or("gpu")
+            );
+        } else {
+            info!(
+                "Moonshine acceleration: none (CPU); the fp32 weights stay in RAM and \
+                 transcribe far slower than the GPU path"
+            );
+        }
 
         let tokenizer = Tokenizer::from_bytes(TOKENIZER_JSON)
             .map_err(|e| anyhow!("load bundled Moonshine tokenizer: {e}"))?;
