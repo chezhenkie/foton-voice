@@ -100,6 +100,11 @@ impl<S: Subscriber> Layer<S> for StartupErrorLayer {
         // keywords below. Filtering it would discard GPU failure diagnostics,
         // so it is exempt.
         let is_native_backend_log = metadata.target().starts_with("whisper_rs");
+        // The capture thread's own diagnostics. Without this the audio INFO lines
+        // are dropped once startup finishes, so "Using detected active audio
+        // device" never appeared and a capture thread stuck inside device init
+        // looked identical to one that had not started.
+        let is_audio_log = metadata.target().starts_with("fotonvoice_audio");
 
         let lower_msg = msg.to_lowercase();
         if !is_native_backend_log
@@ -139,7 +144,7 @@ impl<S: Subscriber> Layer<S> for StartupErrorLayer {
         // which happens after STARTUP_COMPLETE, so its INFO lines must not be
         // dropped by the startup gate.
         if is_error_or_warn
-            || ((is_startup || is_engine_diagnostic || is_native_backend_log)
+            || ((is_startup || is_engine_diagnostic || is_native_backend_log || is_audio_log)
                 && *level == tracing::Level::INFO)
         {
             let timestamp = chrono::Utc::now().to_rfc3339();

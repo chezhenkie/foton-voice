@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -19,6 +19,23 @@ use fotonvoice_config::AudioConfig;
 mod denoise;
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
+
+/// Upper bound on cpal's stream initialisation, which is what the last argument
+/// of `build_input_stream` is for.
+///
+/// Passing `None` asks the backend to wait indefinitely, and on WASAPI it takes
+/// that literally: a device that cannot be opened blocks the calling thread
+/// forever. Because that thread is the one capture runs on, the consequences
+/// compound silently - no callback ever fires, `audio_ready` never flips, the
+/// overlay shows "connecting input device" indefinitely, nothing is ever
+/// transcribed, and not even a warning is logged because the call never returns.
+/// A bounded wait turns that hang into a warning the supervisor can retry.
+const STREAM_INIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the supervisor waits before retrying an always-on stream that is
+/// not running. Without this a failed open was permanent: with dynamic stream
+/// off nothing re-opened it except a settings change the user might never make.
+const STREAM_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Below this peak amplitude, a buffer is treated as silence when deciding
 const SILENCE_PEAK_EPSILON: f32 = 1e-4;
@@ -171,7 +188,12 @@ pub fn test_and_detect_active_device(idx_opt: Option<u32>) -> Result<cpal::Devic
 
 /// Build a throwaway input stream on `device` and briefly start it, then stop
 fn build_and_start_test_stream(device: &cpal::Device, config: &StreamConfig) -> bool {
-    let Ok(stream) = device.build_input_stream(config, |_: &[f32], _| {}, |_| {}, None) else {
+    let Ok(stream) = device.build_input_stream(
+        config,
+        |_: &[f32], _| {},
+        |_| {},
+        Some(STREAM_INIT_TIMEOUT),
+    ) else {
         return false;
     };
     if stream.play().is_err() {
@@ -362,7 +384,7 @@ fn open_stream(
                 audio_ready.clone(),
             ),
             |e| warn!("Audio stream error: {e}"),
-            None,
+            Some(STREAM_INIT_TIMEOUT),
         )
         .map_err(|e| warn!("Failed to build audio stream: {e}"))
         .ok()?;
@@ -411,6 +433,7 @@ fn capture_loop(
     let mut current_stream: Option<cpal::Stream> = None;
     let mut was_recording = false;
     let mut was_dynamic = dynamic_stream.load(Ordering::SeqCst);
+    let mut last_open_attempt = Instant::now();
 
     let active_init = recording.load(Ordering::SeqCst) || monitoring.load(Ordering::SeqCst);
     if was_dynamic {
@@ -481,6 +504,25 @@ fn capture_loop(
                 }
             }
             was_dynamic = is_dynamic;
+        }
+
+        if !is_dynamic && current_stream.is_none() {
+            // The always-on stream is not running. Either the first open failed
+            // or a hot-reload dropped it, and with dynamic stream off nothing
+            // else would ever re-open it. Retry on a backoff so a device that
+            // was busy, absent or briefly unavailable recovers on its own
+            // instead of needing a settings change or a restart.
+            if last_open_attempt.elapsed() >= STREAM_RETRY_INTERVAL {
+                last_open_attempt = Instant::now();
+                warn!("Always-on input stream is not running; retrying the device.");
+                if let Some(stream) = open_stream(
+                    &device, &hw_config, hw_rate, needs_resample,
+                    &gain, &recording, &monitoring, &noise_suppression, &tx, &level_tx, &audio_ready,
+                ) {
+                    current_stream = Some(stream);
+                    info!("Always-on input stream recovered and is playing.");
+                }
+            }
         }
 
         if is_dynamic {
