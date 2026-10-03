@@ -95,10 +95,24 @@ jobs:
       - name: Install Vulkan SDK
         shell: pwsh
         run: |
+          # Try the pinned version first for reproducibility, but do not let a
+          # vanished Chocolatey package version break the whole build. Run
+          # 37081236531 failed here with "vulkan-sdk not installed. The package
+          # was not found with the source(s) listed" for 1.4.350, before any
+          # project code was compiled.
           choco install vulkan-sdk --version 1.4.350 -y --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "pinned vulkan-sdk 1.4.350 unavailable; installing the newest published" -ForegroundColor Yellow
+            choco install vulkan-sdk -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "choco install vulkan-sdk failed" }
+            Write-Host "NOTE: built against the newest published Vulkan SDK, not 1.4.350" -ForegroundColor Yellow
+          }
+
+          if (-not (Test-Path C:\VulkanSDK)) { throw "C:\VulkanSDK does not exist after install" }
           $sdk = Get-ChildItem C:\VulkanSDK -Directory | Sort-Object Name -Descending | Select-Object -First 1
           "VULKAN_SDK=$($sdk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
           Add-Content -Path $env:GITHUB_PATH -Value "$($sdk.FullName)\Bin"
+          "using Vulkan SDK $($sdk.Name)" -ForegroundColor Green
           & "$($sdk.FullName)\Bin\glslc.exe" --version
 
       - name: Frontend (vite)
