@@ -352,7 +352,7 @@ impl TranscriptionBackend for MoonshineBackend {
         } else {
             info!(
                 "Moonshine acceleration: none (CPU); the fp32 weights stay in RAM and \
-                 transcribe far slower than the GPU path"
+                 run far slower than the GPU path"
             );
         }
 

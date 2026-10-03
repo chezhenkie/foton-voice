@@ -120,11 +120,24 @@ impl<S: Subscriber> Layer<S> for StartupErrorLayer {
         let is_startup = !STARTUP_COMPLETE.load(Ordering::SeqCst);
         let is_whisper_diagnostic =
             msg.starts_with("Whisper acceleration:") || msg.starts_with("Whisper run:");
+        // Same gate for the ONNX engines. Without this their INFO lines are
+        // dropped once startup finishes, so "Moonshine acceleration:", the
+        // per-graph load timings and the run line never reached the log at all -
+        // which is why a stalled load and a completed one looked identical.
+        let is_engine_diagnostic = is_whisper_diagnostic
+            || msg.starts_with("Inference engine ready")
+            || msg.starts_with("Inference backend changed")
+            || msg.starts_with("Moonshine acceleration:")
+            || msg.starts_with("Moonshine load:")
+            || msg.starts_with("Moonshine run:")
+            || msg.starts_with("Nemotron streaming acceleration:")
+            || msg.starts_with("Nemotron streaming load:")
+            || msg.starts_with("Nemotron streaming run:");
         // whisper.cpp initialises the GPU backend during the lazy model load,
         // which happens after STARTUP_COMPLETE, so its INFO lines must not be
         // dropped by the startup gate.
         if is_error_or_warn
-            || ((is_startup || is_whisper_diagnostic || is_native_backend_log)
+            || ((is_startup || is_engine_diagnostic || is_native_backend_log)
                 && *level == tracing::Level::INFO)
         {
             let timestamp = chrono::Utc::now().to_rfc3339();
