@@ -260,17 +260,36 @@ impl MoonshineBackend {
     /// returned empty text. That is the observed failure on this machine:
     /// onnxruntime::webgpu::Conv GetFusedActivationAttr() was false.
     fn load_session(path: &Path, use_gpu: bool) -> Result<(Session, bool)> {
-        if !use_gpu || crate::moonshine_gpu_backend().is_none() {
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "graph".to_string());
+
+        if !use_gpu {
+            info!("Moonshine load: {stem} building on the CPU (GPU disabled)");
+            return Self::build_session(path, false).map(|s| (s, false));
+        }
+        if crate::moonshine_gpu_backend().is_none() {
+            info!("Moonshine load: {stem} building on the CPU (no GPU backend in this build)");
             return Self::build_session(path, false).map(|s| (s, false));
         }
 
+        let backend = crate::moonshine_gpu_backend().unwrap_or("gpu");
+        // Logged before the attempt, not after. A session creation that never
+        // returns produces no line at all, so the only way to see where it wedged
+        // is to record that it started.
+        info!("Moonshine load: {stem} attempting {backend} session");
         match Self::build_session(path, true) {
-            Ok(session) => Ok((session, true)),
+            Ok(session) => {
+                info!("Moonshine load: {stem} attached {backend}");
+                Ok((session, true))
+            }
             Err(e) => {
                 tracing::warn!(
                     "Moonshine: GPU session failed for {} ({e:#}); retrying on the CPU",
                     path.display()
                 );
+                info!("Moonshine load: {stem} building on the CPU after the GPU attempt failed");
                 Self::build_session(path, false).map(|s| (s, false))
             }
         }
@@ -370,12 +389,17 @@ impl TranscriptionBackend for MoonshineBackend {
             );
         }
 
-        info!("Loading Moonshine '{size}' model from {}", dir.display());
-
-        // Timed per step. The whole load is opaque from outside: a stalled
-        // session commit looks identical to a slow one from the log, and this
-        // is the only way to tell which graph is responsible.
+        // Timed per step, and every step logged with the `Moonshine load:` prefix
+        // because startup_log.rs only keeps INFO lines matching a whitelist. An
+        // unprefixed "Loading Moonshine..." line is discarded, which is how a
+        // load that hung inside session creation looked identical to one that
+        // was never started.
         let t_all = std::time::Instant::now();
+        info!(
+            "Moonshine load: start variant={size} gpu_requested={} dir={}",
+            self.cfg.gpu,
+            dir.display()
+        );
         let t = std::time::Instant::now();
         let (encoder, enc_gpu) = Self::load_session(&dir.join(ENCODER_FILE), self.cfg.gpu)?;
         info!(
