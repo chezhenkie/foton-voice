@@ -39,8 +39,40 @@ const MODEL_FILES: [&str; 2] = [ENCODER_FILE, DECODER_FILE];
 /// The tokenizer is identical across model sizes and is shipped with the upstream
 const TOKENIZER_JSON: &[u8] = include_bytes!("../assets/moonshine_tokenizer.json");
 
-/// Base URL for the upstream ONNX weights on the Hugging Face hub. The float
+/// Base URL for the upstream ONNX weights on the Hugging Face hub. Upstream
+/// publishes one folder per size per precision: `{size}/{float,quantized,
+/// quantized_4bit}`.
 const HF_BASE_URL: &str = "https://huggingface.co/UsefulSensors/moonshine/resolve/main/onnx/merged";
+
+/// Precision tiers upstream publishes for every size.
+const PRECISIONS: [&str; 3] = ["float", "quantized", "quantized_4bit"];
+
+/// Split a variant into `(size, upstream precision)`. A bare size is float, so
+/// `base` and `base-float` both mean the fp32 graphs, while
+/// `base-quantized_4bit` is the 4-bit variant.
+fn split_variant(variant: &str) -> Option<(&str, &'static str)> {
+    let (size, precision) = match variant.split_once('-') {
+        Some((size, precision)) => (size, precision),
+        None => (variant, "float"),
+    };
+    if size.is_empty() {
+        return None;
+    }
+    let precision = PRECISIONS.iter().copied().find(|p| *p == precision)?;
+    Some((size, precision))
+}
+
+/// Directory name for a variant. Float keeps the bare size, because that is the
+/// directory every existing install already has, so upgrading does not strand a
+/// downloaded 247 MB fp32 model.
+fn variant_dir_name(variant: &str) -> Option<String> {
+    let (size, precision) = split_variant(variant)?;
+    Some(if precision == "float" {
+        size.to_string()
+    } else {
+        format!("{size}-{precision}")
+    })
+}
 
 /// Per-size decoder geometry: `(num_layers, num_key_value_heads, head_dim)`. These
 fn model_dims(size: &str) -> Option<(usize, usize, usize)> {
@@ -51,8 +83,13 @@ fn model_dims(size: &str) -> Option<(usize, usize, usize)> {
     }
 }
 
+/// Geometry for a full variant string, precision suffix included.
+fn variant_dims(variant: &str) -> Option<(usize, usize, usize)> {
+    model_dims(split_variant(variant)?.0)
+}
+
 fn valid_model_size(size: &str) -> bool {
-    model_dims(size).is_some()
+    variant_dims(size).is_some()
 }
 
 
@@ -61,14 +98,14 @@ pub fn default_model_dir() -> PathBuf {
     crate::util::models_base_dir().join("moonshine")
 }
 
-/// Directory holding one model's files: `<model_dir>/<size>/`.
+/// Directory holding one model's files: `<model_dir>/<variant>/`.
 fn model_size_dir(model_dir: &str, size: &str) -> PathBuf {
     let base = if model_dir.is_empty() {
         default_model_dir()
     } else {
         crate::util::expand_tilde(model_dir)
     };
-    base.join(size)
+    base.join(variant_dir_name(size).unwrap_or_else(|| size.to_string()))
 }
 
 /// True when both ONNX graphs for `size` are present on disk. The tokenizer is
@@ -83,7 +120,7 @@ pub fn is_model_downloaded(size: &str, model_dir: &str) -> bool {
 /// Remove the whole `<model_dir>/<size>/` folder. Refuses to run for unknown
 pub fn delete_model(size: &str, model_dir: &str) -> Result<()> {
     if !valid_model_size(size) {
-        bail!("Unknown Moonshine model size '{size}' (expected 'tiny' or 'base')");
+        bail!("Unknown Moonshine model variant '{size}' (expected e.g. 'base', 'tiny', 'base-quantized')");
     }
     let dir = model_size_dir(model_dir, size);
     if !dir.exists() {
@@ -101,7 +138,7 @@ static DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(())
 /// Fetch both ONNX graphs for `size` into `<model_dir>/<size>/`. Files already
 pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
     if !valid_model_size(size) {
-        bail!("Unknown Moonshine model size '{size}' (expected 'tiny' or 'base')");
+        bail!("Unknown Moonshine model variant '{size}' (expected e.g. 'base', 'tiny', 'base-quantized')");
     }
 
     let dir = model_size_dir(model_dir, size);
@@ -114,7 +151,9 @@ pub async fn download_model(size: &str, model_dir: &str) -> Result<()> {
         if path.exists() {
             continue;
         }
-        let url = format!("{HF_BASE_URL}/{size}/float/{file}");
+        let (size, precision) = split_variant(size)
+            .ok_or_else(|| anyhow!("Unknown Moonshine variant '{size}'"))?;
+        let url = format!("{HF_BASE_URL}/{size}/{precision}/{file}");
         info!("Downloading Moonshine file: {url}");
         let response = reqwest::get(&url)
             .await
@@ -308,8 +347,9 @@ impl TranscriptionBackend for MoonshineBackend {
 
     fn load(&mut self) -> Result<()> {
         let size = &self.cfg.model_size;
-        let (num_layers, kv_heads, head_dim) = model_dims(size)
-            .ok_or_else(|| anyhow!("Unknown Moonshine model size '{size}' (expected 'tiny' or 'base')"))?;
+        let (num_layers, kv_heads, head_dim) = variant_dims(size).ok_or_else(|| {
+            anyhow!("Unknown Moonshine model variant '{size}' (expected e.g. 'base', 'tiny', 'base-quantized')")
+        })?;
 
         let dir = model_size_dir("", size);
         if !is_model_downloaded(size, "") {
@@ -648,12 +688,98 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_valid_model_size() {
-        assert!(valid_model_size("tiny"));
-        assert!(valid_model_size("base"));
-        assert!(!valid_model_size("small"));
-        assert!(!valid_model_size(""));
+fn test_valid_model_size() {
+    assert!(valid_model_size("tiny"));
+    assert!(valid_model_size("base"));
+    assert!(!valid_model_size("small"));
+    assert!(!valid_model_size(""));
+}
+
+#[test]
+fn test_valid_model_size_accepts_every_upstream_precision() {
+    for variant in [
+        "base",
+        "tiny",
+        "base-quantized",
+        "base-quantized_4bit",
+        "tiny-quantized",
+        "tiny-quantized_4bit",
+    ] {
+        assert!(valid_model_size(variant), "{variant} should be valid");
     }
+}
+
+#[test]
+fn test_split_variant_defaults_to_float() {
+    assert_eq!(split_variant("base"), Some(("base", "float")));
+    assert_eq!(split_variant("tiny"), Some(("tiny", "float")));
+    // The explicit spelling resolves to the same tier as the bare one.
+    assert_eq!(split_variant("base-float"), Some(("base", "float")));
+    assert_eq!(
+        split_variant("base-quantized"),
+        Some(("base", "quantized"))
+    );
+    assert_eq!(
+        split_variant("tiny-quantized_4bit"),
+        Some(("tiny", "quantized_4bit"))
+    );
+}
+
+#[test]
+fn test_split_variant_rejects_unknown_size_or_precision() {
+    assert_eq!(split_variant(""), None);
+    assert_eq!(split_variant("base-int2"), None);
+    assert_eq!(split_variant("base-quantized_extra"), None);
+    // split_variant only parses; whether the size exists is variant_dims' job.
+    assert_eq!(split_variant("large"), Some(("large", "float")));
+    assert_eq!(variant_dims("large"), None);
+    assert!(!valid_model_size("large"));
+}
+
+#[test]
+fn test_float_variants_keep_the_bare_size_directory() {
+    // Existing installs have moonshine/base, so float must not move to
+    // moonshine/base-float and strand a downloaded model.
+    assert_eq!(variant_dir_name("base").as_deref(), Some("base"));
+    assert_eq!(variant_dir_name("base-float").as_deref(), Some("base"));
+    assert_eq!(variant_dir_name("tiny").as_deref(), Some("tiny"));
+}
+
+#[test]
+fn test_quantized_variants_get_their_own_directory() {
+    assert_eq!(
+        variant_dir_name("base-quantized").as_deref(),
+        Some("base-quantized")
+    );
+    assert_eq!(
+        variant_dir_name("base-quantized_4bit").as_deref(),
+        Some("base-quantized_4bit")
+    );
+    assert_eq!(
+        variant_dir_name("tiny-quantized").as_deref(),
+        Some("tiny-quantized")
+    );
+}
+
+#[test]
+fn test_variant_dims_ignores_precision() {
+    assert_eq!(variant_dims("base"), Some((8, 8, 52)));
+    assert_eq!(variant_dims("base-quantized"), Some((8, 8, 52)));
+    assert_eq!(variant_dims("base-quantized_4bit"), Some((8, 8, 52)));
+    assert_eq!(variant_dims("tiny-quantized"), Some((6, 8, 36)));
+    assert_eq!(variant_dims("base-int2"), None);
+}
+
+#[test]
+fn test_quantized_variants_do_not_collide_on_disk() {
+    let root = std::env::temp_dir().join("moonshine_variant_dirs");
+    let _ = std::fs::remove_dir_all(&root);
+    let base = model_size_dir(root.to_str().unwrap(), "base");
+    let quant = model_size_dir(root.to_str().unwrap(), "base-quantized");
+    assert_ne!(base, quant);
+    assert!(base.to_string_lossy().ends_with("base"));
+    assert!(quant.to_string_lossy().ends_with("base-quantized"));
+}
 
     #[test]
     fn test_model_dims() {

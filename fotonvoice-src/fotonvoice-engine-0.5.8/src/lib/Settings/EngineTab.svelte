@@ -33,10 +33,13 @@
     { value: "remote-openai", label: "Remote Speech Engine (OpenAI API)" },
   ]);
 
+// Sizes are decimal MB/GB, matching what the downloads report. Largest first
+  // within each engine so the size difference is obvious at a glance.
+  // Whisper sizes: ggerganov/whisper.cpp ggml file sizes.
   const whisperModelSizeOptions = [
-    { value: "large-v3-turbo-q8", label: "Whisper large-v3-turbo Q8_0 (874 MB, best quality)" },
-    { value: "large-v3-turbo", label: "Whisper large-v3-turbo Q5_0 (574 MB, fastest)" },
-    { value: "large-v3", label: "Whisper large-v3 Q5_0 (1.03 GB, most accurate)" },
+    { value: "large-v3-turbo-q8", label: "Large-v3-turbo - Q8_0 - 874 MB (best quality)" },
+    { value: "large-v3-turbo", label: "Large-v3-turbo - Q5_0 - 574 MB (fastest)" },
+    { value: "large-v3", label: "Large-v3 - Q5_0 - 1.08 GB (most accurate)" }
   ];
 
   let whisperDeviceOptions = $derived.by(() => [
@@ -65,14 +68,21 @@
       }),
   });
 
+  // Precision names mirror the upstream folder names (float / quantized /
+  // quantized_4bit) so the label cannot drift from what is actually fetched.
+  // Sizes are encoder + decoder, decimal MB, from the upstream file sizes.
   const moonshineModelSizeOptions = [
-    { value: "base", label: "Base" },
-    { value: "tiny", label: "Tiny" }
+    { value: "base", label: "Base - float - 247 MB" },
+    { value: "base-quantized", label: "Base - quantized - 63 MB" },
+    { value: "base-quantized_4bit", label: "Base - quantized 4-bit - 73 MB" },
+    { value: "tiny", label: "Tiny - float - 109 MB" },
+    { value: "tiny-quantized", label: "Tiny - quantized - 28 MB" },
+    { value: "tiny-quantized_4bit", label: "Tiny - quantized 4-bit - 33 MB" }
   ];
 
   const nemotronModelSizeOptions = [
-    { value: "fp16", label: "FP16 (~1.2 GB, GPU-accel)" },
-    { value: "int8-static", label: "INT8 static (~876 MB, CUDA / CPU)" }
+    { value: "fp16", label: "FP16 - 1.26 GB" },
+    { value: "int8-static", label: "INT8 static - 918 MB" }
   ];
 
   let moonshineAvailable = $state(true);
