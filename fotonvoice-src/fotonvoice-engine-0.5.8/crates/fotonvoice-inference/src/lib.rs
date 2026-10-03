@@ -362,10 +362,24 @@ impl InferenceEngine {
         self.bindings = new_runtime.bindings.clone();
 
         if backend_changed {
-            info!(
-                "Inference backend configuration changed, switching backend to {:?}",
-                new_app_config.engine.backend
-            );
+            match &new_app_config.engine.backend {
+                BackendChoice::Moonshine => info!(
+                    "STT reload: backend=Moonshine model={} gpu={}",
+                    new_app_config.engine.moonshine.model_size,
+                    new_app_config.engine.moonshine.gpu
+                ),
+                BackendChoice::NemotronStreaming => info!(
+                    "STT reload: backend=NemotronStreaming model={} gpu={}",
+                    new_app_config.engine.nemotron_streaming.model_size,
+                    new_app_config.engine.nemotron_streaming.gpu
+                ),
+                BackendChoice::WhisperCpp => info!(
+                    "STT reload: backend=WhisperCpp model={} device={}",
+                    new_app_config.engine.whisper_cpp.model_size,
+                    new_app_config.engine.whisper_cpp.device
+                ),
+                other => info!("STT reload: backend={other:?}"),
+            }
             self.backend.unload();
             self.backend = build_backend(&new_app_config);
             return true;

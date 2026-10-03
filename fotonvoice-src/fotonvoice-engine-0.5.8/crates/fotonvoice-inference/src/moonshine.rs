@@ -32,9 +32,9 @@ const SAMPLE_RATE: usize = 16_000;
 const MAX_TOKENS: usize = 192;
 
 /// "CPU" or the build's GPU backend name, for the acceleration log line.
-fn graph_label(on_gpu: bool) -> &'static str {
+fn graph_label(on_gpu: bool, backend: &str) -> &str {
     if on_gpu {
-        "GPU"
+        backend
     } else {
         "CPU"
     }
@@ -203,7 +203,7 @@ struct Loaded {
     num_caches: usize,
     /// For each cache index, whether it is a decoder self-attention cache (which
     cache_is_decoder: Vec<bool>,
-    /// Shape of an empty (pre-first-step) cache tensor: `[0, kv_heads, 1, head_dim]`.
+    /// Shape of an empty (pre-first-step) cache tensor: `[batch, kv_heads, 0, head_dim]`.
     empty_cache_shape: [i64; 4],
     /// Whether the encoder graph takes an `attention_mask` input.
     encoder_has_attention_mask: bool,
@@ -417,7 +417,11 @@ impl TranscriptionBackend for MoonshineBackend {
         // WebGPU while the encoder's Conv<1,1> fails and falls back, and a single
         // "none (CPU)" hid that the GPU was in use at all.
         let backend = crate::moonshine_gpu_backend().unwrap_or("gpu");
-        info!("Moonshine acceleration: encoder={}, decoder={backend}", graph_label(enc_gpu));
+        info!(
+            "Moonshine acceleration: encoder={}, decoder={}",
+            graph_label(enc_gpu, backend),
+            graph_label(dec_gpu, backend)
+        );
 
         let tokenizer = Tokenizer::from_bytes(TOKENIZER_JSON)
             .map_err(|e| anyhow!("load bundled Moonshine tokenizer: {e}"))?;
@@ -477,7 +481,7 @@ impl TranscriptionBackend for MoonshineBackend {
             decoder_plan,
             num_caches,
             cache_is_decoder,
-            empty_cache_shape: [0, kv_heads as i64, 1, head_dim as i64],
+            empty_cache_shape: [1, kv_heads as i64, 0, head_dim as i64],
             encoder_has_attention_mask,
         });
         self.loaded = true;

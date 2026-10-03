@@ -134,6 +134,8 @@ impl<S: Subscriber> Layer<S> for StartupErrorLayer {
             || msg.starts_with("Inference backend changed")
             || msg.starts_with("STT audio:")
             || msg.starts_with("STT request:")
+            || msg.starts_with("STT reload:")
+            || msg.starts_with("STT result:")
             || msg.starts_with("Moonshine acceleration:")
             || msg.starts_with("Moonshine load:")
             || msg.starts_with("Moonshine run:")

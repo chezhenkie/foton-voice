@@ -371,6 +371,12 @@ pub fn spawn_text_delivery_worker(
         while let Ok(output) = text_rx.recv() {
             state.set_processing(false);
             if let Some(ref err) = output.error {
+                tracing::error!(
+                    "STT result: error target={} inference_ms={} error_chars={}",
+                    output.target_id,
+                    output.inference_ms,
+                    err.len()
+                );
                 tracing::error!("Transcription failed: {err}");
                 fotonvoice_inject::show_notification("FotonVoice Engine - transcription failed", err);
                 continue;
@@ -378,6 +384,12 @@ pub fn spawn_text_delivery_worker(
             if output.text.trim().is_empty() {
                 // Not an error: silence legitimately produces no text. Logged so
                 // an empty result is traceable instead of vanishing.
+                tracing::warn!(
+                    "STT result: empty text target={} raw_chars={} inference_ms={}",
+                    output.target_id,
+                    output.raw_text.len(),
+                    output.inference_ms
+                );
                 tracing::info!(
                     "Transcription produced no text ({} ms, language {:?})",
                     output.inference_ms,
@@ -415,6 +427,7 @@ pub fn spawn_text_delivery_worker(
             let is_speak_target = targets
                 .iter()
                 .any(|t| t.id == target_id && t.delivery == fotonvoice_routing::DeliveryType::Speak);
+            let raw_chars = raw_text.len();
             let text = if !is_speak_target && s1_mini_enabled && !raw_text.trim().is_empty() {
                 fotonvoice_inference::s1_mini::clean_dictation(&raw_text, &s1_mini_styling, None)
             } else {
@@ -422,9 +435,23 @@ pub fn spawn_text_delivery_worker(
             };
 
             if text.trim().is_empty() {
+                tracing::warn!(
+                    "STT result: postprocess removed text target={} raw_chars={} inference_ms={}",
+                    target_id,
+                    raw_chars,
+                    output.inference_ms
+                );
                 continue;
             }
 
+            tracing::info!(
+                "STT result: nonempty target={} raw_chars={} final_chars={} words={} inference_ms={}",
+                target_id,
+                raw_chars,
+                text.len(),
+                text.split_whitespace().count(),
+                output.inference_ms
+            );
             tracing::info!(
                 "Received transcription: \"{}\" for target '{}' (took {}ms)",
                 text,
