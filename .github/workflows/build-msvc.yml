@@ -112,7 +112,7 @@ jobs:
           $sdk = Get-ChildItem C:\VulkanSDK -Directory | Sort-Object Name -Descending | Select-Object -First 1
           "VULKAN_SDK=$($sdk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
           Add-Content -Path $env:GITHUB_PATH -Value "$($sdk.FullName)\Bin"
-          "using Vulkan SDK $($sdk.Name)" -ForegroundColor Green
+          Write-Host "using Vulkan SDK $($sdk.Name)" -ForegroundColor Green
           & "$($sdk.FullName)\Bin\glslc.exe" --version
 
       - name: Frontend (vite)
