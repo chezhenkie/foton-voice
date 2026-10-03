@@ -290,8 +290,19 @@ pub fn spawn_audio_coordinator(
                             }
                         }
                     } else {
+                        // The boundary between "the user stopped recording" and
+                        // "a request exists". Nothing downstream can explain a
+                        // missing transcription if this never fires, so it is
+                        // logged rather than inferred.
+                        tracing::info!(
+                            "STT audio: recording stopped, {} samples ({:.2}s), load_state={:?}",
+                            accumulated_audio.len(),
+                            accumulated_audio.len() as f64 / 16000.0,
+                            state_for_audio.stt_load_state()
+                        );
                         if !accumulated_audio.is_empty() {
                             let samples = accumulated_audio.len();
+                            let secs = samples as f64 / 16000.0;
                             let load_state = state_for_audio.stt_load_state();
                             // NotStarted is allowed through on purpose: it is the
                             // request that makes the worker load the model, and
@@ -304,6 +315,10 @@ pub fn spawn_audio_coordinator(
                                     | fotonvoice_inference::LoadState::NotStarted
                             );
                             if may_queue {
+                                tracing::info!(
+                                    "STT request: queueing {} samples ({secs:.2}s)",
+                                    samples
+                                );
                                 let req = fotonvoice_inference::InferenceRequest {
                                     audio: std::mem::take(&mut accumulated_audio),
                                     target_id: target_id.clone(),
@@ -322,7 +337,6 @@ pub fn spawn_audio_coordinator(
                                     );
                                 }
                             } else {
-                                let secs = samples as f64 / 16000.0;
                                 if load_state == fotonvoice_inference::LoadState::Failed {
                                     let err = state_for_audio.stt_load.error();
                                     tracing::error!(

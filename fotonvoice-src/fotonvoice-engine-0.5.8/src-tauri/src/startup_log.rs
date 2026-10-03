@@ -127,6 +127,8 @@ impl<S: Subscriber> Layer<S> for StartupErrorLayer {
         let is_engine_diagnostic = is_whisper_diagnostic
             || msg.starts_with("Inference engine ready")
             || msg.starts_with("Inference backend changed")
+            || msg.starts_with("STT audio:")
+            || msg.starts_with("STT request:")
             || msg.starts_with("Moonshine acceleration:")
             || msg.starts_with("Moonshine load:")
             || msg.starts_with("Moonshine run:")
