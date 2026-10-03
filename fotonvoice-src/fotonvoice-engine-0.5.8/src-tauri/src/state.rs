@@ -140,11 +140,6 @@ impl AppState {
         self.audio_ready.load(Ordering::SeqCst)
     }
 
-    /// True when the STT engine is loaded and can transcribe.
-    pub fn is_stt_ready(&self) -> bool {
-        self.stt_load.is_ready()
-    }
-
     pub fn stt_load_state(&self) -> fotonvoice_inference::LoadState {
         self.stt_load.state()
     }

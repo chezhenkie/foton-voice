@@ -292,7 +292,18 @@ pub fn spawn_audio_coordinator(
                     } else {
                         if !accumulated_audio.is_empty() {
                             let samples = accumulated_audio.len();
-                            if state_for_audio.is_stt_ready() {
+                            let load_state = state_for_audio.stt_load_state();
+                            // NotStarted is allowed through on purpose: it is the
+                            // request that makes the worker load the model, and
+                            // the user asked to speak, so waiting is correct.
+                            // Loading is not - a load is already running and this
+                            // audio would be stale before it finished.
+                            let may_queue = matches!(
+                                load_state,
+                                fotonvoice_inference::LoadState::Ready
+                                    | fotonvoice_inference::LoadState::NotStarted
+                            );
+                            if may_queue {
                                 let req = fotonvoice_inference::InferenceRequest {
                                     audio: std::mem::take(&mut accumulated_audio),
                                     target_id: target_id.clone(),
@@ -311,18 +322,8 @@ pub fn spawn_audio_coordinator(
                                     );
                                 }
                             } else {
-                                // The worker loads its backend before it reads
-                                // any request, and that load blocks the only
-                                // thread draining this channel. Queueing here
-                                // used to wedge the pipeline behind the
-                                // bounded(4) channel, leave `processing` stuck
-                                // on, and swallow the recording with no message.
-                                // The audio is stale by the time the load ends
-                                // anyway, so drop it and say what happened.
                                 let secs = samples as f64 / 16000.0;
-                                if state_for_audio.stt_load_state()
-                                    == fotonvoice_inference::LoadState::Failed
-                                {
+                                if load_state == fotonvoice_inference::LoadState::Failed {
                                     let err = state_for_audio.stt_load.error();
                                     tracing::error!(
                                         "Dropping {samples} samples ({secs:.1}s): STT model failed to load: {err}"
@@ -333,7 +334,7 @@ pub fn spawn_audio_coordinator(
                                     );
                                 } else {
                                     tracing::warn!(
-                                        "Dropping {samples} samples ({secs:.1}s): STT model is still loading, nothing queued"
+                                        "Dropping {samples} samples ({secs:.1}s): first STT load still in progress, nothing queued"
                                     );
                                 }
                                 state_for_audio.set_processing(false);

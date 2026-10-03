@@ -323,8 +323,22 @@ impl TranscriptionBackend for MoonshineBackend {
 
         info!("Loading Moonshine '{size}' model from {}", dir.display());
 
+        // Timed per step. The whole load is opaque from outside: a stalled
+        // session commit looks identical to a slow one from the log, and this
+        // is the only way to tell which graph is responsible.
+        let t_all = std::time::Instant::now();
+        let t = std::time::Instant::now();
         let (encoder, enc_gpu) = Self::load_session(&dir.join(ENCODER_FILE))?;
+        info!(
+            "Moonshine load: encoder {} ms (gpu={enc_gpu})",
+            t.elapsed().as_millis()
+        );
+        let t = std::time::Instant::now();
         let (decoder, dec_gpu) = Self::load_session(&dir.join(DECODER_FILE))?;
+        info!(
+            "Moonshine load: decoder {} ms (gpu={dec_gpu})",
+            t.elapsed().as_millis()
+        );
         let on_gpu = enc_gpu && dec_gpu;
 
         // Logged after loading, because before this the answer came from a
@@ -404,6 +418,7 @@ impl TranscriptionBackend for MoonshineBackend {
             encoder_has_attention_mask,
         });
         self.loaded = true;
+        info!("Moonshine load: ready in {} ms", t_all.elapsed().as_millis());
         Ok(())
     }
 
@@ -422,6 +437,13 @@ impl TranscriptionBackend for MoonshineBackend {
         let t0 = Instant::now();
         let text = run_inference(state, &req.audio)?;
         let inference_ms = t0.elapsed().as_millis() as u32;
+        // Same shape as Whisper's run line, so the benchmark tooling can pick
+        // both engines up from one log.
+        info!(
+            "Moonshine run: {} ms audio, {} ms inference",
+            n_samples / (SAMPLE_RATE / 1000),
+            inference_ms
+        );
 
         Ok(TranscriptionResult {
             text: text.trim().to_string(),

@@ -702,19 +702,15 @@ pub fn run_worker_with_config(
         .name("fotonvoice-inference".into())
         .spawn(move || {
             let mut engine = InferenceEngine::new(runtime);
-            status.set(LoadState::Loading, "");
-            let mut loaded = match engine.load() {
-                Ok(()) => {
-                    info!("Inference engine ready");
-                    status.set(LoadState::Ready, "");
-                    true
-                }
-                Err(e) => {
-                    error!("Failed to load inference backend: {e:#}");
-                    status.set(LoadState::Failed, &format!("{e:#}"));
-                    false
-                }
-            };
+            // Lazy on purpose. Loading before the loop put the Moonshine base
+            // load - 235 MB of fp32 graphs - into every single launch, whether
+            // or not anything was ever dictated. The app then sat on that
+            // memory for its whole life, and quitting during the load left the
+            // work half finished. Nothing is loaded until a request arrives;
+            // the first request pays for it and the overlay says LOADING MODEL
+            // while it happens.
+            status.set(LoadState::NotStarted, "");
+            let mut loaded = false;
 
             loop {
                 crossbeam_channel::select! {
@@ -773,19 +769,13 @@ pub fn run_worker_with_config(
                         };
                         let needs_reload = engine.update_runtime(new_rt);
                         if needs_reload {
-                            status.set(LoadState::Loading, "");
-                            loaded = match engine.load() {
-                                Ok(()) => {
-                                    info!("Inference engine ready with new backend");
-                                    status.set(LoadState::Ready, "");
-                                    true
-                                }
-                                Err(e) => {
-                                    error!("Failed to load new inference backend: {e:#}");
-                                    status.set(LoadState::Failed, &format!("{e:#}"));
-                                    false
-                                }
-                            };
+                            // update_runtime already unloaded the old backend.
+                            // Stay lazy rather than loading the new one now: a
+                            // backend switch must not put a multi-minute load
+                            // in front of a user who has not asked to speak.
+                            loaded = false;
+                            status.set(LoadState::NotStarted, "");
+                            info!("Inference backend changed; loading on next request");
                         }
                     }
                 }
