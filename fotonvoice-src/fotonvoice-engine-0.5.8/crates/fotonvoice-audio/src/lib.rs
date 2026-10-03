@@ -144,8 +144,9 @@ pub struct RecorderHandle {
 
 
 pub fn test_and_detect_active_device(idx_opt: Option<u32>) -> Result<cpal::Device> {
+    info!("Enumerating input devices...");
     let host = cpal::default_host();
-    
+
     if let Some(idx) = idx_opt {
         if let Ok(mut devices) = host.input_devices() {
             if let Some(device) = devices.nth(idx as usize) {
@@ -162,6 +163,7 @@ pub fn test_and_detect_active_device(idx_opt: Option<u32>) -> Result<cpal::Devic
     }
 
     if let Some(device) = host.default_input_device() {
+        info!("Probing default input device '{}'...", device.name().unwrap_or_default());
         if let Ok(config) = negotiate_config(&device) {
             if build_and_start_test_stream(&device, &config) {
                 info!("Startup test: Default input device ({}) is active and functional.", device.name().unwrap_or_default());
@@ -369,6 +371,13 @@ fn open_stream(
     level_tx: &Option<Sender<f32>>,
     audio_ready: &Option<Arc<AtomicBool>>,
 ) -> Option<cpal::Stream> {
+    info!(
+        "Opening input stream on '{}' at {} Hz ({} channels, timeout {:?})",
+        device.name().unwrap_or_default(),
+        hw_config.sample_rate.0,
+        hw_config.channels,
+        STREAM_INIT_TIMEOUT
+    );
     let stream = device
         .build_input_stream(
             hw_config,
@@ -409,11 +418,13 @@ fn capture_loop(
     level_tx: Option<Sender<f32>>,
     wake: Option<Receiver<()>>,
 ) -> Result<()> {
+    info!("Capture thread started; probing input devices.");
     let host = cpal::default_host();
 
     let mut current_idx = input_device_index.load(Ordering::SeqCst);
     let idx_opt = if current_idx == u32::MAX { None } else { Some(current_idx) };
 
+    info!("Testing input devices (configured index: {idx_opt:?})...");
     let mut device = match test_and_detect_active_device(idx_opt) {
         Ok(d) => d,
         Err(e) => {
@@ -424,6 +435,7 @@ fn capture_loop(
 
     info!("Using detected active audio device: {}", device.name().unwrap_or_default());
 
+    info!("Negotiating supported input format...");
     let mut hw_config = negotiate_config(&device)?;
     let mut hw_rate = hw_config.sample_rate.0;
     info!("Hardware sample rate: {hw_rate} Hz");
