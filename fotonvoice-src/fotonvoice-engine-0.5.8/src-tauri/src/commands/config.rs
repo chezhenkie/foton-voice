@@ -115,8 +115,6 @@ pub async fn get_setup_status(
             eng.whisper_cpp.model_size.clone(),
             eng.whisper_cpp.model_dir.clone(),
             eng.backend != fotonvoice_config::BackendChoice::RemoteOpenAi
-                && (eng.backend != fotonvoice_config::BackendChoice::Moonshine
-                    || !fotonvoice_inference::MOONSHINE_COMPILED)
                 && (eng.backend != fotonvoice_config::BackendChoice::NemotronStreaming
                     || !fotonvoice_inference::NEMOTRON_STREAMING_COMPILED),
         )

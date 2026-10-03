@@ -460,7 +460,7 @@ impl NemotronStreamingBackend {
     ///
     /// Previously the GPU session was built with `?`, so a provider that
     /// registered successfully but then failed to load the graph took the whole
-    /// engine down, exactly like Moonshine. Moonshine's own failure was
+    /// engine down, exactly like Whisper. Whisper's own failure was
     /// onnxruntime::webgpu::Conv GetFusedActivationAttr() was false.
     fn load_session(path: &Path, use_gpu: bool) -> Result<(Session, bool)> {
         if !use_gpu || crate::nemotron_gpu_backend().is_none() {

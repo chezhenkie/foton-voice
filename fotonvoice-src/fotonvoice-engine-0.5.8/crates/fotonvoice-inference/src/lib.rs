@@ -1,13 +1,11 @@
 pub mod backend;
-#[cfg(feature = "moonshine")]
-pub mod moonshine;
 #[cfg(feature = "nemotron-streaming")]
 pub mod nemotron_streaming;
 pub mod postprocess;
 pub mod remote_openai;
 pub mod s1_mini;
 mod util;
-#[cfg(any(feature = "moonshine", feature = "nemotron-streaming"))]
+#[cfg(feature = "nemotron-streaming")]
 mod webgpu;
 pub mod whisper_cpp;
 
@@ -15,8 +13,8 @@ pub use remote_openai::{
     test_remote_speech_engine, RemoteOpenAiBackend, RemoteSttTestResult, RemoteStreamingSession,
 };
 
-/// Whether the Moonshine ONNX backend was compiled into this build. When false,
-pub const MOONSHINE_COMPILED: bool = cfg!(feature = "moonshine");
+/// Whether the  ONNX backend was compiled into this build. When false,
+pub const MOONSHINE_COMPILED: bool = cfg!(feature = "");
 
 /// Whether the Nemotron streaming ONNX backend was compiled into this build.
 pub const NEMOTRON_STREAMING_COMPILED: bool = cfg!(feature = "nemotron-streaming");
@@ -32,13 +30,13 @@ pub fn whisper_gpu_backend() -> Option<&'static str> {
     }
 }
 
-/// Which GPU backend the Moonshine ONNX backend can offload to in this build,
-pub fn moonshine_gpu_backend() -> Option<&'static str> {
-    if cfg!(feature = "moonshine-cuda") {
+/// Which GPU backend the  ONNX backend can offload to in this build,
+pub fn _gpu_backend() -> Option<&'static str> {
+    if cfg!(feature = "-cuda") {
         Some("cuda")
-    } else if cfg!(feature = "moonshine-coreml") {
+    } else if cfg!(feature = "-coreml") {
         Some("coreml")
-    } else if cfg!(feature = "moonshine-webgpu") {
+    } else if cfg!(feature = "-webgpu") {
         Some("webgpu")
     } else {
         None
@@ -48,14 +46,14 @@ pub fn moonshine_gpu_backend() -> Option<&'static str> {
 /// The same provider, spelled the way ONNX Runtime spells it, for registration
 #[cfg_attr(
     not(any(
-        feature = "moonshine-cuda",
-        feature = "moonshine-coreml",
-        feature = "moonshine-webgpu"
+        feature = "-cuda",
+        feature = "-coreml",
+        feature = "-webgpu"
     )),
     allow(dead_code)
 )]
-pub(crate) fn moonshine_gpu_provider() -> Option<&'static str> {
-    match moonshine_gpu_backend() {
+pub(crate) fn _gpu_provider() -> Option<&'static str> {
+    match _gpu_backend() {
         Some("cuda") => Some("CUDA"),
         Some("coreml") => Some("CoreML"),
         Some("webgpu") => Some("WebGPU"),
@@ -79,7 +77,7 @@ pub fn nemotron_gpu_backend() -> Option<&'static str> {
 /// True when the GPU backend is compiled in AND a device is actually present
 pub fn nemotron_gpu_available() -> bool {
     match nemotron_gpu_backend() {
-        #[cfg(any(feature = "moonshine", feature = "nemotron-streaming"))]
+        #[cfg(any(feature = "", feature = "nemotron-streaming"))]
         Some("webgpu") => !webgpu::webgpu_devices().is_empty(),
         Some(_) => true,
         None => false,
@@ -118,13 +116,13 @@ mod gpu_backend_tests {
 
     #[test]
     fn every_reported_backend_has_a_provider_spelling() {
-        match moonshine_gpu_backend() {
+        match _gpu_backend() {
             Some(backend) => assert!(
-                moonshine_gpu_provider().is_some(),
+                _gpu_provider().is_some(),
                 "{backend} is reported to the UI but has no ONNX Runtime spelling"
             ),
             None => assert_eq!(
-                moonshine_gpu_provider(),
+                _gpu_provider(),
                 None,
                 "a CPU-only build named a GPU provider"
             ),
@@ -145,11 +143,11 @@ mod gpu_backend_tests {
     #[test]
     fn a_build_with_no_gpu_feature_reports_none() {
         if cfg!(not(any(
-            feature = "moonshine-cuda",
-            feature = "moonshine-coreml",
-            feature = "moonshine-webgpu"
+            feature = "-cuda",
+            feature = "-coreml",
+            feature = "-webgpu"
         ))) {
-            assert_eq!(moonshine_gpu_backend(), None);
+            assert_eq!(_gpu_backend(), None);
         }
         if cfg!(not(any(
             feature = "nemotron-streaming-cuda",
@@ -163,11 +161,11 @@ mod gpu_backend_tests {
     #[test]
     fn the_webgpu_build_reports_webgpu() {
         if cfg!(all(
-            feature = "moonshine-webgpu",
-            not(any(feature = "moonshine-cuda", feature = "moonshine-coreml"))
+            feature = "-webgpu",
+            not(any(feature = "-cuda", feature = "-coreml"))
         )) {
-            assert_eq!(moonshine_gpu_backend(), Some("webgpu"));
-            assert_eq!(moonshine_gpu_provider(), Some("WebGPU"));
+            assert_eq!(_gpu_backend(), Some("webgpu"));
+            assert_eq!(_gpu_provider(), Some("WebGPU"));
         }
     }
 }
@@ -188,7 +186,7 @@ pub type AudioChunk = Vec<f32>;
 /// Whether the inference engine can accept audio right now.
 ///
 /// The worker thread loads its backend before it starts reading requests, and a
-/// cold ONNX load of the fp32 Moonshine graphs takes minutes. Everything that
+/// cold ONNX load of the fp32  graphs takes minutes. Everything that
 /// needs to know "can I hand this recording over?" reads this, because the
 /// request channel cannot answer while the worker is blocked loading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,8 +348,6 @@ impl InferenceEngine {
         let backend_changed = self.config.engine.backend != new_app_config.engine.backend
             || (new_app_config.engine.backend == BackendChoice::WhisperCpp
                 && self.config.engine.whisper_cpp != new_app_config.engine.whisper_cpp)
-            || (new_app_config.engine.backend == BackendChoice::Moonshine
-                && self.config.engine.moonshine != new_app_config.engine.moonshine)
             || (new_app_config.engine.backend == BackendChoice::NemotronStreaming
                 && self.config.engine.nemotron_streaming != new_app_config.engine.nemotron_streaming)
             || (new_app_config.engine.backend == BackendChoice::RemoteOpenAi
@@ -363,11 +359,6 @@ impl InferenceEngine {
 
         if backend_changed {
             match &new_app_config.engine.backend {
-                BackendChoice::Moonshine => info!(
-                    "STT reload: backend=Moonshine model={} gpu={}",
-                    new_app_config.engine.moonshine.model_size,
-                    new_app_config.engine.moonshine.gpu
-                ),
                 BackendChoice::NemotronStreaming => info!(
                     "STT reload: backend=NemotronStreaming model={} gpu={}",
                     new_app_config.engine.nemotron_streaming.model_size,
@@ -602,20 +593,6 @@ fn build_backend(config: &AppConfig) -> Box<dyn TranscriptionBackend> {
                 config.engine.whisper_cpp.clone(),
             ))
         }
-        BackendChoice::Moonshine => {
-            #[cfg(feature = "moonshine")]
-            {
-                info!(
-                    "Using Moonshine backend ({} model)",
-                    config.engine.moonshine.model_size
-                );
-                Box::new(moonshine::MoonshineBackend::new(config.engine.moonshine.clone()))
-            }
-            #[cfg(not(feature = "moonshine"))]
-            {
-                Box::new(unavailable_backend("Moonshine", "moonshine"))
-            }
-        }
         BackendChoice::NemotronStreaming => {
             #[cfg(feature = "nemotron-streaming")]
             {
@@ -716,7 +693,7 @@ pub fn run_worker_with_config(
         .name("fotonvoice-inference".into())
         .spawn(move || {
             let mut engine = InferenceEngine::new(runtime);
-            // Lazy on purpose. Loading before the loop put the Moonshine base
+            // Lazy on purpose. Loading before the loop put the  base
             // load - 235 MB of fp32 graphs - into every single launch, whether
             // or not anything was ever dictated. The app then sat on that
             // memory for its whole life, and quitting during the load left the
@@ -873,7 +850,6 @@ mod tests {
         for device in &["auto", "cpu", "cuda", "vulkan"] {
             let mut cfg = AppConfig::default();
             cfg.engine.whisper_cpp.device = device.to_string();
-            cfg.engine.moonshine.language = "fr".to_string();
             let engine = InferenceEngine::new(runtime(cfg));
             assert_eq!(engine.config.engine.whisper_cpp.device, *device);
             let _ = engine; // ensure engine is not optimised out

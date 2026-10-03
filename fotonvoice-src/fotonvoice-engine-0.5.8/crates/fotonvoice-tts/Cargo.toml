@@ -41,7 +41,7 @@ libc = "0.2"
 
 [features]
 default = []
-# Inflect-Micro-v2 neural TTS via ONNX Runtime. Opt-in like `moonshine` on
+# Inflect-Micro-v2 neural TTS via ONNX Runtime. Opt-in like `` on
 # fotonvoice-inference, and for the same reason: it pulls in ONNX Runtime. The
 # eSpeak-NG phoneme frontend is a runtime dependency, checked for before
 # synthesis.

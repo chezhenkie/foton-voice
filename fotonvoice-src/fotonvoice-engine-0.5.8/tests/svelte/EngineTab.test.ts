@@ -27,7 +27,7 @@ const mockConfig = {
       device: "auto",
       threads: 0,
     },
-    moonshine: {
+    : {
       model_size: "base",
       language: "en",
     },
@@ -39,15 +39,15 @@ const mockConfig = {
 } as any;
 
 describe("EngineTab.svelte model status", () => {
-  test("shows the Moonshine model as installed when the backend is Moonshine", async () => {
-    const moonshineConfig = {
+  test("shows the  model as installed when the backend is ", async () => {
+    const Config = {
       ...mockConfig,
       engine: {
         ...mockConfig.engine,
-        backend: "moonshine",
+        backend: "",
       },
     };
-    render(EngineTab, { cfg: moonshineConfig });
+    render(EngineTab, { cfg: Config });
 
     expect(await screen.findByText("model installed")).not.toBeNull();
   });

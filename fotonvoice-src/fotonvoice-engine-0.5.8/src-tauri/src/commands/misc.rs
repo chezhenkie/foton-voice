@@ -10,8 +10,6 @@ pub fn cuda_enabled() -> bool {
 pub struct AcceleratorSupport {
     /// `"cuda"`, `"vulkan"`, or `None` on a CPU-only build.
     pub whisper_gpu: Option<String>,
-    /// `"cuda"`, `"coreml"`, or `None` - `None` in every build shipped today.
-    pub moonshine_gpu: Option<String>,
     /// `"cuda"`, `"coreml"`, `"webgpu"`, or `None`.
     pub nemotron_streaming_gpu: Option<String>,
     /// True when the GPU backend is compiled in and a device is present at
@@ -24,7 +22,6 @@ pub struct AcceleratorSupport {
 pub fn accelerator_support() -> AcceleratorSupport {
     AcceleratorSupport {
         whisper_gpu: fotonvoice_inference::whisper_gpu_backend().map(str::to_string),
-        moonshine_gpu: fotonvoice_inference::moonshine_gpu_backend().map(str::to_string),
         nemotron_streaming_gpu: fotonvoice_inference::nemotron_gpu_backend().map(str::to_string),
         nemotron_streaming_gpu_present: fotonvoice_inference::nemotron_gpu_available(),
         s1_mini_gpu: fotonvoice_inference::s1_mini_gpu_backend().map(str::to_string),

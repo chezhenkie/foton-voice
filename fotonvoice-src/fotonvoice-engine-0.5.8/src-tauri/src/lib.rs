@@ -155,13 +155,10 @@ pub fn run() {
     tracing::info!("Whisper device: {}", config.data.engine.whisper_cpp.device);
     tracing::info!("Whisper threads: {}", config.data.engine.whisper_cpp.threads);
     tracing::info!(
-        "GPU support in this build - whisper.cpp: {}, Moonshine: {}, Nemotron streaming: {}",
+        "GPU support in this build - whisper.cpp: {}, Nemotron streaming: {}",
         fotonvoice_inference::whisper_gpu_backend().unwrap_or("none (CPU)"),
-        fotonvoice_inference::moonshine_gpu_backend().unwrap_or("none (CPU)"),
         fotonvoice_inference::nemotron_gpu_backend().unwrap_or("none (CPU)"),
     );
-    tracing::info!("Moonshine model size: {}", config.data.engine.moonshine.model_size);
-    tracing::info!("Moonshine language: {}", config.data.engine.moonshine.language);
     tracing::info!("VAD threshold: {}", config.data.audio.vad_threshold);
     tracing::info!("Noise suppression: {}", config.data.audio.noise_suppression);
     tracing::info!("Input device index: {:?}", config.data.audio.input_device_index);
@@ -482,10 +479,6 @@ pub fn run() {
             check_whisper_model_downloaded,
             download_whisper_model,
             delete_whisper_model,
-            moonshine_available,
-            check_moonshine_downloaded,
-            download_moonshine_model,
-            delete_moonshine_model,
             nemotron_streaming_available,
             check_nemotron_streaming_downloaded,
             download_nemotron_streaming_model,

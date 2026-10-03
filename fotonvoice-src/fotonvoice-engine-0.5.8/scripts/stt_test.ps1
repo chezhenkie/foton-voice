@@ -4,26 +4,26 @@
 
 .DESCRIPTION
   Rotates startup_errors.log so each scenario stands alone, and can hide or
-  restore onnxruntime_providers_webgpu.dll to force Moonshine onto the CPU.
+  restore onnxruntime_providers_webgpu.dll to force  onto the CPU.
   Switch the engine itself in the app's Settings; this script never edits
   config.json, because that file carries duplicate VoxCtrl/voxctrl keys and
   rewriting it by regex corrupted it during testing.
 
-  Why the dll rename is the Moonshine CPU lever: Moonshine has no gpu flag and
-  moonshine_gpu_backend() is decided at compile time, so it always claims
+  Why the dll rename is the  CPU lever:  has no gpu flag and
+  _gpu_backend() is decided at compile time, so it always claims
   "webgpu". The real gate is webgpu_devices(), which returns empty when the
-  provider dll is absent, and moonshine.rs then builds a plain CPU session.
+  provider dll is absent, and .rs then builds a plain CPU session.
   Nemotron does have a gpu flag, so switch that in the UI.
 
 .EXAMPLE
-  .\stt_test.ps1 -Start moonshine
+  .\stt_test.ps1 -Start 
 .EXAMPLE
-  .\stt_test.ps1 -Start moonshine -Cpu
+  .\stt_test.ps1 -Start  -Cpu
 .EXAMPLE
   .\stt_test.ps1 -Report
 #>
 param(
-  [ValidateSet('whisper', 'moonshine', 'nemotron')]
+  [ValidateSet('whisper', '', 'nemotron')]
   [string]$Engine,
 
   [switch]$Cpu,
@@ -55,7 +55,7 @@ function Get-LogIdentity {
 
   # Label a log by what it SAYS, never by what was requested. The log archived
   # here is the previous run, so naming it after the run being started produced
-  # a file called "nemotron-gpu" that actually held the moonshine-cpu result.
+  # a file called "nemotron-gpu" that actually held the -cpu result.
   $label = 'unknown'
   $mode = 'unknown'
 
@@ -98,7 +98,7 @@ function Invoke-Start {
     }
     if (Test-Path -LiteralPath $dll) {
       Move-Item -LiteralPath $dll -Destination $off -Force
-      Write-Host "webgpu provider dll HIDDEN -> Moonshine will use the CPU" -ForegroundColor Yellow
+      Write-Host "webgpu provider dll HIDDEN ->  will use the CPU" -ForegroundColor Yellow
     } else {
       Write-Host "webgpu provider dll already hidden" -ForegroundColor DarkGray
     }
@@ -121,7 +121,7 @@ Write-Host ""
   }
   Write-Host ""
   Write-Host "Then: start fotonvoice-engine and WAIT for the engine to finish loading." -ForegroundColor Yellow
-  Write-Host "Moonshine base and Nemotron int8 load hundreds of MB on the CPU, so give it" -ForegroundColor Yellow
+  Write-Host " base and Nemotron int8 load hundreds of MB on the CPU, so give it" -ForegroundColor Yellow
   Write-Host "time. Recording before it is ready produces a log with no outcome, which is" -ForegroundColor Yellow
   Write-Host "what made the last attempt unusable." -ForegroundColor Yellow
   Write-Host "Record ONE clip only after it is ready, then quit." -ForegroundColor Yellow
@@ -141,7 +141,7 @@ function Show-Results {
   Write-Host "log: $Path  ($($lines.Count) lines)" -ForegroundColor DarkGray
   Write-Host ""
 
-  $rx = [regex]'(Moonshine acceleration|Moonshine geometry|Moonshine: .*execution provider|Nemotron streaming: .*(attached|unavailable)|Whisper acceleration|Whisper run:|WebGPU: |Failed to load|still not loadable|Loading Moonshine|Loading Nemotron|Backend choice)'
+  $rx = [regex]'( acceleration| geometry|: .*execution provider|Nemotron streaming: .*(attached|unavailable)|Whisper acceleration|Whisper run:|WebGPU: |Failed to load|still not loadable|Loading |Loading Nemotron|Backend choice)'
   $hits = @($lines | Where-Object { $_ -match $rx })
 
   if ($hits.Count -eq 0) {
@@ -153,13 +153,13 @@ function Show-Results {
 
   if (-not ($lines | Where-Object { $_ -match 'Whisper run:' })) {
     Write-Host ""
-    Write-Host "no timing line: Moonshine and Nemotron compute inference_ms but never log it." -ForegroundColor Yellow
+    Write-Host "no timing line:  and Nemotron compute inference_ms but never log it." -ForegroundColor Yellow
     Write-Host "only Whisper emits a 'Whisper run:' line." -ForegroundColor Yellow
   }
 }
 
 if ($Start) {
-  if (-not $Engine) { throw "-Start needs -Engine whisper|moonshine|nemotron" }
+  if (-not $Engine) { throw "-Start needs -Engine whisper||nemotron" }
   Invoke-Start
 }
 if ($Report) { Show-Results -Path $Log }

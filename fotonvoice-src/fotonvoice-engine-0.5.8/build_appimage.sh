@@ -261,11 +261,11 @@ if [ -d "/usr/lib/insync" ]; then
     sudo mv /usr/lib/insync /tmp/insync-build-temp
 fi
 
-# The Moonshine ONNX backend is always compiled in so both speech engines
-# (whisper-cpp and Moonshine) are selectable in every AppImage. It links ONNX
+# The  ONNX backend is always compiled in so both speech engines
+# (whisper-cpp and ) are selectable in every AppImage. It links ONNX
 # Runtime, fetched at build time, so this step needs network access.
 if [ "$BUILD_MODE" = "vulkan" ]; then
-    info "Compiling with Vulkan GPU support (whisper-cpp + Moonshine + Inflect + S1-mini sidecar)..."
+    info "Compiling with Vulkan GPU support (whisper-cpp +  + Inflect + S1-mini sidecar)..."
     if [ "$CUDA_FOUND" = true ]; then
         warn "CUDA Toolkit was detected, but AppImages cannot bundle CUDA support"
         warn "because linuxdeploy attempts to bundle the massive CUDA libraries, which fails."
@@ -275,8 +275,8 @@ if [ "$BUILD_MODE" = "vulkan" ]; then
     cargo build --bin fotonvoice-llm-sidecar --release --features vulkan
     npx tauri build --verbose -- --features vulkan
 else
-    info "Compiling for CPU only (whisper-cpp + Moonshine + Inflect)..."
-    # Moonshine and Inflect-Micro are default features; only GPU backends and
+    info "Compiling for CPU only (whisper-cpp +  + Inflect)..."
+    #  and Inflect-Micro are default features; only GPU backends and
     # `custom-protocol` need naming here.
     cargo build --bin fotonvoice-llm-sidecar --release
     npx tauri build --verbose

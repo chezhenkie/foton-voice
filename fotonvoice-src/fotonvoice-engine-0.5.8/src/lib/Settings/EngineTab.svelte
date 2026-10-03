@@ -15,7 +15,7 @@
   }
 
   let whisperGpu = $state<string | null>(null);
-  let moonshineGpu = $state<string | null>(null);
+  let Gpu = $state<string | null>(null);
   let nemotronStreamingGpu = $state<string | null>(null);
 
   const GPU_LABELS: Record<string, string> = {
@@ -28,7 +28,7 @@
 
   let backendOptions = $derived([
     { value: "whisper-cpp", label: "Whisper.cpp" },
-    { value: "moonshine", label: "Moonshine" },
+    { value: "", label: "" },
     { value: "nemotron-streaming", label: "Nemotron Streaming" },
     { value: "remote-openai", label: "Remote Speech Engine (OpenAI API)" },
   ]);
@@ -74,7 +74,7 @@
   // is deliberately not offered: its encoder is larger than the quantized one
   // (31.0 MB vs 20.5 MB) and its decoder is byte-identical, so it is bigger for
   // no benefit.
-  const moonshineModelSizeOptions = [
+  const ModelSizeOptions = [
     { value: "base", label: "Base - float - 247 MB" },
     { value: "base-quantized", label: "Base - quantized - 63 MB" },
     { value: "tiny", label: "Tiny - float - 109 MB" },
@@ -86,12 +86,12 @@
     { value: "int8-static", label: "INT8 static - 918 MB" }
   ];
 
-  let moonshineAvailable = $state(true);
-  const moonshineModels = createModelManager({
-    sizes: moonshineModelSizeOptions.map((o) => o.value),
-    check: (size) => invoke<boolean>("check_moonshine_downloaded", { modelSize: size }),
-    download: (size) => invoke("download_moonshine_model", { modelSize: size }),
-    remove: (size) => invoke("delete_moonshine_model", { modelSize: size }),
+  let Available = $state(true);
+  const Models = createModelManager({
+    sizes: ModelSizeOptions.map((o) => o.value),
+    check: (size) => invoke<boolean>("check__downloaded", { modelSize: size }),
+    download: (size) => invoke("download__model", { modelSize: size }),
+    remove: (size) => invoke("delete__model", { modelSize: size }),
   });
 
   let nemotronAvailable = $state(true);
@@ -157,9 +157,9 @@
     await whisperModels.verify(cfg.engine.whisper_cpp.model_size);
   }
 
-  async function onMoonshineModelChanged() {
+  async function onModelChanged() {
     markDirty();
-    await moonshineModels.verify(cfg.engine.moonshine.model_size);
+    await Models.verify(cfg.engine..model_size);
   }
 
   async function onNemotronModelChanged() {
@@ -170,11 +170,11 @@
   onMount(async () => {
     whisperModels.refreshAll();
     try {
-      moonshineAvailable = await invoke<boolean>("moonshine_available");
+      Available = await invoke<boolean>("_available");
     } catch (e) {
-      console.error("Failed to query Moonshine availability", e);
+      console.error("Failed to query  availability", e);
     }
-    moonshineModels.refreshAll();
+    Models.refreshAll();
     try {
       nemotronAvailable = await invoke<boolean>("nemotron_streaming_available");
     } catch (e) {
@@ -184,13 +184,13 @@
     try {
       const support = await invoke<{
         whisper_gpu: string | null;
-        moonshine_gpu: string | null;
+        _gpu: string | null;
         nemotron_streaming_gpu: string | null;
         nemotron_streaming_gpu_present: boolean;
         s1_mini_gpu: string | null;
       }>("accelerator_support");
       whisperGpu = support.whisper_gpu ?? null;
-      moonshineGpu = support.moonshine_gpu ?? null;
+      Gpu = support._gpu ?? null;
       nemotronStreamingGpu = support.nemotron_streaming_gpu ?? null;
       nemotronGpuPresent = support.nemotron_streaming_gpu_present;
       if (!nemotronGpuPresent && cfg.engine.nemotron_streaming?.gpu) {
@@ -275,39 +275,39 @@
         about 1 GB of weights.
       </p>
     </div>
-  {:else if cfg.engine.backend === "moonshine"}
+  {:else if cfg.engine.backend === ""}
     <div class="field-group">
-      <h3>Moonshine Settings</h3>
+      <h3> Settings</h3>
 
-      {#if !moonshineAvailable}
+      {#if !Available}
         <div
           class="flex items-center gap-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 mb-4"
         >
           <span class="text-2xl leading-none text-yellow-500">!</span>
           <div class="flex-1">
             <strong class="block text-yellow-200 font-semibold text-sm mb-1"
-              >Moonshine backend not included in this build</strong
+              > backend not included in this build</strong
             >
             <p class="m-0 text-slate-200 text-xs leading-relaxed">
-              This build was compiled without Moonshine, so selecting it will
+              This build was compiled without , so selecting it will
               report the backend as unavailable. Rebuild with
-              <code>--features moonshine</code> to enable it.
+              <code>--features </code> to enable it.
             </p>
           </div>
         </div>
       {/if}
 
-      {#if moonshineAvailable && !moonshineGpu}
+      {#if Available && !Gpu}
         <div
           class="flex items-center gap-4 bg-slate-500/10 border border-slate-500/30 rounded-xl p-4 mb-4"
         >
           <span class="text-2xl leading-none text-slate-300"></span>
           <div class="flex-1">
             <strong class="block text-slate-100 font-semibold text-sm mb-1"
-              >Moonshine runs on the CPU in this build</strong
+              > runs on the CPU in this build</strong
             >
             <p class="m-0 text-slate-200 text-xs leading-relaxed">
-              Moonshine uses ONNX Runtime, which has no Vulkan backend in this
+               uses ONNX Runtime, which has no Vulkan backend in this
               build. Weights stay in RAM, so the quantized variants below are much
               lighter than the float ones.
             </p>
@@ -319,17 +319,17 @@
         <span>GPU acceleration</span>
         <input
           type="checkbox"
-          bind:checked={cfg.engine.moonshine.gpu}
+          bind:checked={cfg.engine..gpu}
           onchange={markDirty}
-          disabled={!moonshineGpu}
+          disabled={!Gpu}
         />
       </label>
       <p class="hint">
-        {#if moonshineGpu}
-          Attach the GPU execution provider ({gpuLabel(moonshineGpu)}) when one is
+        {#if Gpu}
+          Attach the GPU execution provider ({gpuLabel(Gpu)}) when one is
           available. Off keeps the GPU free for other processes and skips the
           provider entirely, so no WebGPU device is created. Note that the encoder
-          and decoder graphs can end up on different providers: the Moonshine
+          and decoder graphs can end up on different providers: the 
           encoder uses an op the WebGPU backend rejects, so it falls back to the
           CPU while the decoder runs on the GPU. Changing this reloads the model.
         {:else}
@@ -340,13 +340,13 @@
 
       <label class="field">
         <span>Model size</span>
-        <CustomSelect bind:value={cfg.engine.moonshine.model_size} options={moonshineModelSizeOptions} onchange={onMoonshineModelChanged} />
+        <CustomSelect bind:value={cfg.engine..model_size} options={ModelSizeOptions} onchange={onModelChanged} />
       </label>
 
-      {#if moonshineAvailable}
+      {#if Available}
         <ModelStatusRow
-          mgr={moonshineModels}
-          size={cfg.engine.moonshine.model_size}
+          mgr={Models}
+          size={cfg.engine..model_size}
         />
       {/if}
 
@@ -354,7 +354,7 @@
         <span>Language</span>
         <input
           type="text"
-          bind:value={cfg.engine.moonshine.language}
+          bind:value={cfg.engine..language}
           onchange={markDirty}
         />
       </label>

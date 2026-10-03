@@ -1,5 +1,3 @@
-#[cfg(feature = "moonshine")]
-use fotonvoice_inference::moonshine;
 #[cfg(feature = "nemotron-streaming")]
 use fotonvoice_inference::nemotron_streaming;
 
@@ -97,16 +95,6 @@ macro_rules! onnx_engine_commands {
     };
 }
 
-onnx_engine_commands!(
-    moonshine,
-    "moonshine",
-    fotonvoice_inference::MOONSHINE_COMPILED,
-    moonshine_available,
-    check_moonshine_downloaded,
-    download_moonshine_model,
-    delete_moonshine_model,
-    "Moonshine"
-);
 onnx_engine_commands!(
     nemotron_streaming,
     "nemotron-streaming",

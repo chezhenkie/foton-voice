@@ -18,9 +18,9 @@ export interface S1MiniConfig {
 }
 
 export interface EngineConfig {
-  backend: "whisper-cpp" | "moonshine" | "nemotron-streaming" | "remote-openai";
+  backend: "whisper-cpp" | "" | "nemotron-streaming" | "remote-openai";
   whisper_cpp: WhisperCppConfig;
-  moonshine: MoonshineConfig;
+  : Config;
   nemotron_streaming: NemotronStreamingConfig;
   remote_openai: RemoteOpenAiConfig;
   s1_mini: S1MiniConfig;
@@ -42,7 +42,7 @@ export interface WhisperCppConfig {
   language: string;
 }
 
-export interface MoonshineConfig {
+export interface Config {
   model_size: string;
   language: string;
 }
@@ -182,7 +182,7 @@ const defaultConfig: AppConfig = {
       threads: 0,
       language: "auto",
     },
-    moonshine: { model_size: "base", language: "en" },
+    : { model_size: "base", language: "en" },
     nemotron_streaming: { model_size: "fp16", language: "en", gpu: true },
     remote_openai: {
       endpoint: "http://localhost:8000/v1",

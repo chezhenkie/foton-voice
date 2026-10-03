@@ -332,39 +332,6 @@ mod tests {
     use crate::structs::*;
 
     #[test]
-    fn moonshine_gpu_defaults_on_for_a_config_written_before_the_field() {
-        // An existing config.json has no `gpu` key. It must still load with the
-        // GPU path enabled, not silently default to CPU.
-        let cfg: MoonshineConfig =
-            serde_json::from_str(r#"{"model_size":"base","language":"en"}"#).unwrap();
-        assert!(cfg.gpu, "a config without `gpu` must keep GPU enabled");
-        assert_eq!(cfg.model_size, "base");
-    }
-
-    #[test]
-    fn moonshine_gpu_is_honoured_when_present() {
-        let off: MoonshineConfig =
-            serde_json::from_str(r#"{"model_size":"tiny","language":"en","gpu":false}"#)
-                .unwrap();
-        assert!(!off.gpu);
-        let on: MoonshineConfig =
-            serde_json::from_str(r#"{"model_size":"tiny","language":"en","gpu":true}"#).unwrap();
-        assert!(on.gpu);
-    }
-
-    #[test]
-    fn moonshine_quantized_variant_survives_a_round_trip() {
-        let cfg = MoonshineConfig {
-            model_size: "base-quantized".into(),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&cfg).unwrap();
-        assert!(json.contains("base-quantized"), "{json}");
-        let back: MoonshineConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.model_size, "base-quantized");
-        assert!(back.gpu);
-    }
-    #[test]
     fn a_name_on_path_is_found() {
         let dir = tempfile::tempdir().unwrap();
         let extension = if cfg!(target_os = "windows") { ".exe" } else { "" };
@@ -436,15 +403,15 @@ mod tests {
     #[test]
     fn a_valid_config_parses_whole() {
         let (cfg, _) = parse_tolerant_report(
-            r#"{"engine": {"backend": "moonshine",
+            r#"{"engine": {"backend": "nemotron-streaming",
                            "whisper_cpp": {"model_dir": "", "model_size": "small",
                                            "device": "auto", "threads": 0},
-                           "moonshine": {"model_size": "base", "language": "en"}},
+                           "nemotron-streaming": {"model_size": "base", "language": "en"}},
                 "audio": {"vad_threshold": 0.65, "input_device_index": null,
                           "evdev_device": null, "noise_suppression": true,
                           "gain": 1.6, "dynamic_stream": true}}"#,
         );
-        assert_eq!(cfg.engine.backend, BackendChoice::Moonshine);
+        assert_eq!(cfg.engine.backend, BackendChoice::NemotronStreaming);
         assert_eq!(cfg.engine.whisper_cpp.model_size, "small");
         assert_eq!(cfg.audio.gain, 1.6);
     }
@@ -690,8 +657,8 @@ mod tests {
             r#""whisper-cpp""#
         );
         assert_eq!(
-            serde_json::to_string(&BackendChoice::Moonshine).unwrap(),
-            r#""moonshine""#
+            serde_json::to_string(&BackendChoice::NemotronStreaming).unwrap(),
+            r#""nemotron-streaming""#
         );
         assert_eq!(
             serde_json::to_string(&BackendChoice::NemotronStreaming).unwrap(),
@@ -734,7 +701,7 @@ mod tests {
                     "device": "auto",
                     "threads": 0
                 },
-                "moonshine": {
+                "nemotron-streaming": {
                     "model_size": "base",
                     "language": "en"
                 }

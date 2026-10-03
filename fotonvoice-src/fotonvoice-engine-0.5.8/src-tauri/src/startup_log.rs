@@ -126,7 +126,7 @@ impl<S: Subscriber> Layer<S> for StartupErrorLayer {
         let is_whisper_diagnostic =
             msg.starts_with("Whisper acceleration:") || msg.starts_with("Whisper run:");
         // Same gate for the ONNX engines. Without this their INFO lines are
-        // dropped once startup finishes, so "Moonshine acceleration:", the
+        // dropped once startup finishes, so " acceleration:", the
         // per-graph load timings and the run line never reached the log at all -
         // which is why a stalled load and a completed one looked identical.
         let is_engine_diagnostic = is_whisper_diagnostic
@@ -136,9 +136,9 @@ impl<S: Subscriber> Layer<S> for StartupErrorLayer {
             || msg.starts_with("STT request:")
             || msg.starts_with("STT reload:")
             || msg.starts_with("STT result:")
-            || msg.starts_with("Moonshine acceleration:")
-            || msg.starts_with("Moonshine load:")
-            || msg.starts_with("Moonshine run:")
+            || msg.starts_with(" acceleration:")
+            || msg.starts_with(" load:")
+            || msg.starts_with(" run:")
             || msg.starts_with("Nemotron streaming acceleration:")
             || msg.starts_with("Nemotron streaming load:")
             || msg.starts_with("Nemotron streaming run:");

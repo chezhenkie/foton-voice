@@ -32,33 +32,6 @@ impl Default for WhisperCppConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MoonshineConfig {
-    /// "base" or "tiny", optionally with a `-quantized` precision suffix
-    pub model_size: String,
-    /// BCP-47 language code, e.g. "en"
-    pub language: String,
-    /// Attach the GPU execution provider (WebGPU/CUDA/CoreML per platform).
-    /// Defaults to true, so a config written before this field keeps loading the
-    /// model the same way.
-    #[serde(default = "default_moonshine_gpu")]
-    pub gpu: bool,
-}
-
-fn default_moonshine_gpu() -> bool {
-    true
-}
-
-impl Default for MoonshineConfig {
-    fn default() -> Self {
-        Self {
-            model_size: "base".into(),
-            language: "en".into(),
-            gpu: default_moonshine_gpu(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NemotronStreamingConfig {
     /// Precision variant of the danielbodart 560ms-chunk export:
     pub model_size: String,
@@ -115,7 +88,6 @@ pub enum BackendChoice {
     /// `alias = "auto"` migrates configs written when the backend could be
     #[serde(alias = "auto")]
     WhisperCpp,
-    Moonshine,
     /// `alias = "parakeet"` migrates configs written before the Parakeet
     /// backend was removed (2026-09-29): they load as Nemotron streaming.
     #[serde(rename = "nemotron-streaming", alias = "nemotron_streaming", alias = "parakeet")]
@@ -160,8 +132,6 @@ pub struct EngineConfig {
     pub backend: BackendChoice,
     #[serde(default)]
     pub whisper_cpp: WhisperCppConfig,
-    #[serde(default)]
-    pub moonshine: MoonshineConfig,
     #[serde(default)]
     pub nemotron_streaming: NemotronStreamingConfig,
     #[serde(default)]
