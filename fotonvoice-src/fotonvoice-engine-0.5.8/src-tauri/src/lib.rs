@@ -242,6 +242,7 @@ pub fn run() {
         targets_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         audio_tx: audio_tx.clone(),
         audio_wake: audio_wake_tx,
+        audio_handle: std::sync::Mutex::new(None),
         inference_config_tx: inference_cfg_tx,
         stt_load: stt_load.clone(),
         tts_handle: Arc::new(Mutex::new(None)),
@@ -268,11 +269,13 @@ pub fn run() {
             app_state.noise_suppression.clone(),
         )
         .with_wake(audio_wake_rx);
-        let _ = recorder.run(
+        if let Ok(handle) = recorder.run(
             audio_tx,
             Some(audio_level_tx),
             Some(app_state.audio_ready.clone()),
-        );
+        ) {
+            *app_state.audio_handle.lock().unwrap() = Some(handle);
+        }
     }
 
     let rt_handle = tokio::runtime::Handle::current();
@@ -507,10 +510,14 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error building Tauri application")
-        .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
-                if code.is_none() {
-                    api.prevent_exit();
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let state = app.state::<std::sync::Arc<crate::state::AppState>>();
+                {
+                    let mut guard = state.audio_handle.lock().unwrap();
+                    if let Some(handle) = guard.take() {
+                        handle.stop();
+                    }
                 }
             }
         });

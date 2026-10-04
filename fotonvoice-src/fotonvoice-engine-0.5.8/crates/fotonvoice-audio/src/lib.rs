@@ -125,21 +125,37 @@ impl AudioRecorder {
         let wake = self.wake.clone();
         let cfg = self.config.clone();
 
+        let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let shutdown_flag_clone = shutdown_flag.clone();
+
         let handle = std::thread::Builder::new()
             .name("fotonvoice-audio".into())
             .spawn(move || {
-                if let Err(e) = capture_loop(cfg, gain, noise_suppression, recording, monitoring, dynamic_stream, input_device_index, audio_ready, tx, level_tx, wake) {
+                let mut external_shutdown = shutdown_rx;
+                let wake_external = wake.clone();
+                if let Err(e) = capture_loop(cfg, gain, noise_suppression, recording, monitoring, dynamic_stream, input_device_index, audio_ready, tx, level_tx, wake, Some((shutdown_flag_clone, external_shutdown))) {
                     warn!("Audio capture error: {e}");
                 }
             })
             .context("spawn audio thread")?;
 
-        Ok(RecorderHandle { _thread: handle })
+        Ok(RecorderHandle { _thread: handle, shutdown: Some(shutdown_tx) })
     }
 }
 
 pub struct RecorderHandle {
     _thread: std::thread::JoinHandle<()>,
+    shutdown: Option<crossbeam_channel::Sender<()>>,
+}
+
+impl RecorderHandle {
+    pub fn stop(self) {
+        if let Some(shutdown) = self.shutdown {
+            let _ = shutdown.send(());
+        }
+        let _ = self._thread.join();
+    }
 }
 
 
@@ -417,6 +433,7 @@ fn capture_loop(
     tx: Sender<AudioChunk>,
     level_tx: Option<Sender<f32>>,
     wake: Option<Receiver<()>>,
+    shutdown: Option<(Arc<AtomicBool>, Receiver<()>)>,
 ) -> Result<()> {
     info!("Capture thread started; probing input devices.");
     let host = cpal::default_host();
@@ -464,7 +481,19 @@ fn capture_loop(
         }
     }
 
+    let mut shutdown_flag_opt = None;
+    let mut shutdown_rx_opt = None;
+    if let Some((f, r)) = shutdown {
+        shutdown_flag_opt = Some(f);
+        shutdown_rx_opt = Some(r);
+    }
+
     loop {
+        if let Some(ref f) = shutdown_flag_opt {
+            if f.load(Ordering::SeqCst) {
+                break;
+            }
+        }
         let is_recording = recording.load(Ordering::SeqCst);
         let is_monitoring = monitoring.load(Ordering::SeqCst);
         let active = is_recording || is_monitoring;
@@ -568,19 +597,39 @@ fn capture_loop(
         } else {
             Duration::from_millis(30)
         };
-        match wake {
-            Some(ref rx) => match rx.recv_timeout(backstop) {
+        let mut should_sleep = true;
+        if let Some(ref rx) = shutdown_rx_opt {
+            match rx.try_recv() {
                 Ok(()) => {
-                    while rx.try_recv().is_ok() {}
+                    should_sleep = false;
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                    std::thread::sleep(backstop)
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    should_sleep = false;
                 }
-            },
-            None => std::thread::sleep(backstop),
+            }
+        }
+        if should_sleep {
+            match wake {
+                Some(ref rx) => match rx.recv_timeout(backstop) {
+                    Ok(()) => {
+                        while rx.try_recv().is_ok() {}
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        std::thread::sleep(backstop)
+                    }
+                },
+                None => std::thread::sleep(backstop),
+            }
         }
     }
+
+    if let Some(ref ready) = audio_ready {
+        ready.store(false, Ordering::SeqCst);
+    }
+    current_stream = None;
+    Ok(())
 }
 
 fn negotiate_config(device: &cpal::Device) -> Result<StreamConfig> {

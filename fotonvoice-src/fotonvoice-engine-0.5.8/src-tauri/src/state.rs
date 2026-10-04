@@ -73,6 +73,7 @@ pub struct AppState {
     pub audio_tx: crossbeam_channel::Sender<Vec<f32>>,
     /// Nudges the audio capture supervisor when a flag it watches changes, so
     pub audio_wake: crossbeam_channel::Sender<()>,
+    pub audio_handle: std::sync::Mutex<Option<fotonvoice_audio::RecorderHandle>>,
 
     /// Channel sender for pushing runtime snapshots (config, targets, bindings)
     pub inference_config_tx:
