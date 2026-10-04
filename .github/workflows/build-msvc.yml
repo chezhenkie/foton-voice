@@ -10,7 +10,7 @@ permissions:
 
 # One job, not two. There used to be a WebGPU-only job alongside this Vulkan
 # one, but the Vulkan build is a strict superset: it carries
-# moonshine-webgpu,nemotron-streaming-webgpu and vulkan, so Moonshine and
+# nemotron-streaming-webgpu and vulkan, so and
 # Nemotron still use WebGPU while Whisper uses the ggml Vulkan backend. The
 # WebGPU-only exe was 11 MB against 27 MB for the Vulkan one and existed only
 # to prove the WebGPU path compiles, which this job already does. Folding it
@@ -130,7 +130,7 @@ jobs:
       - name: Build (msvc, WebGPU + Vulkan features)
         run: >
           cargo rustc --release -p fotonvoice-app --bin fotonvoice-engine
-          --features moonshine-webgpu,nemotron-streaming-webgpu,vulkan
+          --features nemotron-streaming-webgpu,vulkan
           -- -C link-arg=/MAP:D:\a\wt\avx.map -C link-arg=/MAPINFO:EXPORTS
 
       - name: Collect
