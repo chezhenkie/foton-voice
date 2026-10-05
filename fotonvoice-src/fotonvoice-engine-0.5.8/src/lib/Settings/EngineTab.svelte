@@ -159,7 +159,7 @@
 
   async function onModelChanged() {
     markDirty();
-    await Models.verify(cfg.engine..model_size);
+    await Models.verify(cfg.engine.nemotron_streaming.model_size);
   }
 
   async function onNemotronModelChanged() {
@@ -319,7 +319,7 @@
         <span>GPU acceleration</span>
         <input
           type="checkbox"
-          bind:checked={cfg.engine..gpu}
+          bind:checked={cfg.engine.nemotron_streaming.gpu}
           onchange={markDirty}
           disabled={!Gpu}
         />
@@ -340,13 +340,13 @@
 
       <label class="field">
         <span>Model size</span>
-        <CustomSelect bind:value={cfg.engine..model_size} options={ModelSizeOptions} onchange={onModelChanged} />
+        <CustomSelect bind:value={cfg.engine.nemotron_streaming.model_size} options={ModelSizeOptions} onchange={onModelChanged} />
       </label>
 
       {#if Available}
         <ModelStatusRow
           mgr={Models}
-          size={cfg.engine..model_size}
+          size={cfg.engine.nemotron_streaming.model_size}
         />
       {/if}
 
@@ -354,7 +354,7 @@
         <span>Language</span>
         <input
           type="text"
-          bind:value={cfg.engine..language}
+          bind:value={cfg.engine.nemotron_streaming.language}
           onchange={markDirty}
         />
       </label>
