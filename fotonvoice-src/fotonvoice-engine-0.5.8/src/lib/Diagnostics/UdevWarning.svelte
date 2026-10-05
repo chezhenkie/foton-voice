@@ -292,9 +292,16 @@
               {#if retryShortcutsError}
                 <p class="warn-note">{retryShortcutsError}</p>
               {/if}
+            {:else if setup.hotkeys.backend === "windows_hook"}
+              <p class="privacy-note">
+                On Windows no approval or registration is needed: the low-level keyboard hook
+                already receives the shortcuts. The approve button is a Linux-only concept.
+              </p>
             {:else if setup.hotkeys.backend !== "starting"}
               <p class="warn-note">
-                Global shortcuts require approval or registration from your system. FotonVoice Engine will not grant itself keyboard access to work around this.
+                On Linux, global shortcuts require approval or registration from your desktop
+                session (this does not apply to the Windows build). FotonVoice Engine will not grant
+                itself keyboard access to work around this.
               </p>
               <div class="step-actions">
                 <button
