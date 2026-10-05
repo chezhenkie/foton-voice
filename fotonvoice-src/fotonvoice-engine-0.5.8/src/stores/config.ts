@@ -181,7 +181,6 @@ const defaultConfig: AppConfig = {
       threads: 0,
       language: "auto",
     },
-    : { model_size: "base", language: "en" },
     nemotron_streaming: { model_size: "fp16", language: "en", gpu: true },
     remote_openai: {
       endpoint: "http://localhost:8000/v1",
