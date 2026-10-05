@@ -511,6 +511,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error building Tauri application")
         .run(|app, event| {
+            use tauri::Manager;
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let state = app.state::<std::sync::Arc<crate::state::AppState>>();
                 {
