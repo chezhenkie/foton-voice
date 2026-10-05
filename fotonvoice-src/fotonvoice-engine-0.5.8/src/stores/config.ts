@@ -20,7 +20,6 @@ export interface S1MiniConfig {
 export interface EngineConfig {
   backend: "whisper-cpp" | "" | "nemotron-streaming" | "remote-openai";
   whisper_cpp: WhisperCppConfig;
-  : Config;
   nemotron_streaming: NemotronStreamingConfig;
   remote_openai: RemoteOpenAiConfig;
   s1_mini: S1MiniConfig;
